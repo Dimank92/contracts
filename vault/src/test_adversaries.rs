@@ -20,7 +20,7 @@
 
 extern crate std;
 
-use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, Symbol};
+use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, IntoVal, Symbol};
 
 use test_adversaries::multisig::{AlwaysApproveMultisig, NeverApproveMultisig};
 use test_adversaries::tokens::{
@@ -57,15 +57,15 @@ fn fee_on_transfer_token_deposit_credits_only_received_delta() {
     env.invoke_contract::<()>(
         &token_id,
         &Symbol::new(&env, "initialize"),
-        soroban_sdk::vec![&env, depositor.clone().into()],
+        soroban_sdk::vec![&env, depositor.clone().into_val(&env)],
     );
     env.invoke_contract::<()>(
         &token_id,
         &Symbol::new(&env, "mint"),
         soroban_sdk::vec![
             &env,
-            depositor.clone().into(),
-            1_000_000i128.into(),
+            depositor.clone().into_val(&env),
+            1_000_000i128.into_val(&env),
         ],
     );
 
@@ -263,7 +263,7 @@ fn safe_inbound_transfer_rejects_zero_amount() {
     env.invoke_contract::<()>(
         &token_id,
         &Symbol::new(&env, "initialize"),
-        soroban_sdk::vec![&env, admin.clone().into()],
+        soroban_sdk::vec![&env, admin.clone().into_val(&env)],
     );
 
     let result = TokenTransferGuard::safe_inbound_transfer(
@@ -295,15 +295,15 @@ fn safe_inbound_transfer_with_fee_on_transfer_token_returns_delta_mismatch() {
     env.invoke_contract::<()>(
         &token_id,
         &Symbol::new(&env, "initialize"),
-        soroban_sdk::vec![&env, sender.clone().into()],
+        soroban_sdk::vec![&env, sender.clone().into_val(&env)],
     );
     env.invoke_contract::<()>(
         &token_id,
         &Symbol::new(&env, "mint"),
         soroban_sdk::vec![
             &env,
-            sender.clone().into(),
-            1_000_000i128.into(),
+            sender.clone().into_val(&env),
+            1_000_000i128.into_val(&env),
         ],
     );
 
@@ -336,15 +336,15 @@ fn safe_inbound_transfer_with_revert_token_panics() {
     env.invoke_contract::<()>(
         &token_id,
         &Symbol::new(&env, "initialize"),
-        soroban_sdk::vec![&env, sender.clone().into()],
+        soroban_sdk::vec![&env, sender.clone().into_val(&env)],
     );
     env.invoke_contract::<()>(
         &token_id,
         &Symbol::new(&env, "mint"),
         soroban_sdk::vec![
             &env,
-            sender.clone().into(),
-            1_000_000i128.into(),
+            sender.clone().into_val(&env),
+            1_000_000i128.into_val(&env),
         ],
     );
 

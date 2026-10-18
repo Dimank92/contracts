@@ -42,4 +42,24 @@ pub enum Error {
     MigrationPending = 32,
     InvalidActiveSeriesCap = 33,
     InvalidPageLimit = 34,
+    /// The series is halted: no new purchases or writes (#192).
+    SeriesHalted = 35,
+    /// `unhalt_series` on a series that is not halted.
+    SeriesNotHalted = 36,
+    /// Premium is non-positive or above `math::max_premium` (#192).
+    PremiumOutOfBounds = 37,
+    /// Arithmetic overflow while scaling a settlement payoff (#191).
+    PayoffOverflow = 38,
+    /// `settle_series` with no price oracle pinned (#191).
+    PriceOracleNotSet = 39,
+    /// A vault deposit didn't credit the series tag with exactly the
+    /// amount sent (#158 post-condition).
+    EscrowPostConditionFailed = 40,
+    // Schema migrations (zenith_common::migrations) — same codes in
+    // every Zenith contract. See docs/migrations.md.
+    SchemaVersionMismatch = 100,
+    InvalidMigrationTarget = 101,
+    MigrationInProgress = 102,
+    NoMigrationInProgress = 103,
+    InvalidMigrationBatch = 104,
 }

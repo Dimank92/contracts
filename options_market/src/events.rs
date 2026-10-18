@@ -177,3 +177,23 @@ pub fn counters_migrated(env: &Env) {
     env.events()
         .publish((Symbol::new(env, "counters_migrated"),), ());
 }
+
+/// A series was halted (`halted = true`) or unhalted (#192).
+pub fn series_halted(env: &Env, series_id: u64, halted: bool) {
+    env.events()
+        .publish((Symbol::new(env, "series_halted"), series_id), halted);
+}
+
+pub fn price_oracle_updated(env: &Env, oracle: Address) {
+    env.events()
+        .publish((Symbol::new(env, "price_oracle_updated"),), oracle);
+}
+
+/// A settled series' remaining collateral moved into `vault` under the
+/// series tag (#191).
+pub fn settlement_escrowed_to_vault(env: &Env, series_id: u64, vault: Address, amount: i128) {
+    env.events().publish(
+        (Symbol::new(env, "settlement_escrowed_to_vault"), series_id),
+        (vault, amount),
+    );
+}

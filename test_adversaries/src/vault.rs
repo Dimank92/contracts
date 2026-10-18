@@ -57,50 +57,55 @@ pub enum VaultError {
 /// even though the options_market thinks the refund was paid. Tests confirm
 /// options_market either checks the vault's return value or the token
 /// balance delta.
-#[contract]
-pub struct NoOpVault;
+mod no_op_vault_impl {
+    use super::*;
 
-#[contractimpl]
-impl NoOpVault {
-    pub fn initialize(env: Env, admin: Address, _token: Address, _max_pause_duration: u64) {
-        admin.require_auth();
-        env.storage().instance().set(&VaultKey::Admin, &admin);
-    }
+    #[contract]
+    pub struct NoOpVault;
 
-    /// No-op: does NOT credit any escrow, does NOT pull any tokens.
-    /// Returns 0 (the measured delta is always zero here).
-    pub fn deposit(_env: Env, _from: Address, _token: Address, _tag: Tag, _amount: i128) -> i128 {
-        0
-    }
+    #[contractimpl]
+    impl NoOpVault {
+        pub fn initialize(env: Env, admin: Address, _token: Address, _max_pause_duration: u64) {
+            admin.require_auth();
+            env.storage().instance().set(&VaultKey::Admin, &admin);
+        }
 
-    /// No-op: does NOT push any tokens to `to`.
-    pub fn withdraw(_env: Env, _token: Address, _tag: Tag, _to: Address, _amount: i128) {}
+        /// No-op: does NOT credit any escrow, does NOT pull any tokens.
+        /// Returns 0 (the measured delta is always zero here).
+        pub fn deposit(_env: Env, _from: Address, _token: Address, _tag: Tag, _amount: i128) -> i128 {
+            0
+        }
 
-    pub fn balance_of(_env: Env, _token: Address, _tag: Tag) -> i128 { 0 }
-    pub fn get_total_escrowed(_env: Env, _token: Address) -> i128 { 0 }
-    pub fn is_paused(_env: Env) -> bool { false }
-    pub fn get_admin(env: Env) -> Address {
-        env.storage().instance().get(&VaultKey::Admin).unwrap()
-    }
-    pub fn is_token_allowed(_env: Env, _token: Address) -> bool { true }
-    pub fn is_integrator(_env: Env, _addr: Address) -> bool { true }
-    pub fn set_token_allowed(_env: Env, _token: Address, _allowed: bool) {}
-    pub fn set_integrator(_env: Env, _integrator: Address, _allowed: bool) {}
-    pub fn transfer_tag(_env: Env, _token: Address, _from: Tag, _to: Tag, _amount: i128) {}
-    pub fn get_tag_owner(_env: Env, _tag: Tag) -> Option<Address> { None }
+        /// No-op: does NOT push any tokens to `to`.
+        pub fn withdraw(_env: Env, _token: Address, _tag: Tag, _to: Address, _amount: i128) {}
 
-    // Legacy wrappers
-    pub fn deposit_legacy(_env: Env, _from: Address, _id: u64, _amount: i128) -> i128 { 0 }
-    pub fn withdraw_legacy(_env: Env, _id: u64, _to: Address, _amount: i128) {}
-    pub fn balance_of_legacy(_env: Env, _id: u64) -> i128 { 0 }
-    pub fn legacy_tag(env: Env, id: u64) -> Tag {
-        Tag {
-            owner: env.storage().instance().get(&VaultKey::Admin).unwrap(),
-            kind: symbol_short!("legacy"),
-            id,
+        pub fn balance_of(_env: Env, _token: Address, _tag: Tag) -> i128 { 0 }
+        pub fn get_total_escrowed(_env: Env, _token: Address) -> i128 { 0 }
+        pub fn is_paused(_env: Env) -> bool { false }
+        pub fn get_admin(env: Env) -> Address {
+            env.storage().instance().get(&VaultKey::Admin).unwrap()
+        }
+        pub fn is_token_allowed(_env: Env, _token: Address) -> bool { true }
+        pub fn is_integrator(_env: Env, _addr: Address) -> bool { true }
+        pub fn set_token_allowed(_env: Env, _token: Address, _allowed: bool) {}
+        pub fn set_integrator(_env: Env, _integrator: Address, _allowed: bool) {}
+        pub fn transfer_tag(_env: Env, _token: Address, _from: Tag, _to: Tag, _amount: i128) {}
+        pub fn get_tag_owner(_env: Env, _tag: Tag) -> Option<Address> { None }
+
+        // Legacy wrappers
+        pub fn deposit_legacy(_env: Env, _from: Address, _id: u64, _amount: i128) -> i128 { 0 }
+        pub fn withdraw_legacy(_env: Env, _id: u64, _to: Address, _amount: i128) {}
+        pub fn balance_of_legacy(_env: Env, _id: u64) -> i128 { 0 }
+        pub fn legacy_tag(env: Env, id: u64) -> Tag {
+            Tag {
+                owner: env.storage().instance().get(&VaultKey::Admin).unwrap(),
+                kind: symbol_short!("legacy"),
+                id,
+            }
         }
     }
 }
+pub use no_op_vault_impl::{NoOpVault, NoOpVaultClient};
 
 // ─── WrongBalanceVault ────────────────────────────────────────────────────────
 
@@ -111,72 +116,77 @@ impl NoOpVault {
 /// `vault.balance_of(token, tag)` and trusts it to authorise a withdrawal,
 /// an inflated balance could allow withdrawing more than was deposited.
 /// Tests confirm options_market caps withdrawals to the actual escrow amount.
-#[contract]
-pub struct WrongBalanceVault;
+mod wrong_balance_vault_impl {
+    use super::*;
 
-#[contractimpl]
-impl WrongBalanceVault {
-    pub fn initialize(env: Env, admin: Address, _token: Address, _max_pause_duration: u64) {
-        admin.require_auth();
-        env.storage().instance().set(&VaultKey::Admin, &admin);
-    }
+    #[contract]
+    pub struct WrongBalanceVault;
 
-    pub fn deposit(env: Env, from: Address, token: Address, tag: Tag, amount: i128) -> i128 {
-        from.require_auth();
-        let key = VaultKey::Escrow(token.clone(), tag.clone());
-        let current: i128 = env.storage().instance().get(&key).unwrap_or(0);
-        env.storage().instance().set(&key, &(current + amount));
-        let total_key = VaultKey::Total(token.clone());
-        let total: i128 = env.storage().instance().get(&total_key).unwrap_or(0);
-        env.storage().instance().set(&total_key, &(total + amount));
-        amount // pretend full amount was credited
-    }
-
-    pub fn withdraw(env: Env, token: Address, tag: Tag, to: Address, amount: i128) {
-        to.require_auth();
-        let key = VaultKey::Escrow(token.clone(), tag.clone());
-        let current: i128 = env.storage().instance().get(&key).unwrap_or(0);
-        if current < amount {
-            panic_with_error!(env, VaultError::InsufficientEscrowBalance);
+    #[contractimpl]
+    impl WrongBalanceVault {
+        pub fn initialize(env: Env, admin: Address, _token: Address, _max_pause_duration: u64) {
+            admin.require_auth();
+            env.storage().instance().set(&VaultKey::Admin, &admin);
         }
-        env.storage().instance().set(&key, &(current - amount));
-    }
 
-    /// Returns 2× the real balance — the lie.
-    pub fn balance_of(env: Env, token: Address, tag: Tag) -> i128 {
-        let key = VaultKey::Escrow(token, tag);
-        let real: i128 = env.storage().instance().get(&key).unwrap_or(0);
-        real.saturating_mul(2)
-    }
+        pub fn deposit(env: Env, from: Address, token: Address, tag: Tag, amount: i128) -> i128 {
+            from.require_auth();
+            let key = VaultKey::Escrow(token.clone(), tag.clone());
+            let current: i128 = env.storage().instance().get(&key).unwrap_or(0);
+            env.storage().instance().set(&key, &(current + amount));
+            let total_key = VaultKey::Total(token.clone());
+            let total: i128 = env.storage().instance().get(&total_key).unwrap_or(0);
+            env.storage().instance().set(&total_key, &(total + amount));
+            amount // pretend full amount was credited
+        }
 
-    pub fn get_total_escrowed(env: Env, token: Address) -> i128 {
-        env.storage()
-            .instance()
-            .get(&VaultKey::Total(token))
-            .unwrap_or(0)
-    }
+        pub fn withdraw(env: Env, token: Address, tag: Tag, to: Address, amount: i128) {
+            to.require_auth();
+            let key = VaultKey::Escrow(token.clone(), tag.clone());
+            let current: i128 = env.storage().instance().get(&key).unwrap_or(0);
+            if current < amount {
+                panic_with_error!(env, VaultError::InsufficientEscrowBalance);
+            }
+            env.storage().instance().set(&key, &(current - amount));
+        }
 
-    pub fn is_paused(_env: Env) -> bool { false }
-    pub fn get_admin(env: Env) -> Address {
-        env.storage().instance().get(&VaultKey::Admin).unwrap()
-    }
-    pub fn is_token_allowed(_env: Env, _token: Address) -> bool { true }
-    pub fn is_integrator(_env: Env, _addr: Address) -> bool { true }
-    pub fn set_token_allowed(_env: Env, _token: Address, _allowed: bool) {}
-    pub fn set_integrator(_env: Env, _integrator: Address, _allowed: bool) {}
-    pub fn transfer_tag(_env: Env, _token: Address, _from: Tag, _to: Tag, _amount: i128) {}
-    pub fn get_tag_owner(_env: Env, _tag: Tag) -> Option<Address> { None }
-    pub fn deposit_legacy(_env: Env, _from: Address, _id: u64, _amount: i128) -> i128 { 0 }
-    pub fn withdraw_legacy(_env: Env, _id: u64, _to: Address, _amount: i128) {}
-    pub fn balance_of_legacy(_env: Env, _id: u64) -> i128 { 0 }
-    pub fn legacy_tag(env: Env, id: u64) -> Tag {
-        Tag {
-            owner: env.storage().instance().get(&VaultKey::Admin).unwrap(),
-            kind: symbol_short!("legacy"),
-            id,
+        /// Returns 2× the real balance — the lie.
+        pub fn balance_of(env: Env, token: Address, tag: Tag) -> i128 {
+            let key = VaultKey::Escrow(token, tag);
+            let real: i128 = env.storage().instance().get(&key).unwrap_or(0);
+            real.saturating_mul(2)
+        }
+
+        pub fn get_total_escrowed(env: Env, token: Address) -> i128 {
+            env.storage()
+                .instance()
+                .get(&VaultKey::Total(token))
+                .unwrap_or(0)
+        }
+
+        pub fn is_paused(_env: Env) -> bool { false }
+        pub fn get_admin(env: Env) -> Address {
+            env.storage().instance().get(&VaultKey::Admin).unwrap()
+        }
+        pub fn is_token_allowed(_env: Env, _token: Address) -> bool { true }
+        pub fn is_integrator(_env: Env, _addr: Address) -> bool { true }
+        pub fn set_token_allowed(_env: Env, _token: Address, _allowed: bool) {}
+        pub fn set_integrator(_env: Env, _integrator: Address, _allowed: bool) {}
+        pub fn transfer_tag(_env: Env, _token: Address, _from: Tag, _to: Tag, _amount: i128) {}
+        pub fn get_tag_owner(_env: Env, _tag: Tag) -> Option<Address> { None }
+        pub fn deposit_legacy(_env: Env, _from: Address, _id: u64, _amount: i128) -> i128 { 0 }
+        pub fn withdraw_legacy(_env: Env, _id: u64, _to: Address, _amount: i128) {}
+        pub fn balance_of_legacy(_env: Env, _id: u64) -> i128 { 0 }
+        pub fn legacy_tag(env: Env, id: u64) -> Tag {
+            Tag {
+                owner: env.storage().instance().get(&VaultKey::Admin).unwrap(),
+                kind: symbol_short!("legacy"),
+                id,
+            }
         }
     }
 }
+pub use wrong_balance_vault_impl::{WrongBalanceVault, WrongBalanceVaultClient};
 
 // ─── RevertOnWithdrawVault ────────────────────────────────────────────────────
 
@@ -188,58 +198,63 @@ impl WrongBalanceVault {
 /// `vault.withdraw`; if that panics the whole tx reverts and the position
 /// holder is stuck. Tests confirm the error propagates and options_market
 /// does not mark the position as refunded unless the transfer succeeds.
-#[contract]
-pub struct RevertOnWithdrawVault;
+mod revert_on_withdraw_vault_impl {
+    use super::*;
 
-#[contractimpl]
-impl RevertOnWithdrawVault {
-    pub fn initialize(env: Env, admin: Address, _token: Address, _max_pause_duration: u64) {
-        admin.require_auth();
-        env.storage().instance().set(&VaultKey::Admin, &admin);
-    }
+    #[contract]
+    pub struct RevertOnWithdrawVault;
 
-    pub fn deposit(env: Env, from: Address, token: Address, tag: Tag, amount: i128) -> i128 {
-        from.require_auth();
-        let key = VaultKey::Escrow(token.clone(), tag.clone());
-        let current: i128 = env.storage().instance().get(&key).unwrap_or(0);
-        env.storage().instance().set(&key, &(current + amount));
-        amount
-    }
+    #[contractimpl]
+    impl RevertOnWithdrawVault {
+        pub fn initialize(env: Env, admin: Address, _token: Address, _max_pause_duration: u64) {
+            admin.require_auth();
+            env.storage().instance().set(&VaultKey::Admin, &admin);
+        }
 
-    /// Always panics — funds are locked forever.
-    pub fn withdraw(env: Env, _token: Address, _tag: Tag, _to: Address, _amount: i128) {
-        panic_with_error!(env, VaultError::WithdrawReverted);
-    }
+        pub fn deposit(env: Env, from: Address, token: Address, tag: Tag, amount: i128) -> i128 {
+            from.require_auth();
+            let key = VaultKey::Escrow(token.clone(), tag.clone());
+            let current: i128 = env.storage().instance().get(&key).unwrap_or(0);
+            env.storage().instance().set(&key, &(current + amount));
+            amount
+        }
 
-    pub fn balance_of(env: Env, token: Address, tag: Tag) -> i128 {
-        env.storage()
-            .instance()
-            .get(&VaultKey::Escrow(token, tag))
-            .unwrap_or(0)
-    }
+        /// Always panics — funds are locked forever.
+        pub fn withdraw(env: Env, _token: Address, _tag: Tag, _to: Address, _amount: i128) {
+            panic_with_error!(env, VaultError::WithdrawReverted);
+        }
 
-    pub fn get_total_escrowed(_env: Env, _token: Address) -> i128 { 0 }
-    pub fn is_paused(_env: Env) -> bool { false }
-    pub fn get_admin(env: Env) -> Address {
-        env.storage().instance().get(&VaultKey::Admin).unwrap()
-    }
-    pub fn is_token_allowed(_env: Env, _token: Address) -> bool { true }
-    pub fn is_integrator(_env: Env, _addr: Address) -> bool { true }
-    pub fn set_token_allowed(_env: Env, _token: Address, _allowed: bool) {}
-    pub fn set_integrator(_env: Env, _integrator: Address, _allowed: bool) {}
-    pub fn transfer_tag(_env: Env, _token: Address, _from: Tag, _to: Tag, _amount: i128) {}
-    pub fn get_tag_owner(_env: Env, _tag: Tag) -> Option<Address> { None }
-    pub fn deposit_legacy(_env: Env, _from: Address, _id: u64, _amount: i128) -> i128 { 0 }
-    pub fn withdraw_legacy(_env: Env, _id: u64, _to: Address, _amount: i128) {}
-    pub fn balance_of_legacy(_env: Env, _id: u64) -> i128 { 0 }
-    pub fn legacy_tag(env: Env, id: u64) -> Tag {
-        Tag {
-            owner: env.storage().instance().get(&VaultKey::Admin).unwrap(),
-            kind: symbol_short!("legacy"),
-            id,
+        pub fn balance_of(env: Env, token: Address, tag: Tag) -> i128 {
+            env.storage()
+                .instance()
+                .get(&VaultKey::Escrow(token, tag))
+                .unwrap_or(0)
+        }
+
+        pub fn get_total_escrowed(_env: Env, _token: Address) -> i128 { 0 }
+        pub fn is_paused(_env: Env) -> bool { false }
+        pub fn get_admin(env: Env) -> Address {
+            env.storage().instance().get(&VaultKey::Admin).unwrap()
+        }
+        pub fn is_token_allowed(_env: Env, _token: Address) -> bool { true }
+        pub fn is_integrator(_env: Env, _addr: Address) -> bool { true }
+        pub fn set_token_allowed(_env: Env, _token: Address, _allowed: bool) {}
+        pub fn set_integrator(_env: Env, _integrator: Address, _allowed: bool) {}
+        pub fn transfer_tag(_env: Env, _token: Address, _from: Tag, _to: Tag, _amount: i128) {}
+        pub fn get_tag_owner(_env: Env, _tag: Tag) -> Option<Address> { None }
+        pub fn deposit_legacy(_env: Env, _from: Address, _id: u64, _amount: i128) -> i128 { 0 }
+        pub fn withdraw_legacy(_env: Env, _id: u64, _to: Address, _amount: i128) {}
+        pub fn balance_of_legacy(_env: Env, _id: u64) -> i128 { 0 }
+        pub fn legacy_tag(env: Env, id: u64) -> Tag {
+            Tag {
+                owner: env.storage().instance().get(&VaultKey::Admin).unwrap(),
+                kind: symbol_short!("legacy"),
+                id,
+            }
         }
     }
 }
+pub use revert_on_withdraw_vault_impl::{RevertOnWithdrawVault, RevertOnWithdrawVaultClient};
 
 // ─── DrainVault ──────────────────────────────────────────────────────────────
 
@@ -255,71 +270,76 @@ impl RevertOnWithdrawVault {
 ///
 /// Also models a vault with a shortfall: `get_total_escrowed` can exceed
 /// the vault's real token balance after an overdrain.
-#[contract]
-pub struct DrainVault;
+mod drain_vault_impl {
+    use super::*;
 
-#[contractimpl]
-impl DrainVault {
-    pub fn initialize(env: Env, admin: Address, _token: Address, _max_pause_duration: u64) {
-        admin.require_auth();
-        env.storage().instance().set(&VaultKey::Admin, &admin);
-    }
+    #[contract]
+    pub struct DrainVault;
 
-    pub fn deposit(env: Env, from: Address, token: Address, tag: Tag, amount: i128) -> i128 {
-        from.require_auth();
-        let key = VaultKey::Escrow(token.clone(), tag.clone());
-        let current: i128 = env.storage().instance().get(&key).unwrap_or(0);
-        env.storage().instance().set(&key, &(current + amount));
-        let total_key = VaultKey::Total(token.clone());
-        let total: i128 = env.storage().instance().get(&total_key).unwrap_or(0);
-        env.storage().instance().set(&total_key, &(total + amount));
-        amount
-    }
+    #[contractimpl]
+    impl DrainVault {
+        pub fn initialize(env: Env, admin: Address, _token: Address, _max_pause_duration: u64) {
+            admin.require_auth();
+            env.storage().instance().set(&VaultKey::Admin, &admin);
+        }
 
-    /// No escrow-cap check: sets the ledger negative if `amount > balance`.
-    pub fn withdraw(env: Env, token: Address, tag: Tag, _to: Address, amount: i128) {
-        // no auth check — the drain vulnerability
-        let key = VaultKey::Escrow(token.clone(), tag.clone());
-        let current: i128 = env.storage().instance().get(&key).unwrap_or(0);
-        // deliberately allows negative escrow
-        env.storage().instance().set(&key, &(current - amount));
-        let total_key = VaultKey::Total(token.clone());
-        let total: i128 = env.storage().instance().get(&total_key).unwrap_or(0);
-        env.storage().instance().set(&total_key, &(total - amount));
-    }
+        pub fn deposit(env: Env, from: Address, token: Address, tag: Tag, amount: i128) -> i128 {
+            from.require_auth();
+            let key = VaultKey::Escrow(token.clone(), tag.clone());
+            let current: i128 = env.storage().instance().get(&key).unwrap_or(0);
+            env.storage().instance().set(&key, &(current + amount));
+            let total_key = VaultKey::Total(token.clone());
+            let total: i128 = env.storage().instance().get(&total_key).unwrap_or(0);
+            env.storage().instance().set(&total_key, &(total + amount));
+            amount
+        }
 
-    pub fn balance_of(env: Env, token: Address, tag: Tag) -> i128 {
-        env.storage()
-            .instance()
-            .get(&VaultKey::Escrow(token, tag))
-            .unwrap_or(0)
-    }
+        /// No escrow-cap check: sets the ledger negative if `amount > balance`.
+        pub fn withdraw(env: Env, token: Address, tag: Tag, _to: Address, amount: i128) {
+            // no auth check — the drain vulnerability
+            let key = VaultKey::Escrow(token.clone(), tag.clone());
+            let current: i128 = env.storage().instance().get(&key).unwrap_or(0);
+            // deliberately allows negative escrow
+            env.storage().instance().set(&key, &(current - amount));
+            let total_key = VaultKey::Total(token.clone());
+            let total: i128 = env.storage().instance().get(&total_key).unwrap_or(0);
+            env.storage().instance().set(&total_key, &(total - amount));
+        }
 
-    pub fn get_total_escrowed(env: Env, token: Address) -> i128 {
-        env.storage()
-            .instance()
-            .get(&VaultKey::Total(token))
-            .unwrap_or(0)
-    }
+        pub fn balance_of(env: Env, token: Address, tag: Tag) -> i128 {
+            env.storage()
+                .instance()
+                .get(&VaultKey::Escrow(token, tag))
+                .unwrap_or(0)
+        }
 
-    pub fn is_paused(_env: Env) -> bool { false }
-    pub fn get_admin(env: Env) -> Address {
-        env.storage().instance().get(&VaultKey::Admin).unwrap()
-    }
-    pub fn is_token_allowed(_env: Env, _token: Address) -> bool { true }
-    pub fn is_integrator(_env: Env, _addr: Address) -> bool { true }
-    pub fn set_token_allowed(_env: Env, _token: Address, _allowed: bool) {}
-    pub fn set_integrator(_env: Env, _integrator: Address, _allowed: bool) {}
-    pub fn transfer_tag(_env: Env, _token: Address, _from: Tag, _to: Tag, _amount: i128) {}
-    pub fn get_tag_owner(_env: Env, _tag: Tag) -> Option<Address> { None }
-    pub fn deposit_legacy(_env: Env, _from: Address, _id: u64, _amount: i128) -> i128 { 0 }
-    pub fn withdraw_legacy(_env: Env, _id: u64, _to: Address, _amount: i128) {}
-    pub fn balance_of_legacy(_env: Env, _id: u64) -> i128 { 0 }
-    pub fn legacy_tag(env: Env, id: u64) -> Tag {
-        Tag {
-            owner: env.storage().instance().get(&VaultKey::Admin).unwrap(),
-            kind: symbol_short!("legacy"),
-            id,
+        pub fn get_total_escrowed(env: Env, token: Address) -> i128 {
+            env.storage()
+                .instance()
+                .get(&VaultKey::Total(token))
+                .unwrap_or(0)
+        }
+
+        pub fn is_paused(_env: Env) -> bool { false }
+        pub fn get_admin(env: Env) -> Address {
+            env.storage().instance().get(&VaultKey::Admin).unwrap()
+        }
+        pub fn is_token_allowed(_env: Env, _token: Address) -> bool { true }
+        pub fn is_integrator(_env: Env, _addr: Address) -> bool { true }
+        pub fn set_token_allowed(_env: Env, _token: Address, _allowed: bool) {}
+        pub fn set_integrator(_env: Env, _integrator: Address, _allowed: bool) {}
+        pub fn transfer_tag(_env: Env, _token: Address, _from: Tag, _to: Tag, _amount: i128) {}
+        pub fn get_tag_owner(_env: Env, _tag: Tag) -> Option<Address> { None }
+        pub fn deposit_legacy(_env: Env, _from: Address, _id: u64, _amount: i128) -> i128 { 0 }
+        pub fn withdraw_legacy(_env: Env, _id: u64, _to: Address, _amount: i128) {}
+        pub fn balance_of_legacy(_env: Env, _id: u64) -> i128 { 0 }
+        pub fn legacy_tag(env: Env, id: u64) -> Tag {
+            Tag {
+                owner: env.storage().instance().get(&VaultKey::Admin).unwrap(),
+                kind: symbol_short!("legacy"),
+                id,
+            }
         }
     }
 }
+pub use drain_vault_impl::{DrainVault, DrainVaultClient};

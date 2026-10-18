@@ -17,4 +17,24 @@ pub enum DataKey {
     Feeders,
     PriceReport(Symbol, Address),
     AggregatedPrice(Symbol),
+    /// Per-symbol metadata: `SymbolMeta { max_staleness_override, decimals }`.
+    /// Presence of this key means the symbol is registered. Absence means
+    /// it is not supported and `report_price` must reject it.
+    SymbolMeta(Symbol),
+    /// Number of currently-registered symbols, capped at `MAX_SYMBOLS`.
+    SymbolCount,
+}
+
+/// Per-symbol metadata registered by the admin.
+///
+/// - `max_staleness_override`: if `Some`, overrides the contract-wide
+///   `max_staleness` for this symbol only (in seconds). `None` means
+///   "use the contract-wide setting".
+/// - `decimals`: the number of decimal places the price is expressed in
+///   (informational, for integrators — e.g. 7 = PRICE_PRECISION).
+#[contracttype]
+#[derive(Clone)]
+pub struct SymbolMeta {
+    pub max_staleness_override: Option<u64>,
+    pub decimals: u32,
 }

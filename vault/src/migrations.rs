@@ -18,7 +18,7 @@ use zenith_common::{require_admin_or_multisig, ActionClass, Auth};
 
 use crate::error::Error;
 use crate::types::DataKey;
-use crate::{ttl, Vault};
+use crate::{ttl, Vault, VaultClient};
 
 /// The layout this wasm reads and writes. Raise it by one in the same PR
 /// that adds the matching arm to `step`.

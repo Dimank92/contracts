@@ -33,6 +33,7 @@ soroban-sdk = { version = "21.0.0", features = ["testutils"] }
 multisig = { package = "zenith-multisig", path = "../multisig", features = ["testutils"] }
 # Adversarial mock contracts for negative-path cross-contract tests (issue #115).
 test_adversaries = { package = "zenith-test-adversaries", path = "../test_adversaries" }
+proptest = "1"
 
 [features]
 testutils = ["soroban-sdk/testutils"]

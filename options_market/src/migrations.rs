@@ -27,7 +27,7 @@ use zenith_common::{require_admin_or_multisig, ActionClass, Auth};
 
 use crate::error::Error;
 use crate::types::DataKey;
-use crate::{ttl, OptionsMarket};
+use crate::{ttl, OptionsMarket, OptionsMarketClient};
 
 /// The layout this wasm reads and writes. Raise it by one in the same PR
 /// that adds the matching arm to `step`.

@@ -1,7 +1,9 @@
 #![cfg(test)]
 
 use crate::{OptionSeries, OptionType, OptionsMarket, OptionsMarketClient, PositionSide};
-use multisig::{Multisig, MultisigClient};
+use test_adversaries::multisig::{
+    ThresholdMultisig as Multisig, ThresholdMultisigClient as MultisigClient,
+};
 use price_oracle::{PriceOracle, PriceOracleClient};
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger},
@@ -289,7 +291,7 @@ fn write_covered_call_locks_collateral_equal_to_notional() {
 
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &required);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &required, &0);
     let position = h.client.get_position(&pos_id).unwrap();
 
     assert!(position.side == PositionSide::Short);
@@ -312,7 +314,7 @@ fn write_cash_secured_put_requires_110_percent_of_strike() {
 
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &required);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &required, &0);
     let position = h.client.get_position(&pos_id).unwrap();
     assert_eq!(position.collateral_locked, required);
 }
@@ -326,7 +328,7 @@ fn write_option_rejects_undercollateralized_offer() {
     mint(&h, &writer, 700_000_000);
     // Offers exactly 100% of strike for a put, which needs 110%.
     h.client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 }
 
 #[test]
@@ -340,7 +342,7 @@ fn write_option_rejects_a_write_with_no_buyer_premium_to_draw_from() {
     // empty — write_option must not pay the writer out of its own
     // just-deposited collateral, which isn't a premium anyone paid.
     h.client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 }
 
 #[test]
@@ -355,13 +357,38 @@ fn write_option_succeeds_once_the_pool_partially_covers_it() {
     let writer = Address::generate(&h.env);
     mint(&h, &writer, 700_000_000);
     h.client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     // The writer's premium exactly drained the pool the lone buyer funded.
     assert_eq!(h.client.get_premium_pool(), 0);
 }
 
 // ─── settlement + exercise ──────────────────────────────────────────────────
+
+/// Writes a short covering every still-unmatched long contract in the
+/// series, so ITM longs are fully backed by writer collateral at
+/// settlement (#191). Must run before expiry; the buyers' premium already
+/// funds the writer's premium.
+fn back_with_writer(h: &Harness, series_id: u64) {
+    let (long_oi, short_oi) = h.client.get_series_side_oi(&series_id);
+    let contracts = long_oi - short_oi;
+    let series = h.client.get_series(&series_id).unwrap();
+    // 2x strike notional covers both the call and the 110% put requirement.
+    let collateral = 2 * series.strike_price * contracts / USDC_DECIMALS;
+    let writer = Address::generate(&h.env);
+    mint(h, &writer, collateral);
+    h.client
+        .write_option(&writer, &series_id, &contracts, &collateral, &0);
+}
+
+/// The vault tag options_market escrows a series' funds under.
+fn series_tag(h: &Harness, series_id: u64) -> vault::types::Tag {
+    vault::types::Tag {
+        owner: h.client.address.clone(),
+        kind: soroban_sdk::symbol_short!("series"),
+        id: series_id,
+    }
+}
 
 fn advance_past_expiry(h: &Harness, series_id: u64) {
     let series: OptionSeries = h.client.get_series(&series_id).unwrap();
@@ -379,13 +406,12 @@ fn exercise_itm_call_pays_out_the_intrinsic_value() {
         .client
         .buy_option(&buyer, &series_id, &USDC_DECIMALS, &(50 * USDC_DECIMALS));
 
+    // Writer collateral is what backs the long payout (#191).
+    back_with_writer(&h, series_id);
     advance_past_expiry(&h, series_id);
     // Settlement price above strike -> call finishes in the money.
     h.client.set_settlement_price(&series_id, &(750_000_000));
 
-    // Fund the contract's own vault so it can actually pay the intrinsic
-    // value out — in this test nothing else deposited into it first.
-    mint(&h, &h.client.address, 1_000 * USDC_DECIMALS);
 
     let before = balance(&h, &buyer);
     h.client.exercise(&buyer, &pos_id);
@@ -407,10 +433,11 @@ fn exercise_itm_put_pays_out_the_intrinsic_value() {
         .client
         .buy_option(&buyer, &series_id, &USDC_DECIMALS, &(50 * USDC_DECIMALS));
 
+    // Writer collateral is what backs the long payout (#191).
+    back_with_writer(&h, series_id);
     advance_past_expiry(&h, series_id);
     // Settlement price below strike -> put finishes in the money.
     h.client.set_settlement_price(&series_id, &(650_000_000));
-    mint(&h, &h.client.address, 1_000 * USDC_DECIMALS);
 
     let before = balance(&h, &buyer);
     h.client.exercise(&buyer, &pos_id);
@@ -458,7 +485,7 @@ fn exercise_rejects_a_short_position() {
     mint(&h, &writer, 700_000_000);
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     advance_past_expiry(&h, series_id);
     h.client.set_settlement_price(&series_id, &(750_000_000));
@@ -476,9 +503,10 @@ fn exercise_twice_is_rejected() {
         .client
         .buy_option(&buyer, &series_id, &USDC_DECIMALS, &(50 * USDC_DECIMALS));
 
+    // Writer collateral is what backs the long payout (#191).
+    back_with_writer(&h, series_id);
     advance_past_expiry(&h, series_id);
     h.client.set_settlement_price(&series_id, &(750_000_000));
-    mint(&h, &h.client.address, 1_000 * USDC_DECIMALS);
 
     h.client.exercise(&buyer, &pos_id);
     h.client.exercise(&buyer, &pos_id);
@@ -500,9 +528,10 @@ fn exercise_batch_pays_out_every_position_in_the_list() {
         .client
         .buy_option(&buyer, &series_id, &USDC_DECIMALS, &(50 * USDC_DECIMALS));
 
+    // Writer collateral is what backs the long payout (#191).
+    back_with_writer(&h, series_id);
     advance_past_expiry(&h, series_id);
     h.client.set_settlement_price(&series_id, &(750_000_000));
-    mint(&h, &h.client.address, 1_000 * USDC_DECIMALS);
 
     let before = balance(&h, &buyer);
     let total = h
@@ -548,9 +577,10 @@ fn exercise_batch_is_all_or_nothing() {
         .buy_option(&buyer, &series_id, &USDC_DECIMALS, &(50 * USDC_DECIMALS));
     let never_created_pos_id = 9_999u64;
 
+    // Writer collateral is what backs the long payout (#191).
+    back_with_writer(&h, series_id);
     advance_past_expiry(&h, series_id);
     h.client.set_settlement_price(&series_id, &(750_000_000));
-    mint(&h, &h.client.address, 1_000 * USDC_DECIMALS);
 
     let before = balance(&h, &buyer);
     let result = h.client.try_exercise_batch(
@@ -604,7 +634,7 @@ fn reclaim_collateral_returns_locked_minus_max_loss() {
     mint(&h, &writer, 700_000_000);
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     advance_past_expiry(&h, series_id);
     h.client.set_settlement_price(&series_id, &(750_000_000)); // ITM by 50
@@ -633,7 +663,7 @@ fn reclaim_collateral_returns_everything_when_otm() {
     mint(&h, &writer, 700_000_000);
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     advance_past_expiry(&h, series_id);
     h.client.set_settlement_price(&series_id, &(650_000_000)); // OTM
@@ -677,7 +707,7 @@ fn reclaim_collateral_twice_is_rejected() {
     mint(&h, &writer, 700_000_000);
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     advance_past_expiry(&h, series_id);
     h.client.set_settlement_price(&series_id, &(650_000_000));
@@ -697,10 +727,10 @@ fn reclaim_batch_pays_out_every_position_in_the_list() {
     mint(&h, &writer, 1_400_000_000);
     let pos_a = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
     let pos_b = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     advance_past_expiry(&h, series_id);
     h.client.set_settlement_price(&series_id, &(750_000_000)); // ITM by 50 each
@@ -735,7 +765,7 @@ fn reclaim_batch_is_all_or_nothing() {
     mint(&h, &writer, 700_000_000);
     let valid_pos = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
     let never_created_pos_id = 9_999u64;
 
     advance_past_expiry(&h, series_id);
@@ -821,7 +851,7 @@ fn full_lifecycle_covered_call_itm() {
     mint(&h, &writer, 700_000_000);
     let writer_pos = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     let series: OptionSeries = h.client.get_series(&series_id).unwrap();
     assert_eq!(series.open_interest, 2 * USDC_DECIMALS); // one long + one short
@@ -905,7 +935,7 @@ fn write_option_is_rejected_while_paused() {
     let writer = Address::generate(&h.env);
     mint(&h, &writer, 700_000_000);
     h.client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 }
 
 /// A pause must not trap funds already at risk: an existing writer can still
@@ -919,7 +949,7 @@ fn pause_does_not_block_settlement_of_existing_positions() {
     mint(&h, &writer, 700_000_000);
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     h.client.pause();
 
@@ -962,7 +992,7 @@ fn cancelled_series_refunds_writer_full_collateral() {
     mint(&h, &writer, 700_000_000);
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     h.client.cancel_series(&series_id);
 
@@ -1021,7 +1051,7 @@ fn cancel_series_rejects_an_already_cancelled_series() {
 fn setup_vault(h: &Harness) -> Address {
     let contract_id = h.env.register_contract(None, Vault);
     let client = VaultClient::new(&h.env, &contract_id);
-    client.initialize(&h.client.address, &h.token);
+    client.initialize(&h.client.address, &h.token, &(7 * 86_400u64));
     h.client.set_vault(&contract_id);
     contract_id
 }
@@ -1049,12 +1079,12 @@ fn escrow_then_claim_refund_from_vault_pays_buyer_net_of_fee() {
     assert_eq!(h.client.get_series_escrow(&series_id), 0);
     // ...and now sitting in the vault, tagged by series_id.
     let vault_client = VaultClient::new(&h.env, &vault_id);
-    assert_eq!(vault_client.balance_of(&series_id), 39_800_000);
+    assert_eq!(vault_client.balance_of_tagged(&h.token, &series_tag(&h, series_id)), 39_800_000);
 
     let before = balance(&h, &buyer);
     h.client.claim_refund_from_vault(&vault_id, &buyer, &pos_id);
     assert_eq!(balance(&h, &buyer) - before, 39_800_000);
-    assert_eq!(vault_client.balance_of(&series_id), 0);
+    assert_eq!(vault_client.balance_of_tagged(&h.token, &series_tag(&h, series_id)), 0);
     assert!(h.client.get_position(&pos_id).unwrap().is_settled);
 }
 
@@ -1080,7 +1110,7 @@ fn escrow_then_claim_refund_from_vault_pays_writer_full_collateral() {
     mint(&h, &writer, 700_000_000);
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     h.client.cancel_series(&series_id);
     h.client.escrow_series_to_vault(&vault_id, &series_id);
@@ -1163,7 +1193,7 @@ fn escrow_series_to_vault_only_moves_the_remaining_liability() {
     h.client.escrow_series_to_vault(&vault_id, &series_id);
     let vault_client = VaultClient::new(&h.env, &vault_id);
     // Only buyer_b's still-outstanding refund moved — not double pos_a's.
-    assert_eq!(vault_client.balance_of(&series_id), 39_800_000);
+    assert_eq!(vault_client.balance_of_tagged(&h.token, &series_tag(&h, series_id)), 39_800_000);
 
     let before = balance(&h, &buyer_b);
     h.client
@@ -1391,7 +1421,18 @@ fn setup_price_oracle(h: &Harness) -> Address {
 }
 
 fn report_price(h: &Harness, oracle_id: &Address, underlying: &Symbol, price: i128) {
+    use price_oracle::types::SymbolMeta;
     let client = PriceOracleClient::new(&h.env, oracle_id);
+    // Register the symbol if not already registered (required since #194)
+    if !client.is_supported(underlying) {
+        client.register_symbol(
+            underlying,
+            &SymbolMeta {
+                max_staleness_override: None,
+                decimals: 7,
+            },
+        );
+    }
     let feeder = Address::generate(&h.env);
     client.add_feeder(&feeder);
     client.report_price(&feeder, underlying, &price);
@@ -1871,7 +1912,7 @@ fn option_written_event_carries_position_and_collateral_data() {
 
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     let events = h.env.events().all();
     let (_, topics, data) = events.last().unwrap();
@@ -1897,11 +1938,10 @@ fn option_exercised_event_carries_settlement_price_and_payout() {
         .client
         .buy_option(&buyer, &series_id, &USDC_DECIMALS, &(50 * USDC_DECIMALS));
 
+    // Writer collateral is what backs the long payout (#191).
+    back_with_writer(&h, series_id);
     advance_past_expiry(&h, series_id);
     h.client.set_settlement_price(&series_id, &(750_000_000));
-    // Fund the contract's own vault so it can actually pay the intrinsic
-    // value out — nothing else deposited into it first.
-    mint(&h, &h.client.address, 1_000 * USDC_DECIMALS);
     h.client.exercise(&buyer, &pos_id);
 
     let events = h.env.events().all();
@@ -1965,7 +2005,7 @@ fn collateral_reclaimed_event_carries_position_and_amount() {
     mint(&h, &writer, 700_000_000);
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     advance_past_expiry(&h, series_id);
     h.client.set_settlement_price(&series_id, &(650_000_000)); // OTM for the call

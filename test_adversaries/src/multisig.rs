@@ -44,30 +44,35 @@ pub enum ActionClass {
 /// admin-gated function without the required quorum. Tests confirm that
 /// options_market / price_oracle / vault validate the multisig address
 /// (it must match the stored admin) rather than accepting any address.
-#[contract]
-pub struct AlwaysApproveMultisig;
+mod always_approve_multisig_impl {
+    use super::*;
 
-#[contractimpl]
-impl AlwaysApproveMultisig {
-    pub fn initialize(env: Env, signers: Vec<Address>, _threshold: u32, _approval_ttl: u64) {
-        env.storage().instance().set(&symbol_multisig("INIT"), &signers);
+    #[contract]
+    pub struct AlwaysApproveMultisig;
+
+    #[contractimpl]
+    impl AlwaysApproveMultisig {
+        pub fn initialize(env: Env, signers: Vec<Address>, _threshold: u32, _approval_ttl: u64) {
+            env.storage().instance().set(&symbol_multisig("INIT"), &signers);
+        }
+
+        /// Always returns `true`.
+        pub fn is_executable(_env: Env, _action_id: u64, _class: ActionClass) -> bool {
+            true
+        }
+
+        pub fn is_approved(_env: Env, _action_id: u64) -> bool { true }
+        pub fn approve(_env: Env, _signer: Address, _action_id: u64) {}
+        pub fn revoke(_env: Env, _signer: Address, _action_id: u64) {}
+        pub fn is_signer(_env: Env, _address: Address) -> bool { true }
+        pub fn get_signer_count(_env: Env) -> u32 { 1 }
+        pub fn get_threshold(_env: Env) -> u32 { 1 }
+        pub fn get_approval_ttl(_env: Env) -> u64 { 0 }
+        pub fn has_approved(_env: Env, _action_id: u64, _signer: Address) -> bool { true }
+        pub fn get_approval_count(_env: Env, _action_id: u64) -> u32 { u32::MAX }
     }
-
-    /// Always returns `true`.
-    pub fn is_executable(_env: Env, _action_id: u64, _class: ActionClass) -> bool {
-        true
-    }
-
-    pub fn is_approved(_env: Env, _action_id: u64) -> bool { true }
-    pub fn approve(_env: Env, _signer: Address, _action_id: u64) {}
-    pub fn revoke(_env: Env, _signer: Address, _action_id: u64) {}
-    pub fn is_signer(_env: Env, _address: Address) -> bool { true }
-    pub fn get_signer_count(_env: Env) -> u32 { 1 }
-    pub fn get_threshold(_env: Env) -> u32 { 1 }
-    pub fn get_approval_ttl(_env: Env) -> u64 { 0 }
-    pub fn has_approved(_env: Env, _action_id: u64, _signer: Address) -> bool { true }
-    pub fn get_approval_count(_env: Env, _action_id: u64) -> u32 { u32::MAX }
 }
+pub use always_approve_multisig_impl::{AlwaysApproveMultisig, AlwaysApproveMultisigClient};
 
 // ─── NeverApproveMultisig ────────────────────────────────────────────────────
 
@@ -77,30 +82,35 @@ impl AlwaysApproveMultisig {
 /// **Vulnerability exercised (issue #115):** Confirms that the `_via_multisig`
 /// path in each contract rejects the call and does not proceed with the
 /// admin action when the multisig hasn't approved it.
-#[contract]
-pub struct NeverApproveMultisig;
+mod never_approve_multisig_impl {
+    use super::*;
 
-#[contractimpl]
-impl NeverApproveMultisig {
-    pub fn initialize(env: Env, signers: Vec<Address>, _threshold: u32, _approval_ttl: u64) {
-        env.storage().instance().set(&symbol_multisig("INIT"), &signers);
+    #[contract]
+    pub struct NeverApproveMultisig;
+
+    #[contractimpl]
+    impl NeverApproveMultisig {
+        pub fn initialize(env: Env, signers: Vec<Address>, _threshold: u32, _approval_ttl: u64) {
+            env.storage().instance().set(&symbol_multisig("INIT"), &signers);
+        }
+
+        /// Always returns `false`.
+        pub fn is_executable(_env: Env, _action_id: u64, _class: ActionClass) -> bool {
+            false
+        }
+
+        pub fn is_approved(_env: Env, _action_id: u64) -> bool { false }
+        pub fn approve(_env: Env, _signer: Address, _action_id: u64) {}
+        pub fn revoke(_env: Env, _signer: Address, _action_id: u64) {}
+        pub fn is_signer(_env: Env, _address: Address) -> bool { false }
+        pub fn get_signer_count(_env: Env) -> u32 { 0 }
+        pub fn get_threshold(_env: Env) -> u32 { u32::MAX }
+        pub fn get_approval_ttl(_env: Env) -> u64 { 0 }
+        pub fn has_approved(_env: Env, _action_id: u64, _signer: Address) -> bool { false }
+        pub fn get_approval_count(_env: Env, _action_id: u64) -> u32 { 0 }
     }
-
-    /// Always returns `false`.
-    pub fn is_executable(_env: Env, _action_id: u64, _class: ActionClass) -> bool {
-        false
-    }
-
-    pub fn is_approved(_env: Env, _action_id: u64) -> bool { false }
-    pub fn approve(_env: Env, _signer: Address, _action_id: u64) {}
-    pub fn revoke(_env: Env, _signer: Address, _action_id: u64) {}
-    pub fn is_signer(_env: Env, _address: Address) -> bool { false }
-    pub fn get_signer_count(_env: Env) -> u32 { 0 }
-    pub fn get_threshold(_env: Env) -> u32 { u32::MAX }
-    pub fn get_approval_ttl(_env: Env) -> u64 { 0 }
-    pub fn has_approved(_env: Env, _action_id: u64, _signer: Address) -> bool { false }
-    pub fn get_approval_count(_env: Env, _action_id: u64) -> u32 { 0 }
 }
+pub use never_approve_multisig_impl::{NeverApproveMultisig, NeverApproveMultisigClient};
 
 // ─── SingleSignerMultisig ────────────────────────────────────────────────────
 
@@ -110,89 +120,94 @@ impl NeverApproveMultisig {
 ///
 /// `set_action_approved(action_id)` manually marks an action as executable
 /// for tests that need fine-grained control.
-#[contract]
-pub struct SingleSignerMultisig;
+mod single_signer_multisig_impl {
+    use super::*;
 
-#[contracttype]
-enum SingleSignerKey {
-    Signer,
-    Approved(u64),
-}
+    #[contract]
+    pub struct SingleSignerMultisig;
 
-#[contractimpl]
-impl SingleSignerMultisig {
-    pub fn initialize(env: Env, signer: Address, _approval_ttl: u64) {
-        env.storage()
-            .instance()
-            .set(&SingleSignerKey::Signer, &signer);
+    #[contracttype]
+    enum SingleSignerKey {
+        Signer,
+        Approved(u64),
     }
 
-    /// Manually mark `action_id` as approved for use in tests.
-    pub fn set_action_approved(env: Env, action_id: u64, approved: bool) {
-        env.storage()
-            .instance()
-            .set(&SingleSignerKey::Approved(action_id), &approved);
-    }
-
-    pub fn is_executable(env: Env, action_id: u64, _class: ActionClass) -> bool {
-        env.storage()
-            .instance()
-            .get(&SingleSignerKey::Approved(action_id))
-            .unwrap_or(false)
-    }
-
-    pub fn is_approved(env: Env, action_id: u64) -> bool {
-        env.storage()
-            .instance()
-            .get(&SingleSignerKey::Approved(action_id))
-            .unwrap_or(false)
-    }
-
-    pub fn approve(env: Env, signer: Address, action_id: u64) {
-        signer.require_auth();
-        let stored: Address = env
-            .storage()
-            .instance()
-            .get(&SingleSignerKey::Signer)
-            .unwrap();
-        if signer == stored {
+    #[contractimpl]
+    impl SingleSignerMultisig {
+        pub fn initialize(env: Env, signer: Address, _approval_ttl: u64) {
             env.storage()
                 .instance()
-                .set(&SingleSignerKey::Approved(action_id), &true);
+                .set(&SingleSignerKey::Signer, &signer);
+        }
+
+        /// Manually mark `action_id` as approved for use in tests.
+        pub fn set_action_approved(env: Env, action_id: u64, approved: bool) {
+            env.storage()
+                .instance()
+                .set(&SingleSignerKey::Approved(action_id), &approved);
+        }
+
+        pub fn is_executable(env: Env, action_id: u64, _class: ActionClass) -> bool {
+            env.storage()
+                .instance()
+                .get(&SingleSignerKey::Approved(action_id))
+                .unwrap_or(false)
+        }
+
+        pub fn is_approved(env: Env, action_id: u64) -> bool {
+            env.storage()
+                .instance()
+                .get(&SingleSignerKey::Approved(action_id))
+                .unwrap_or(false)
+        }
+
+        pub fn approve(env: Env, signer: Address, action_id: u64) {
+            signer.require_auth();
+            let stored: Address = env
+                .storage()
+                .instance()
+                .get(&SingleSignerKey::Signer)
+                .unwrap();
+            if signer == stored {
+                env.storage()
+                    .instance()
+                    .set(&SingleSignerKey::Approved(action_id), &true);
+            }
+        }
+
+        pub fn revoke(env: Env, _signer: Address, action_id: u64) {
+            env.storage()
+                .instance()
+                .set(&SingleSignerKey::Approved(action_id), &false);
+        }
+
+        pub fn is_signer(env: Env, address: Address) -> bool {
+            let stored: Option<Address> = env.storage().instance().get(&SingleSignerKey::Signer);
+            stored.map(|s| s == address).unwrap_or(false)
+        }
+
+        pub fn get_signer_count(_env: Env) -> u32 { 1 }
+        pub fn get_threshold(_env: Env) -> u32 { 1 }
+        pub fn get_approval_ttl(_env: Env) -> u64 { 0 }
+
+        pub fn has_approved(env: Env, action_id: u64, _signer: Address) -> bool {
+            env.storage()
+                .instance()
+                .get(&SingleSignerKey::Approved(action_id))
+                .unwrap_or(false)
+        }
+
+        pub fn get_approval_count(env: Env, action_id: u64) -> u32 {
+            let approved: bool = env
+                .storage()
+                .instance()
+                .get(&SingleSignerKey::Approved(action_id))
+                .unwrap_or(false);
+            if approved { 1 } else { 0 }
         }
     }
-
-    pub fn revoke(env: Env, _signer: Address, action_id: u64) {
-        env.storage()
-            .instance()
-            .set(&SingleSignerKey::Approved(action_id), &false);
-    }
-
-    pub fn is_signer(env: Env, address: Address) -> bool {
-        let stored: Option<Address> = env.storage().instance().get(&SingleSignerKey::Signer);
-        stored.map(|s| s == address).unwrap_or(false)
-    }
-
-    pub fn get_signer_count(_env: Env) -> u32 { 1 }
-    pub fn get_threshold(_env: Env) -> u32 { 1 }
-    pub fn get_approval_ttl(_env: Env) -> u64 { 0 }
-
-    pub fn has_approved(env: Env, action_id: u64, _signer: Address) -> bool {
-        env.storage()
-            .instance()
-            .get(&SingleSignerKey::Approved(action_id))
-            .unwrap_or(false)
-    }
-
-    pub fn get_approval_count(env: Env, action_id: u64) -> u32 {
-        let approved: bool = env
-            .storage()
-            .instance()
-            .get(&SingleSignerKey::Approved(action_id))
-            .unwrap_or(false);
-        if approved { 1 } else { 0 }
-    }
 }
+pub use single_signer_multisig_impl::{SingleSignerMultisig, SingleSignerMultisigClient};
 
 // ─── ExpiredApprovalMultisig ──────────────────────────────────────────────────
 
@@ -206,47 +221,52 @@ impl SingleSignerMultisig {
 /// fail even if quorum was previously reached, if the action's timelock
 /// has since expired. Confirms options_market / price_oracle / vault do not
 /// cache `is_executable`'s return value across ledgers.
-#[contract]
-pub struct ExpiredApprovalMultisig;
+mod expired_approval_multisig_impl {
+    use super::*;
 
-#[contracttype]
-enum ExpiredKey {
-    Signers,
-    ApprovalTime(u64),
+    #[contract]
+    pub struct ExpiredApprovalMultisig;
+
+    #[contracttype]
+    enum ExpiredKey {
+        Signers,
+        ApprovalTime(u64),
+    }
+
+    #[contractimpl]
+    impl ExpiredApprovalMultisig {
+        pub fn initialize(env: Env, signers: Vec<Address>, _threshold: u32) {
+            env.storage().instance().set(&ExpiredKey::Signers, &signers);
+        }
+
+        /// Record an approval timestamp so tests can set up state.
+        pub fn record_approval(env: Env, action_id: u64, timestamp: u64) {
+            env.storage()
+                .instance()
+                .set(&ExpiredKey::ApprovalTime(action_id), &timestamp);
+        }
+
+        /// Returns `false` — the approval is always expired (ttl was 1 second).
+        pub fn is_executable(_env: Env, _action_id: u64, _class: ActionClass) -> bool {
+            false // always expired
+        }
+
+        pub fn is_approved(_env: Env, _action_id: u64) -> bool { false }
+        pub fn approve(env: Env, _signer: Address, action_id: u64) {
+            env.storage()
+                .instance()
+                .set(&ExpiredKey::ApprovalTime(action_id), &env.ledger().timestamp());
+        }
+        pub fn revoke(_env: Env, _signer: Address, _action_id: u64) {}
+        pub fn is_signer(_env: Env, _address: Address) -> bool { true }
+        pub fn get_signer_count(_env: Env) -> u32 { 3 }
+        pub fn get_threshold(_env: Env) -> u32 { 2 }
+        pub fn get_approval_ttl(_env: Env) -> u64 { 1 } // 1 second → immediately expires
+        pub fn has_approved(_env: Env, _action_id: u64, _signer: Address) -> bool { false }
+        pub fn get_approval_count(_env: Env, _action_id: u64) -> u32 { 0 }
+    }
 }
-
-#[contractimpl]
-impl ExpiredApprovalMultisig {
-    pub fn initialize(env: Env, signers: Vec<Address>, _threshold: u32) {
-        env.storage().instance().set(&ExpiredKey::Signers, &signers);
-    }
-
-    /// Record an approval timestamp so tests can set up state.
-    pub fn record_approval(env: Env, action_id: u64, timestamp: u64) {
-        env.storage()
-            .instance()
-            .set(&ExpiredKey::ApprovalTime(action_id), &timestamp);
-    }
-
-    /// Returns `false` — the approval is always expired (ttl was 1 second).
-    pub fn is_executable(_env: Env, _action_id: u64, _class: ActionClass) -> bool {
-        false // always expired
-    }
-
-    pub fn is_approved(_env: Env, _action_id: u64) -> bool { false }
-    pub fn approve(env: Env, _signer: Address, action_id: u64) {
-        env.storage()
-            .instance()
-            .set(&ExpiredKey::ApprovalTime(action_id), &env.ledger().timestamp());
-    }
-    pub fn revoke(_env: Env, _signer: Address, _action_id: u64) {}
-    pub fn is_signer(_env: Env, _address: Address) -> bool { true }
-    pub fn get_signer_count(_env: Env) -> u32 { 3 }
-    pub fn get_threshold(_env: Env) -> u32 { 2 }
-    pub fn get_approval_ttl(_env: Env) -> u64 { 1 } // 1 second → immediately expires
-    pub fn has_approved(_env: Env, _action_id: u64, _signer: Address) -> bool { false }
-    pub fn get_approval_count(_env: Env, _action_id: u64) -> u32 { 0 }
-}
+pub use expired_approval_multisig_impl::{ExpiredApprovalMultisig, ExpiredApprovalMultisigClient};
 
 // ─── helper ──────────────────────────────────────────────────────────────────
 
@@ -259,12 +279,8 @@ fn symbol_multisig(s: &str) -> soroban_sdk::Symbol {
     let _ = s; // suppress unused-parameter warning in this shim
     // return a BytesN<32> or use a unit type instead —
     // for initialization we just store a bool flag.
-    soroban_sdk::Symbol::short("INIT")
+    soroban_sdk::symbol_short!("INIT")
 }
-
-// ─── re-export BytesN for action_id helpers in tests ─────────────────────────
-
-pub use soroban_sdk::BytesN;
 
 /// Convenience: build a 32-byte action id from a `u64` discriminant.
 /// The bytes are the little-endian u64 followed by 24 zero bytes.
@@ -273,3 +289,64 @@ pub fn action_id_from_u64(env: &Env, discriminant: u64) -> BytesN<32> {
     bytes[..8].copy_from_slice(&discriminant.to_le_bytes());
     BytesN::from_array(env, &bytes)
 }
+
+// ─── ThresholdMultisig ───────────────────────────────────────────────────────
+
+/// An honest M-of-N multisig speaking the exact protocol `zenith-common`'s
+/// `require_admin_or_multisig` calls: `is_executable(u64, ActionClass)`.
+/// `is_executable` is true once `threshold` distinct signers approved.
+///
+/// The production multisig keys actions by `BytesN<32>` and does not yet
+/// expose `is_executable`, so contract tests that exercise their
+/// `_via_multisig` paths against a real quorum use this instead.
+#[contracttype]
+enum ThresholdKey {
+    Signers,
+    Threshold,
+    Approvals(u64),
+}
+
+mod threshold_multisig_impl {
+    use super::*;
+
+    #[contract]
+    pub struct ThresholdMultisig;
+
+    #[contractimpl]
+    impl ThresholdMultisig {
+        pub fn initialize(env: Env, signers: Vec<Address>, threshold: u32, _approval_ttl: u64) {
+            env.storage().instance().set(&ThresholdKey::Signers, &signers);
+            env.storage().instance().set(&ThresholdKey::Threshold, &threshold);
+        }
+
+        pub fn approve(env: Env, signer: Address, action_id: u64) {
+            signer.require_auth();
+            let signers: Vec<Address> =
+                env.storage().instance().get(&ThresholdKey::Signers).unwrap();
+            if !signers.contains(&signer) {
+                panic!("not a signer");
+            }
+            let key = ThresholdKey::Approvals(action_id);
+            let mut approvals: Vec<Address> =
+                env.storage().instance().get(&key).unwrap_or(Vec::new(&env));
+            if !approvals.contains(&signer) {
+                approvals.push_back(signer);
+            }
+            env.storage().instance().set(&key, &approvals);
+        }
+
+        pub fn get_approval_count(env: Env, action_id: u64) -> u32 {
+            env.storage()
+                .instance()
+                .get::<_, Vec<Address>>(&ThresholdKey::Approvals(action_id))
+                .map(|a| a.len())
+                .unwrap_or(0)
+        }
+
+        pub fn is_executable(env: Env, action_id: u64, _class: ActionClass) -> bool {
+            let threshold: u32 = env.storage().instance().get(&ThresholdKey::Threshold).unwrap();
+            Self::get_approval_count(env, action_id) >= threshold
+        }
+    }
+}
+pub use threshold_multisig_impl::{ThresholdMultisig, ThresholdMultisigClient};

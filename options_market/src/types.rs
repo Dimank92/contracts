@@ -33,6 +33,20 @@ pub enum DataKey {
     Vault,
     /// Records which vault holds escrow for a specific series: series_id -> Address
     SeriesVault(u64),
+    /// `true` while the admin has halted new purchases/writes on a series
+    /// (#192). Absent means not halted. Never consulted by settlement or
+    /// claims.
+    SeriesHalted(u64),
+    /// `(long_open_interest, short_open_interest)` for a series, used to
+    /// pro-rate settlement between the two sides (#191).
+    SeriesSideOI(u64),
+    /// Writer collateral still backing a series: `+=` on every write,
+    /// `-=` on every settlement payout/reclaim and cancellation refund to a
+    /// writer. Settlement claims can never pay out more than this, so one
+    /// series can't consume another's funds (#191).
+    SeriesCollateral(u64),
+    /// The `price_oracle` contract `settle_series` reads (#191).
+    PriceOracle,
 }
 
 // ─── Data Types ───────────────────────────────────────────────────────────────

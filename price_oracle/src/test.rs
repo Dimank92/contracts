@@ -2,11 +2,14 @@
 
 extern crate std;
 
+use crate::types::SymbolMeta;
 use crate::{PriceOracle, PriceOracleClient};
-use multisig::{Multisig, MultisigClient};
+use test_adversaries::multisig::{
+    ThresholdMultisig as Multisig, ThresholdMultisigClient as MultisigClient,
+};
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger},
-    Address, BytesN, Env, Symbol, TryFromVal,
+    Address, Env, Symbol, TryFromVal,
 };
 
 struct Harness<'a> {
@@ -25,6 +28,17 @@ fn setup<'a>() -> Harness<'a> {
     client.initialize(&admin);
 
     Harness { env, client, admin }
+}
+
+/// Registers symbol "XLM" with 7 decimals, no staleness override.
+fn register_xlm(h: &Harness) {
+    h.client.register_symbol(
+        &Symbol::new(&h.env, "XLM"),
+        &SymbolMeta {
+            max_staleness_override: None,
+            decimals: 7,
+        },
+    );
 }
 
 #[test]
@@ -104,6 +118,131 @@ fn is_feeder_is_false_for_an_unauthorized_address() {
     assert!(!h.client.is_feeder(&stranger));
 }
 
+// ─── symbol registry (issue #194) ────────────────────────────────────────────
+
+#[test]
+fn register_symbol_makes_it_supported() {
+    let h = setup();
+    let xlm = Symbol::new(&h.env, "XLM");
+    assert!(!h.client.is_supported(&xlm));
+
+    register_xlm(&h);
+
+    assert!(h.client.is_supported(&xlm));
+}
+
+#[test]
+fn get_symbol_meta_returns_the_registered_metadata() {
+    let h = setup();
+    let xlm = Symbol::new(&h.env, "XLM");
+    register_xlm(&h);
+
+    let meta = h.client.get_symbol_meta(&xlm).unwrap();
+    assert_eq!(meta.decimals, 7);
+    assert!(meta.max_staleness_override.is_none());
+}
+
+#[test]
+fn get_symbol_meta_returns_none_for_unregistered_symbol() {
+    let h = setup();
+    let btc = Symbol::new(&h.env, "BTC");
+    assert!(h.client.get_symbol_meta(&btc).is_none());
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #12)")] // SymbolAlreadyRegistered
+fn register_symbol_rejects_a_duplicate() {
+    let h = setup();
+    register_xlm(&h);
+    register_xlm(&h); // second time must fail
+}
+
+#[test]
+fn remove_symbol_unregisters_it() {
+    let h = setup();
+    let xlm = Symbol::new(&h.env, "XLM");
+    register_xlm(&h);
+    assert!(h.client.is_supported(&xlm));
+
+    h.client.remove_symbol(&xlm);
+    assert!(!h.client.is_supported(&xlm));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #11)")] // SymbolNotRegistered
+fn remove_symbol_rejects_unregistered_symbol() {
+    let h = setup();
+    h.client.remove_symbol(&Symbol::new(&h.env, "XLM"));
+}
+
+#[test]
+fn remove_symbol_clears_aggregated_price_cache() {
+    let h = setup();
+    let xlm = Symbol::new(&h.env, "XLM");
+    register_xlm(&h);
+
+    let feeder = Address::generate(&h.env);
+    h.client.add_feeder(&feeder);
+    h.client.report_price(&feeder, &xlm, &1_200_000);
+
+    // Price is known before removal
+    assert!(h.client.get_price(&xlm).is_some());
+
+    h.client.remove_symbol(&xlm);
+
+    // After removal get_price immediately returns None (cache cleared)
+    assert!(h.client.get_price(&xlm).is_none());
+}
+
+#[test]
+fn symbol_can_be_re_registered_after_removal() {
+    let h = setup();
+    let xlm = Symbol::new(&h.env, "XLM");
+    register_xlm(&h);
+    h.client.remove_symbol(&xlm);
+    // Should not panic
+    register_xlm(&h);
+    assert!(h.client.is_supported(&xlm));
+}
+
+#[test]
+fn register_symbol_emits_symbol_registered_event() {
+    let h = setup();
+    let events_before = h.env.events().all().len();
+    register_xlm(&h);
+    assert!(h.env.events().all().len() > events_before);
+}
+
+#[test]
+fn remove_symbol_emits_symbol_removed_event() {
+    let h = setup();
+    let xlm = Symbol::new(&h.env, "XLM");
+    register_xlm(&h);
+
+    let events_before = h.env.events().all().len();
+    h.client.remove_symbol(&xlm);
+    let events = h.env.events().all();
+    assert!(events.len() > events_before);
+    let (_, _topics, data) = events.last().unwrap();
+    assert_eq!(Symbol::try_from_val(&h.env, &data).unwrap(), xlm);
+}
+
+#[test]
+fn symbol_with_per_symbol_staleness_override_is_stored() {
+    let h = setup();
+    let btc = Symbol::new(&h.env, "BTC");
+    h.client.register_symbol(
+        &btc,
+        &SymbolMeta {
+            max_staleness_override: Some(7_200), // 2 hour override
+            decimals: 8,
+        },
+    );
+    let meta = h.client.get_symbol_meta(&btc).unwrap();
+    assert_eq!(meta.max_staleness_override, Some(7_200));
+    assert_eq!(meta.decimals, 8);
+}
+
 // ─── report_price ────────────────────────────────────────────────────────────
 
 #[test]
@@ -111,6 +250,7 @@ fn report_price_stores_the_feeders_report() {
     let h = setup();
     let feeder = Address::generate(&h.env);
     h.client.add_feeder(&feeder);
+    register_xlm(&h);
 
     let xlm = Symbol::new(&h.env, "XLM");
     h.client.report_price(&feeder, &xlm, &1_200_000);
@@ -125,6 +265,7 @@ fn report_price_stores_the_feeders_report() {
 fn report_price_rejects_an_unauthorized_reporter() {
     let h = setup();
     let stranger = Address::generate(&h.env);
+    register_xlm(&h);
     h.client
         .report_price(&stranger, &Symbol::new(&h.env, "XLM"), &1_200_000);
 }
@@ -135,8 +276,20 @@ fn report_price_rejects_a_non_positive_price() {
     let h = setup();
     let feeder = Address::generate(&h.env);
     h.client.add_feeder(&feeder);
+    register_xlm(&h);
     h.client
         .report_price(&feeder, &Symbol::new(&h.env, "XLM"), &0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #11)")] // SymbolNotRegistered
+fn report_price_rejects_an_unregistered_symbol() {
+    let h = setup();
+    let feeder = Address::generate(&h.env);
+    h.client.add_feeder(&feeder);
+    // Deliberately do NOT register "XLM"
+    h.client
+        .report_price(&feeder, &Symbol::new(&h.env, "XLM"), &1_200_000);
 }
 
 #[test]
@@ -144,6 +297,7 @@ fn report_price_rejects_a_revoked_feeder() {
     let h = setup();
     let feeder = Address::generate(&h.env);
     h.client.add_feeder(&feeder);
+    register_xlm(&h);
     h.client.remove_feeder(&feeder);
 
     let result = h
@@ -168,6 +322,7 @@ fn get_latest_report_is_none_before_any_report() {
     let h = setup();
     let feeder = Address::generate(&h.env);
     h.client.add_feeder(&feeder);
+    register_xlm(&h);
     assert!(h
         .client
         .get_latest_report(&Symbol::new(&h.env, "XLM"), &feeder)
@@ -179,6 +334,14 @@ fn get_latest_report_is_none_before_any_report() {
 #[test]
 fn get_price_is_none_with_no_feeders() {
     let h = setup();
+    register_xlm(&h);
+    assert!(h.client.get_price(&Symbol::new(&h.env, "XLM")).is_none());
+}
+
+#[test]
+fn get_price_is_none_for_unregistered_symbol() {
+    let h = setup();
+    // No register_xlm — symbol is not in registry
     assert!(h.client.get_price(&Symbol::new(&h.env, "XLM")).is_none());
 }
 
@@ -188,6 +351,7 @@ fn get_price_matches_the_single_feeders_report() {
     let feeder = Address::generate(&h.env);
     h.client.add_feeder(&feeder);
     let xlm = Symbol::new(&h.env, "XLM");
+    register_xlm(&h);
     h.client.report_price(&feeder, &xlm, &1_200_000);
 
     assert_eq!(h.client.get_price(&xlm).unwrap(), 1_200_000);
@@ -197,6 +361,7 @@ fn get_price_matches_the_single_feeders_report() {
 fn get_price_is_the_median_across_several_feeders() {
     let h = setup();
     let xlm = Symbol::new(&h.env, "XLM");
+    register_xlm(&h);
     let prices = [1_000_000i128, 1_100_000, 1_050_000];
     for price in prices {
         let feeder = Address::generate(&h.env);
@@ -211,6 +376,7 @@ fn get_price_is_the_median_across_several_feeders() {
 fn get_price_ignores_a_stale_report() {
     let h = setup();
     let xlm = Symbol::new(&h.env, "XLM");
+    register_xlm(&h);
 
     let stale_feeder = Address::generate(&h.env);
     h.client.add_feeder(&stale_feeder);
@@ -233,6 +399,7 @@ fn get_price_ignores_a_stale_report() {
 fn get_price_ignores_a_revoked_feeders_old_report() {
     let h = setup();
     let xlm = Symbol::new(&h.env, "XLM");
+    register_xlm(&h);
 
     let feeder = Address::generate(&h.env);
     h.client.add_feeder(&feeder);
@@ -287,6 +454,7 @@ fn get_price_is_none_when_fresh_feeders_fall_short_of_the_quorum() {
     h.client.set_min_reports(&2);
 
     let xlm = Symbol::new(&h.env, "XLM");
+    register_xlm(&h);
     let feeder = Address::generate(&h.env);
     h.client.add_feeder(&feeder);
     h.client.report_price(&feeder, &xlm, &1_200_000);
@@ -302,6 +470,7 @@ fn get_price_returns_once_the_quorum_is_met() {
     h.client.set_min_reports(&2);
 
     let xlm = Symbol::new(&h.env, "XLM");
+    register_xlm(&h);
     let feeder_a = Address::generate(&h.env);
     let feeder_b = Address::generate(&h.env);
     h.client.add_feeder(&feeder_a);
@@ -319,6 +488,7 @@ fn a_feeder_going_stale_can_drop_below_the_quorum() {
     h.client.set_min_reports(&2);
 
     let xlm = Symbol::new(&h.env, "XLM");
+    register_xlm(&h);
     let feeder_a = Address::generate(&h.env);
     let feeder_b = Address::generate(&h.env);
     h.client.add_feeder(&feeder_a);
@@ -380,6 +550,7 @@ fn report_price_is_rejected_while_paused() {
     let h = setup();
     let feeder = Address::generate(&h.env);
     h.client.add_feeder(&feeder);
+    register_xlm(&h);
     h.client.pause();
     h.client
         .report_price(&feeder, &Symbol::new(&h.env, "XLM"), &1_200_000);
@@ -393,6 +564,7 @@ fn pause_does_not_block_get_price() {
     let feeder = Address::generate(&h.env);
     h.client.add_feeder(&feeder);
     let xlm = Symbol::new(&h.env, "XLM");
+    register_xlm(&h);
     h.client.report_price(&feeder, &xlm, &1_200_000);
 
     h.client.pause();
@@ -431,6 +603,7 @@ fn report_price_emits_a_price_reported_event() {
     let feeder = Address::generate(&h.env);
     h.client.add_feeder(&feeder);
     let xlm = Symbol::new(&h.env, "XLM");
+    register_xlm(&h);
 
     h.client.report_price(&feeder, &xlm, &1_200_000);
 
@@ -513,11 +686,6 @@ fn setup_multisig(h: &Harness) -> (Address, [Address; 3]) {
         ],
         &2,
         &0,
-        &multisig::Delays {
-            standard: 0,
-            critical: 0,
-        },
-        &None,
     );
     (contract_id, signers)
 }
@@ -759,8 +927,9 @@ fn remove_feeder_via_multisig_rejects_when_not_yet_approved() {
         .remove_feeder_via_multisig(&multisig_id, &aid(&h.env, 99), &feeder);
 }
 
-fn aid(env: &Env, n: u8) -> BytesN<32> {
-    BytesN::from_array(env, &[n; 32])
+/// Multisig action id (`zenith_common` keys actions by `u64`).
+fn aid(_env: &Env, n: u64) -> u64 {
+    n
 }
 
 // ─── TTL policy (issue #98) and archival restore (issue #99) ────────────────
@@ -840,6 +1009,7 @@ fn ttl_policy_keeps_read_prices_live() {
     let feeder = Address::generate(&h.env);
     let xlm = Symbol::new(&h.env, "XLM");
     h.client.add_feeder(&feeder);
+    register_xlm(&h);
     h.client.report_price(&feeder, &xlm, &1_000_000);
     for _ in 0..5 {
         advance_ledgers(&h.env, 20 * ttl::DAY_IN_LEDGERS);
@@ -863,6 +1033,7 @@ fn archived_price_report_restores_identically() {
     let feeder = Address::generate(&h.env);
     let xlm = Symbol::new(&h.env, "XLM");
     h.client.add_feeder(&feeder);
+    register_xlm(&h);
     h.client.report_price(&feeder, &xlm, &1_000_000);
     let before = h.client.get_price(&xlm);
     for _ in 0..5 {
@@ -897,4 +1068,221 @@ fn archived_instance_restores_feeders_and_admin() {
 
     assert_eq!(h.client.get_admin(), h.admin);
     assert!(h.client.is_feeder(&feeder));
+}
+
+
+// ─── symbol registry hardening (issue #194) ─────────────────────────────────
+
+fn meta(decimals: u32) -> SymbolMeta {
+    SymbolMeta {
+        max_staleness_override: None,
+        decimals,
+    }
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #14)")] // InvalidSymbol
+fn register_symbol_rejects_a_lowercase_symbol() {
+    let h = setup();
+    h.client.register_symbol(&Symbol::new(&h.env, "xlm"), &meta(7));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #14)")] // InvalidSymbol
+fn register_symbol_rejects_a_mixed_case_symbol() {
+    let h = setup();
+    h.client.register_symbol(&Symbol::new(&h.env, "Xlm"), &meta(7));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #14)")] // InvalidSymbol
+fn register_symbol_rejects_an_overlong_symbol() {
+    let h = setup();
+    h.client
+        .register_symbol(&Symbol::new(&h.env, "ABCDEFGHIJKLM"), &meta(7));
+}
+
+#[test]
+fn lowercase_alias_cannot_shadow_a_registered_symbol() {
+    let h = setup();
+    register_xlm(&h);
+    let res = h
+        .client
+        .try_register_symbol(&Symbol::new(&h.env, "xlm"), &meta(7));
+    assert!(res.is_err());
+    assert!(!h.client.is_supported(&Symbol::new(&h.env, "xlm")));
+    assert_eq!(h.client.get_symbol_count(), 1);
+}
+
+#[test]
+fn register_symbol_accepts_digits_and_underscores() {
+    let h = setup();
+    let sym = Symbol::new(&h.env, "USDC_2");
+    h.client.register_symbol(&sym, &meta(7));
+    assert!(h.client.is_supported(&sym));
+    // 12 chars: the longest accepted (and past SymbolSmall's 9).
+    let long = Symbol::new(&h.env, "ABCDEFGHIJKL");
+    h.client.register_symbol(&long, &meta(7));
+    assert!(h.client.is_supported(&long));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #15)")] // InvalidSymbolMeta
+fn register_symbol_rejects_a_zero_staleness_override() {
+    let h = setup();
+    h.client.register_symbol(
+        &Symbol::new(&h.env, "XLM"),
+        &SymbolMeta {
+            max_staleness_override: Some(0),
+            decimals: 7,
+        },
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #15)")] // InvalidSymbolMeta
+fn register_symbol_rejects_excessive_decimals() {
+    let h = setup();
+    h.client
+        .register_symbol(&Symbol::new(&h.env, "XLM"), &meta(crate::MAX_DECIMALS + 1));
+}
+
+#[test]
+fn symbol_count_tracks_register_and_remove() {
+    let h = setup();
+    assert_eq!(h.client.get_symbol_count(), 0);
+    register_xlm(&h);
+    h.client.register_symbol(&Symbol::new(&h.env, "BTC"), &meta(8));
+    assert_eq!(h.client.get_symbol_count(), 2);
+    h.client.remove_symbol(&Symbol::new(&h.env, "XLM"));
+    assert_eq!(h.client.get_symbol_count(), 1);
+}
+
+#[test]
+fn registry_is_capped_at_max_symbols() {
+    let h = setup();
+    for i in 0..crate::MAX_SYMBOLS {
+        let name = std::format!("S{}", i);
+        h.client.register_symbol(&Symbol::new(&h.env, &name), &meta(7));
+    }
+    assert_eq!(h.client.get_symbol_count(), crate::MAX_SYMBOLS);
+
+    let overflow = h
+        .client
+        .try_register_symbol(&Symbol::new(&h.env, "EXTRA"), &meta(7));
+    assert_eq!(
+        overflow.err().unwrap().unwrap(),
+        crate::error::Error::TooManySymbols.into()
+    );
+
+    // Removing one frees a slot.
+    h.client.remove_symbol(&Symbol::new(&h.env, "S0"));
+    h.client.register_symbol(&Symbol::new(&h.env, "EXTRA"), &meta(7));
+}
+
+#[test]
+fn register_and_remove_symbol_require_the_admin() {
+    let h = setup();
+    register_xlm(&h);
+    // Drop the blanket mock: from here on every require_auth() needs a
+    // matching signed authorization, and none is provided.
+    h.env.set_auths(&[]);
+    assert!(h
+        .client
+        .try_register_symbol(&Symbol::new(&h.env, "BTC"), &meta(8))
+        .is_err());
+    assert!(h
+        .client
+        .try_remove_symbol(&Symbol::new(&h.env, "XLM"))
+        .is_err());
+    assert!(h.client.is_supported(&Symbol::new(&h.env, "XLM")));
+    assert!(!h.client.is_supported(&Symbol::new(&h.env, "BTC")));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #11)")] // SymbolNotRegistered
+fn report_price_rejects_a_removed_symbol() {
+    let h = setup();
+    let xlm = Symbol::new(&h.env, "XLM");
+    register_xlm(&h);
+    let feeder = Address::generate(&h.env);
+    h.client.add_feeder(&feeder);
+    h.client.remove_symbol(&xlm);
+    h.client.report_price(&feeder, &xlm, &1_200_000);
+}
+
+#[test]
+fn register_and_remove_symbol_via_multisig_once_approved() {
+    let h = setup();
+    let (multisig_id, signers) = setup_multisig(&h);
+    let ms = MultisigClient::new(&h.env, &multisig_id);
+    let btc = Symbol::new(&h.env, "BTC");
+
+    ms.approve(&signers[0], &aid(&h.env, 40));
+    ms.approve(&signers[1], &aid(&h.env, 40));
+    h.client
+        .register_symbol_via_multisig(&multisig_id, &aid(&h.env, 40), &btc, &meta(8));
+    assert!(h.client.is_supported(&btc));
+
+    ms.approve(&signers[0], &aid(&h.env, 41));
+    ms.approve(&signers[1], &aid(&h.env, 41));
+    h.client
+        .remove_symbol_via_multisig(&multisig_id, &aid(&h.env, 41), &btc);
+    assert!(!h.client.is_supported(&btc));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #9)")] // Unauthorized
+fn register_symbol_via_multisig_rejects_without_quorum() {
+    let h = setup();
+    let (multisig_id, signers) = setup_multisig(&h);
+    let ms = MultisigClient::new(&h.env, &multisig_id);
+    ms.approve(&signers[0], &aid(&h.env, 42)); // 1 of 2 required
+    h.client.register_symbol_via_multisig(
+        &multisig_id,
+        &aid(&h.env, 42),
+        &Symbol::new(&h.env, "BTC"),
+        &meta(8),
+    );
+}
+
+/// Stand-in for options_market: checks oracle support via a real
+/// cross-contract call before "listing" an underlying.
+mod integrator {
+    use crate::PriceOracleClient;
+    use soroban_sdk::{contract, contractimpl, Address, Env, Symbol};
+
+    #[contract]
+    pub struct Integrator;
+
+    #[contractimpl]
+    impl Integrator {
+        pub fn can_list(env: Env, oracle: Address, underlying: Symbol) -> bool {
+            PriceOracleClient::new(&env, &oracle).is_supported(&underlying)
+        }
+
+        pub fn decimals(env: Env, oracle: Address, underlying: Symbol) -> Option<u32> {
+            PriceOracleClient::new(&env, &oracle)
+                .get_symbol_meta(&underlying)
+                .map(|m| m.decimals)
+        }
+    }
+}
+
+#[test]
+fn integrator_contract_can_query_symbol_support() {
+    let h = setup();
+    let probe_id = h.env.register_contract(None, integrator::Integrator);
+    let probe = integrator::IntegratorClient::new(&h.env, &probe_id);
+    let xlm = Symbol::new(&h.env, "XLM");
+
+    assert!(!probe.can_list(&h.client.address, &xlm));
+    assert_eq!(probe.decimals(&h.client.address, &xlm), None);
+
+    register_xlm(&h);
+    assert!(probe.can_list(&h.client.address, &xlm));
+    assert_eq!(probe.decimals(&h.client.address, &xlm), Some(7));
+
+    h.client.remove_symbol(&xlm);
+    assert!(!probe.can_list(&h.client.address, &xlm));
 }
