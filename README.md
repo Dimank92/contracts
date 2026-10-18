@@ -9,32 +9,26 @@ Soroban (Stellar smart contract) crates for the Zenith options protocol.
   Black-Scholes); writers lock collateral, buyers pay premium, settlement
   happens at expiry against an oracle-reported price.
 - [`price_oracle/`](price_oracle) — the on-chain logic behind that
-  oracle-reported price. options_market previously only ever trusted a
-  bare `oracle: Address` with nothing backing it; this contract is a
-  small set of admin-authorized feeders reporting per-symbol prices,
-  aggregated as a median across whatever's still fresh, gated by an
-  admin-settable minimum quorum of fresh reports (`min_reports`) so a
-  single feeder can't single-handedly determine the aggregate just
-  because every other feeder happened to go stale or get removed.
-  `options_market::set_settlement_price_from_oracle` cross-calls a live
-  price_oracle deployment to settle a series permissionlessly, as an
-  alternative to the original `set_settlement_price`'s trusted-oracle-
-  address flow.
-- [`vault/`](vault) — a per-(token, tag) escrow ledger for any number of
-  allowlisted tokens and integrator contracts,
-  motivated by a gap discovered while testing options_market: that
-  contract holds every writer's collateral and every buyer's premium in
-  one undifferentiated balance, with no accounting of which balance is
-  actually earmarked for which position. `deposit`/`withdraw` here are
-  scoped to a namespaced `tag` (e.g. `(options_market, "series", id)`), so a withdrawal
-  can never draw down more than was specifically deposited under that
-  tag — regardless of what the vault's raw token balance happens to be
-  from other tags' deposits. `options_market::escrow_series_to_vault` /
-  `claim_refund_from_vault` now wire this in for the specific gap it was
-  built for — see "Known gaps" below for the scope of that integration.
+  oracle-reported price: admin-authorized feeders report per-symbol
+  prices, and the aggregate is freshness-filtered, outlier-filtered (MAD
+  band), the median of what survives, and refused unless an
+  admin-settable quorum of fresh reports (`min_reports`) survives — so a
+  single feeder can't determine the price because every other feeder
+  went stale or was removed. `aggregate` records quorum-backed rounds.
+  `options_market::set_settlement_price_from_oracle` reads it to settle
+  a series permissionlessly. See "[Aggregation](#aggregation)".
+- [`vault/`](vault) — a per-tag escrow ledger for a single token,
+  motivated by options_market originally holding every writer's
+  collateral and every buyer's premium in one undifferentiated balance.
+  `deposit`/`withdraw` are scoped to a `u64` tag (options_market uses its
+  `series_id`), so a withdrawal can never draw down more than was
+  deposited under that tag. Series listed while a vault is pinned escrow
+  their writers' collateral in it from the first write.
 - [`timelock/`](timelock) — a delayed-execution admin (proposer /
-  executor / canceller roles, predecessor dependencies) meant to hold the
-  admin role on the other contracts so users always get an exit window.
+  executor / canceller roles, guardian until lock-in, predecessor
+  dependencies) that holds the admin role on the other contracts so users
+  always get an exit window. See
+  [docs/runbooks/timelock-handoff.md](docs/runbooks/timelock-handoff.md).
 - [`lp_pool/`](lp_pool) — a liquidity-provider pool that writes options
   on `options_market` on behalf of its depositors, with epoch-queued
   deposits and withdrawals. See [docs/lp_pool.md](docs/lp_pool.md).
@@ -49,22 +43,22 @@ Soroban (Stellar smart contract) crates for the Zenith options protocol.
   `approval_ttl` (set at `initialize`, zero = never expires) so a vote
   cast for a long-abandoned action can't silently still be sitting at
   threshold if that `action_id` is ever reused later. `options_market`,
-  `price_oracle`, and `vault` each cross-call a live Multisig deployment
-  as a permissionless alternative to their own admin-gated
-  functions, via `is_executable(action_id, class)`, which adds a
-  per-class timelock on top of `is_approved` (see "Timelock tiers"
-  below). It can also act as a Soroban **custom account**
+  `price_oracle`, and `vault` each cross-call their trusted Multisig
+  deployment's `is_approved(action_id)` as a permissionless alternative
+  to their own admin-gated functions. It can also act as a Soroban **custom account**
   (`__check_auth`) — set its address as a plain `admin` anywhere and
   authorize calls with M-of-N ed25519 signatures.
 - [`common/`](common) — `zenith-common`, a plain rlib (no `#[contract]`,
   no exported spec entries) shared by options_market, price_oracle and
-  vault: `require_admin_or_multisig(env, admin_key, Auth, class, err)`
-  with `enum Auth { Admin, Multisig(multisig, action_id) }`, plus pause
-  and admin-transfer helpers. Every admin function is a single
+  vault: `require_admin_or_multisig(env, admin_key, &Auth, class, err)`
+  with `enum Auth { Admin, Multisig(multisig, action_id: BytesN<32>) }`
+  (trusted multisig only, one call per approval), plus pause and two-step
+  admin-transfer helpers. Every admin function is a single
   `x_inner(env, Auth, ...)` called by both its admin-gated entrypoint
   and its `_via_multisig` twin, so no validation is duplicated between
-  twins. Also hosts the storage-migration framework
-  (`zenith_common::migrations`) and pinned-multisig upgrades
+  twins — see "[Admin functions and `Auth`](#admin-functions-and-auth)".
+  Also hosts the storage-migration framework
+  (`zenith_common::migrations`) and trusted-multisig upgrades
   (`zenith_common::upgrade`) that every contract uses. See
   [Upgrades and storage migrations](#upgrades-and-storage-migrations).
 - [`params/`](params) — a timelock-controlled registry of protocol
@@ -124,6 +118,29 @@ in sync with the `contractimport!` paths. Each contract's wasm is built on
 its own so dev-dependency `testutils` never reaches a release build —
 `check-wasm` verifies that on the artifacts.
 
+### Integration tests
+
+`integration_tests/` deploys the real contracts into one Soroban `Env`
+and drives them only through their public entrypoints, offline (no
+network). Shared deployment fixtures live in
+`integration_tests/tests/fixtures/mod.rs`.
+
+| Suite | Covers |
+|---|---|
+| `tests/lifecycle.rs` | The full option lifecycle: write with collateral escrowed in the vault, buy, feeders report, settle through `price_oracle`, both sides claim — plus settling before expiry, settling without quorum, a payout against a tag funded by a different series, rogue oracle/vault substitution, and a default-budget check. |
+| `tests/timelock_admin.rs` | The timelock as live admin: two-step hand-off, rejection before the delay, cancellation, predecessors, recovery from a wrong or misconfigured hand-off, and the emergency pause path. |
+| `tests/handover.rs` | The staged governance handover (deployer → multisig → timelock → governor → lock-in) and every rollback. |
+
+```sh
+cargo xtask test -p integration_tests   # builds the wasm options_market imports, then runs all three
+cargo test -p zenith-integration-tests --test lifecycle   # one suite, once the wasm exists
+```
+
+They run in CI with every other crate's tests (`cargo xtask test`), and
+fail to compile if an entrypoint they use is renamed or removed. See
+[docs/integration-tests.md](docs/integration-tests.md) for how to add a
+scenario.
+
 ### Wasm size budgets
 
 The CI `budgets` job builds every contract, optimizes it
@@ -140,28 +157,16 @@ scripts/wasm-size/check.sh --update options_market   # deliberate growth: explai
 
 ### Resource budget snapshots
 
-`options_market/src/test_resources.rs` measures CPU instructions,
-memory bytes, and read/write ledger entries and bytes for its public
-entrypoints (including the worst cases: `exercise_batch`,
-`reclaim_batch` and `prune_positions` at `MAX_BATCH_SIZE`, and a full
-`migrate_counters` page) and compares them with
-`options_market/snapshots/resources/*.json`. Any metric more than 5%
-above its snapshot fails the test (the tolerance can be set per
-scenario). CI runs it against the **optimized wasm** (`--features
-resource-wasm`), since native execution undercounts; each snapshot
-records which mode it was measured in, and modes are never compared.
-`scripts/resource-diff/resource_diff.py` posts the table to the job
-summary.
-
-```sh
-cd options_market
-cargo build --target wasm32-unknown-unknown --release
-cargo test --features resource-wasm resource_snapshots                       # compare
-UPDATE_SNAPSHOTS=1 cargo test --features resource-wasm resource_snapshots    # re-record
-```
-
-The measuring and comparing lives in `tools/resource-snapshot`, so
-other crates can add the same `test_resources` module.
+The measuring and comparing harness lives in `tools/resource-snapshot`
+(CPU instructions, memory bytes, read/write ledger entries and bytes per
+entrypoint, compared against `snapshots/resources/*.json` with a 5%
+tolerance; run against the optimized wasm with `--features
+resource-wasm`, since native execution undercounts).
+`options_market/src/test_resources.rs` was written for a later
+options_market layout (pruning, `migrate_counters`) that isn't part of
+this build, so it is not compiled and no snapshots are recorded yet.
+`integration_tests/tests/lifecycle.rs` checks that the heaviest
+cross-contract calls fit the default budget in the meantime.
 
 Every event any of these four contracts publishes has a test that
 decodes its actual payload via `TryFromVal` (topics and data), not
@@ -189,29 +194,16 @@ case is replayed on every future run.
 | `options_market::math::calc_fee` | `0 <= fee <= amount` for `bps <= 10_000`; equals `floor(amount × bps / 10_000)`; monotonic in amount and in rate; zero when either argument is zero; on the whole `i128` domain, returns the checked result or fails exactly where `amount × bps` overflows |
 | `options_market::math::calc_payout` | non-negative; equals `floor(contracts × intrinsic / PRICE_PRECISION)`; zero at or out of the money; calls non-decreasing and puts non-increasing in settlement price; monotonic in contracts; additive in contracts within 1 unit; scaling contracts by k scales the payout within k − 1; call(K, S) = put(S, K), and at most one side is non-zero; on the whole `i128` domain, returns the checked result or fails exactly on overflow |
 | `options_market::rounding_policy::SafeMathRounding::mul_div_{floor,ceil}` | exact floor and exact ceil; `ceil − floor` is 0 on an exact division and 1 otherwise; operands commute; `ceil(x) = −floor(−x)`; monotonic in the numerator; `mul_div(a, d, d) = a`; zero denominator is `None`; never panics on the whole `i128` domain and returns `None` on overflow, including `i128::MIN / −1` |
-| `price_oracle::math::median` | bounded by the min and max; permutation invariant; equal to the value for a constant input; at least half the reports on each side; monotonic in each report; shifting every report by c shifts the median by c; one outlier can't move it outside the other reports' range; on the whole `i128` domain, returns the correct value or fails exactly where averaging the middle pair overflows |
-| `price_oracle::outlier_filter::OutlierFilter::compute_robust_price` (MAD) | `None` for no reports; result bounded by the min and max; MAD ≥ 0; permutation invariant; for a constant input, returns that price with MAD 0; keeps a strict majority for k ≥ 1; monotonic in k; shifting by c shifts the price by c and leaves MAD and the kept set unchanged; never panics on the whole `i128` domain |
+| `price_oracle::math::median` | bounded by the min and max; permutation invariant; equal to the value for a constant input; at least half the reports on each side; monotonic in each report; shifting every report by c (of either sign) shifts the median by c; one outlier can't move it outside the other reports' range; on the whole `i128` domain, never panics and returns exactly the round-down midpoint |
+| `price_oracle::outlier_filter::aggregate` (MAD filter → median → quorum) | the price lies within `[min, max]` of the surviving reports; survivors are a subset of the input and `used + discarded` = input count; permutation invariant; a constant input aggregates to itself with nothing discarded; at least half the reports survive for k ≥ 1; monotonic in k; translation-equivariant without the band floor; quorum succeeds exactly when survivors ≥ `min_reports`; never panics for any input, `k`, band or quorum |
 | `streams::math::mul_div_floor` | exact floor; operands commute; monotonic in the numerator and non-increasing in the divisor; `b <= c ⇒ result <= a`; fails exactly on overflow or a zero divisor, as documented |
 
 The "fails exactly on overflow" properties pin down today's
-panic-on-overflow behaviour of `calc_fee`, `calc_payout`, and `median`.
+panic-on-overflow behaviour of `calc_fee` and `calc_payout`.
 Once those functions return typed errors, these properties should be
 tightened to `Ok(correct)` or `Err(overflow)` with no panic. TWAP and
 Black-Scholes helpers don't exist in this repo yet, so their suites
 should come with them. Kani proofs are tracked separately.
-
-## Deploying
-
-```sh
-soroban contract deploy \
-  --wasm target/wasm32-unknown-unknown/release/
-
-Every event any of these four contracts publishes has a test that
-decodes its actual payload via `TryFromVal` (topics and data), not
-just a test that confirms an event fired — the intent being that
-anything an off-chain indexer would need to parse out of an event is
-pinned down by a test, so a change to a tuple's field order or type
-shows up as a test failure rather than as a silently broken indexer.
 
 ## Deploying
 
@@ -286,7 +278,7 @@ including how to author a step: [`docs/migrations.md`](docs/migrations.md).
 | `migrate_batch(cursor, limit) -> u32` | Permissionless. Continues a migration whose step paginated, from exactly the cursor it stopped at (`limit` ≤ 200). |
 | `schema_version()` / `migration_state()` | Stored layout version and `(target, cursor)` while a migration is in flight. |
 | `upgrade(new_wasm_hash)` | options_market, price_oracle, vault: admin swaps the wasm, keeping address and storage. |
-| `upgrade_via_multisig(action_id, new_wasm_hash)` | price_oracle, vault: authorized only by the multisig pinned with `set_upgrade_multisig`, and only for `action_id == upgrade_action_id(new_wasm_hash)`, so approvals bind to one wasm on one contract. `Critical` class. |
+| `upgrade_via_multisig(action_id: BytesN<32>, new_wasm_hash)` | options_market, price_oracle, vault: authorized only by the trusted multisig (`set_multisig`), and only for `action_id == upgrade_action_id(new_wasm_hash)` (`sha256("zenith.upgrade" ‖ contract ‖ hash)`), so approvals bind to one wasm on one contract. `Critical` class; one-shot like every approval. |
 | multisig `approve_upgrade` / `revoke_upgrade` / `upgrade` | The multisig upgrades itself only after **every** signer approves the exact hash, plus a 3-day `UPGRADE_DELAY`. Its signer set is immutable by design, and an upgrade could change it. |
 
 While the stored version lags the code (right after an upgrade) or a
@@ -298,396 +290,275 @@ every contract: 100 `SchemaVersionMismatch`, 101 `InvalidMigrationTarget`,
 102 `MigrationInProgress`, 103 `NoMigrationInProgress`,
 104 `InvalidMigrationBatch`.
 
+## Admin functions and `Auth`
+
+Every admin function on options_market, price_oracle and vault is a thin
+entrypoint over one shared body, `x_inner(env, auth: Auth, ...)`, whose
+first statement is
+`zenith_common::require_admin_or_multisig(env, &DataKey::Admin, &auth, class, Error::Unauthorized)`.
+Each function has two entrypoints that differ only in the `Auth` they pass:
+
+| Entrypoint | `Auth` | Who authorizes |
+|---|---|---|
+| `f(args...)` | `Auth::Admin` | The stored admin's signature (`admin.require_auth()`). The admin can be a key, a multisig account, or a contract such as the timelock (which satisfies it by invoking the call itself). |
+| `f_via_multisig(multisig_contract, action_id: BytesN<32>, args...)` | `Auth::Multisig(multisig_contract, action_id)` | Anyone may submit it, but `multisig_contract` must be the contract's **trusted multisig** (`set_multisig`, admin only) and must report `is_approved(action_id)`. Each approval authorizes exactly **one** call on that contract: it is recorded as used and can't be replayed for the same or any other function. |
+
+Auth is resolved before any other state is read, so validation (caps,
+bounds, pause checks) is identical on both paths — approval changes who
+can call a function, never what a valid call looks like. A pause is
+never bypassed by the multisig path. With no trusted multisig set, every
+`_via_multisig` entrypoint fails with `Unauthorized`.
+
+`class` (`ActionClass`) is recorded in a `multisig_approval_used(multisig,
+action_id; class)` event: `Emergency` for pause/unpause and migrations,
+`Standard` for configuration, `Critical` for admin transfer, upgrades,
+oracle/vault re-pointing and moving escrow. The multisig exposes a single
+approval tier today, so the class doesn't change whether an approval is
+accepted.
+
+**Admin transfer is two-step** on all three contracts:
+`transfer_admin(new_admin)` (or its `_via_multisig` twin) only records
+`new_admin` as pending (`admin_transfer_proposed` event); control moves
+when `new_admin` calls `accept_admin()` (`admin_transferred` event).
+Proposing the current admin cancels a pending transfer;
+`get_pending_admin()` shows it. A mistyped or unusable address therefore
+never strands a contract.
+
 ## `options_market` reference
 
 All amounts are fixed-point at `PRICE_PRECISION` (1e7) unless noted —
 e.g. `10_000_000` means "1.0 contracts" or "1.0 units of the underlying."
 Rates (implied vol, collateral ratio, fee bps) use their own precision as
-documented per field.
+documented per field. See [Admin functions and `Auth`](#admin-functions-and-auth)
+for how every admin function below is authorized.
 
 ### Admin
 
+Each row has a `_via_multisig(multisig_contract, action_id, ...)` twin
+with the same arguments after the first two, except `accept_vault_admin`.
+
+| Function | Class | Description |
+|---|---|---|
+| `initialize(admin, oracle, collateral_token, fee_recipient)` | — | One-time setup (`AlreadyInitialized` on a second call). `oracle` is the settlement oracle, see `set_oracle`. |
+| `set_fee_rate(new_bps)` | Standard | Protocol fee in basis points, capped at `MAX_FEE_RATE_BPS` (1000 = 10%). |
+| `set_params_registry(registry)` | Standard | Points fee rate and settlement window at a `params` registry, see "`params` reference". |
+| `set_oracle(oracle)` | Critical | Re-points the settlement oracle: the account that may sign `set_settlement_price`, and the only `price_oracle` contract `set_settlement_price_from_oracle` reads. |
+| `set_vault(vault)` | Critical | Pins the vault that series listed from now on escrow writer collateral in. Series keep the vault they were listed with. |
+| `transfer_admin(new_admin)` | Critical | Step one of the two-step transfer; `accept_admin()` completes it. |
+| `pause()` / `unpause()` | Emergency | Blocks `create_series`, `update_premium`, `buy_option`, `write_option`. Never blocks exercise, settlement, reclaims or refunds — a pause winds positions down, it doesn't trap funds. |
+| `create_series(underlying, option_type, strike_price, expiry, premium, implied_vol)` | Standard | Lists a series. `expiry` > 1 hour out, `strike_price` and `premium` > 0, `implied_vol` >= 0 (`InvalidSeriesParams`). At most `MAX_SERIES_PER_UNDERLYING` (50) per underlying (`TooManySeriesForUnderlying`). A series listed while a vault is pinned is **vault-backed**, see below. |
+| `update_premium(series_id, new_premium, new_implied_vol)` | Standard | Re-prices an Active series; `new_premium` > 0. |
+| `cancel_series(series_id)` | Standard | Cancels an Active series; holders then claim refunds individually. |
+| `accept_vault_admin(vault)` | Critical (admin only) | Accepts a pending admin transfer of `vault` to this contract, since only this contract can authorize the vault's `accept_admin`. |
+| `upgrade(new_wasm_hash)` / `upgrade_via_multisig(action_id, new_wasm_hash)` | Critical | See [Upgrades](#upgrades-and-storage-migrations). |
+| `set_multisig(multisig)` / `migrate(from, to)` | Critical / — | Trusted multisig and schema migration, same as every contract. |
+
+### Settlement
+
 | Function | Description |
 |---|---|
-| `initialize(admin, oracle, collateral_token, fee_recipient)` | One-time setup. Panics with `AlreadyInitialized` if called twice. |
-| `transfer_admin(new_admin)` | Hands off control. Requires the **current** admin's signature. |
-| `transfer_admin_via_multisig(multisig_contract, action_id, new_admin)` | Permissionless alternative to `transfer_admin`: cross-calls a deployed `multisig` and checks `is_executable(action_id, class)` instead of requiring the current admin's own signature. |
-| `set_fee_rate(new_bps)` | Sets the protocol fee (basis points). Capped at `MAX_FEE_RATE_BPS` (1000 = 10%). |
-| `set_fee_rate_via_multisig(multisig_contract, action_id, new_bps)` | Permissionless alternative to `set_fee_rate`: cross-calls a deployed `multisig` and checks `is_executable(action_id, class)` instead of requiring the admin's own signature. Still enforces `MAX_FEE_RATE_BPS` — approval changes who can call it, not what rate is valid. |
-| `pause()` / `unpause()` | Emergency stop. Blocks `create_series`, `update_premium`, `buy_option`, `write_option`. Does **not** block `exercise`, `set_settlement_price`, or `reclaim_collateral` — a pause winds existing positions down, it doesn't trap funds. |
-| `pause_via_multisig(multisig_contract, action_id)` / `unpause_via_multisig(...)` | Permissionless alternative to `pause`/`unpause`: cross-calls a deployed `multisig` and checks `is_executable(action_id, class)` instead of requiring the admin's own signature. No `require_auth()` — the M-of-N approval itself is what authorizes the call. |
-| `upgrade(new_wasm_hash)` | Swaps the contract's executable via Soroban's deployer, keeping the same address, ID, and storage. |
-| `upgrade_via_multisig(multisig_contract, action_id, new_wasm_hash)` | Permissionless alternative to `upgrade`: cross-calls a deployed `multisig` and checks `is_approved(action_id)` instead of requiring the admin's own signature. Arguably the highest-value place for this pattern in the whole codebase — a contract's executable is the single most consequential thing about it. |
-| `create_series(underlying, option_type, strike_price, expiry, premium, implied_vol)` | Lists a new series. `expiry` must be > 1 hour out; `premium` must be > 0 (`InvalidSeriesParams`). Capped at `max_active_series` (default `DEFAULT_MAX_ACTIVE_SERIES` = 50) **concurrently active** series per underlying symbol (`TooManySeriesForUnderlying`); see "Active-series cap" below. Each `(underlying, option_type, strike_price, expiry)` spec can be listed once until its series is pruned (a cancelled or settled series still owns it): a second listing fails with `DuplicateSeries`. Blocked with `MigrationPending` until `migrate_counters` finishes after an upgrade. |
-| `create_series_via_multisig(multisig_contract, action_id, underlying, option_type, strike_price, expiry, premium, implied_vol)` | Permissionless alternative to `create_series`: cross-calls a deployed `multisig` and checks `is_approved(action_id)` instead of requiring the admin's own signature. Same validation and active-series cap apply. |
-| `update_premium(series_id, new_premium, new_implied_vol)` | Re-prices an Active series. `new_premium` must be > 0 (`InvalidSeriesParams`). |
-| `update_premium_via_multisig(multisig_contract, action_id, series_id, new_premium, new_implied_vol)` | Permissionless alternative to `update_premium`: cross-calls a deployed `multisig` and checks `is_approved(action_id)` instead of requiring the admin's own signature. |
-| `cancel_series(series_id)` | Cancels an Active series. Position holders then call `claim_refund` individually — the admin doesn't push funds to everyone in one call, since that would scale badly against Soroban's per-call resource limits. |
-| `set_max_active_series(cap)` / `set_max_active_series_via_multisig(multisig_contract, action_id, cap)` | Sets the per-underlying cap on concurrently active series, `1..=MAX_ACTIVE_SERIES_CEILING` (500), else `InvalidActiveSeriesCap`. A params registry value for `max_ser` overrides it on the next registry version change. Multisig class: Standard. |
-| `cancel_series_via_multisig(multisig_contract, action_id, series_id)` | Permissionless alternative to `cancel_series`: cross-calls a deployed `multisig` and checks `is_executable(action_id, class)` instead of requiring the admin's own signature. Cancelling disrupts every open position in a series, so gating it behind M-of-N is at least as warranted as pause. |
+| `set_settlement_price(series_id, price)` | The trusted oracle **account** signs a price after expiry. |
+| `set_settlement_price_from_oracle(series_id, oracle_contract)` | Permissionless: anyone settles an expired series from the configured `price_oracle`'s `get_price` (freshness → outlier filter → median → quorum). `oracle_contract` must equal the configured oracle (`Unauthorized` otherwise), so a caller can't settle against an oracle of their choosing. `PriceNotSet` when the oracle has no quorum-backed price. |
 
-### Oracle
-
-| Function | Description |
-|---|---|
-| `set_settlement_price(series_id, price)` | The trusted-oracle-address flow: whatever address was set as `oracle` at `initialize` asserts a price directly. Records it and flips the series to `Settled`. One-shot: an already Settled series fails with `AlreadySettled`, a Cancelled one with `SeriesNotActive`. Records the settlement time as the series' retention anchor. |
-| `set_settlement_price_from_oracle(series_id, oracle_contract)` | The permissionless alternative: anyone can settle an expired series by pointing at a live `price_oracle` deployment and letting it supply the price via a cross-contract call. No signature required — the price is already backed by that contract's own feeder-authenticated aggregate. |
+Both are one-shot: `AlreadySettled` for a Settled series, `SeriesNotActive`
+for a Cancelled one, `SeriesNotExpired` before expiry, `PriceNotSet` for a
+non-positive price.
 
 ### Traders
 
 | Function | Description |
 |---|---|
-| `buy_option(buyer, series_id, contracts, max_premium)` | Opens a Long position. `max_premium` is slippage protection. Premium (net of the protocol fee) funds the pool `write_option` pays writers from. |
-| `write_option(writer, series_id, contracts, collateral_amount, min_premium)` | Opens a Short position. Collateral: notional value for calls, 110% of strike for puts. Premium is paid out of the pool buyers have funded — `InsufficientPremiumPool` if no buyer has paid in enough yet (a write can't be paid a "premium" out of its own just-deposited collateral). `min_premium` is slippage protection: `PremiumBelowMinimum` if the net premium the writer would receive (after the protocol fee) is below it, so an `update_premium` cut or fee increase ordered ahead of the write can't underpay the writer. Pass `0` to opt out. |
-| `exercise(owner, position_id)` | Long-side payout after expiry, within the 24h settlement window, if in the money. The 24h settlement window is a soft deadline (longs remain claimable until the 90-day forfeiture window). |
-| `exercise_batch(owner, position_ids)` | Same as `exercise`, for every id in `position_ids` in one call — for an owner with several long positions who'd otherwise need one transaction per position. All-or-nothing (any single id failing `exercise`'s own checks aborts the whole batch) and capped at `MAX_BATCH_SIZE` (25). Returns the summed payout. |
- 24h settlement window, if in the money. The 24h settlement window is a soft deadline (longs remain claimable until the 90-day forfeiture window). |
-| `exercise_batch(owner, position_ids)` | Same as `exercise`, for every id in `position_ids` in one call — for an owner with several long positions who'd otherwise need one transaction per position. All-or-nothing (any single id failing `exercise`'s own checks aborts the whole batch) and capped at `MAX_BATCH_SIZE` (25). Returns the summed payout. |
-| `buy_batch(buyer, orders)` | `buy_option` for up to `MAX_BATCH_SIZE` (25) `(series_id, contracts, max_premium)` orders — e.g. a strangle or ladder — with ONE premium pull and ONE fee transfer for the whole batch. Same per-order validation as `buy_option` (shared internals), orders applied in the given order (duplicate series allowed), all-or-nothing, one `option_bought` event per order. Returns the new position ids. ~51% less CPU than 5 separate `buy_option` calls in the test harness. |
-| `write_batch(writer, orders)` | `write_option` for up to 25 `(series_id, contracts, collateral_amount)` orders, with ONE collateral pull and ONE premium payout. Orders draw on the premium pool strictly in order; all-or-nothing; one `option_written` event per order. |
-| `settle_long(position_id)` | Permissionless auto-exercise / keeper settlement for in-the-money longs after settlement. Anyone can call; payout is unconditionally transferred to the position owner. |
-| `sweep_forfeited(position_id)` | Admin entrypoint to sweep unexercised ITM long payouts after the 90-day forfeiture deadline to the protocol treasury/fee recipient with a `payout_forfeited` event. |
+| `buy_option(buyer, series_id, contracts, max_premium) -> position_id` | Opens a Long. `max_premium` is slippage protection. The fee goes to `fee_recipient`; the rest funds the premium pool writers are paid from. |
+| `write_option(writer, series_id, contracts, collateral_amount, min_premium) -> position_id` | Opens a Short. Collateral: notional at the last settlement price of the underlying (or the strike) for calls, 110% of strike notional for puts. The writer's premium (net of fee) comes out of the pool buyers funded — `InsufficientPremiumPool` if it can't cover it, `PremiumBelowMinimum` below `min_premium` (pass `0` to opt out). |
+| `exercise(owner, position_id) -> payout` / `exercise_batch(owner, ids)` | In-the-money longs after expiry, within the settlement window (24h, or the registry's `settle_w`). Batches are all-or-nothing, up to `MAX_BATCH_SIZE` (25). |
+| `reclaim_collateral(writer, position_id) -> amount` / `reclaim_batch(writer, ids)` | After settlement: collateral minus what the position's contracts owe at the settlement price. |
+| `claim_refund(owner, position_id)` | Cancelled series: longs get premium back net of the fee they paid; shorts get their full collateral. |
+| `escrow_series_to_vault(vault_contract, series_id)` | Permissionless, Cancelled series only: moves the refund liability still held in this contract's own balance into the series' vault (or the pinned vault for a series without one; `UnauthorizedVault` for any other) under tag `series_id`, then checks the tag grew by exactly that much. |
+| `claim_refund_from_vault(vault_contract, owner, position_id)` | `claim_refund`, paid from the series' vault tag. `vault_contract` must be the vault recorded for the series. |
 
-| `reclaim_collateral(writer, position_id)` | Short-side payout after settlement: locked collateral minus the max loss paid out to longs. |
-| `reclaim_batch(writer, position_ids)` | Batched `reclaim_collateral`, same all-or-nothing/`MAX_BATCH_SIZE` contract as `exercise_batch`. Returns the summed reclaim. |
-| `transfer_position(from, to, position_id)` | Moves an open position to `to` (`from` must own it and sign); both parties' position lists are updated and `to` inherits exercise / reclaim / r
-| `reclaim_collateral(writer, position_id)` | Short-side payout after settlement: locked collateral minus the max loss paid out to longs. |
-| `reclaim_batch(writer, position_ids)` | Batched `reclaim_collateral`, same all-or-nothing/`MAX_BATCH_SIZE` contract as `exercise_batch`. Returns the summed reclaim. |
-| `transfer_position(from, to, position_id)` | Moves an open position to `to` (`from` must own it and sign); both parties' position lists are updated and `to` inherits exercise / reclaim / refund rights. Shorts are transferable because their collateral is already locked here, so `to` only gains the leftover-collateral reclaim. Rejected for exercised/settled positions and while paused; `to == from` is a no-op. Emits `position_transferred(from, to; position_id)`. |
-| `split_position(owner, position_id, split_contracts)` | Splits `split_contracts` (`0 < split < contracts`, else `InvalidSplitAmount`) off an open position into a new position with the same series, side and owner. `premium_paid`, `fee_paid` and `collateral_locked` are divided pro rata, rounded down for the new position with the remainder kept in the original, so every total (and `SeriesEscrow`, open interest) is unchanged. Blocked while paused and for exercised/settled positions. Returns the new position id. |
-| `claim_refund(owner, position_id)` | On a Cancelled series: buyers get their premium back (net of the fee already sent to `fee_recipient`), writers get their full collateral back. Paid directly from options_market's own balance. |
-| `claim_refund_from_vault(vault_contract, owner, position_id)` | Same eligibility checks and refund formula as `claim_refund`, but pays out of a deployed `vault`'s `series_id`-tagged escrow instead — see "Vault integration" below. Requires `escrow_series_to_vault` to have moved this series' liability into `vault` first. |
+### Vault-backed series
 
-### Pruning and the active-series cap
-
-| Function | Description |
-|---|---|
-| `prune_positions(position_ids)` | Permissionless. Removes up to `MAX_BATCH_SIZE` (25) terminal positions whose series' retention period has passed (see the retention policy below), plus each id's entry in its owner's `UserPositions` list, and emits `position_pruned(owner, series_id; OptionPosition)` with the full record. All-or-nothing: `NotPrunable` for a position that is not terminal or still carries a liability, `RetentionNotElapsed` before the retention period ends. Returns the number pruned. |
-| `prune_series(series_id)` | Permissionless. Removes a terminal series once **all** its positions are pruned (`SeriesHasPositions` otherwise) and its retention period has passed, together with its `SeriesEscrow`, `SeriesIndex` (the spec can be listed again), `SeriesPositions`, `SeriesClosedAt` and `SeriesReleased` entries. Frees its active-series slot if it still held one, and emits `series_pruned(underlying, series_id; OptionSeries)`. |
-| `release_series_slot(series_id)` | Permissionless. Frees the series' active-series slot if it no longer needs one (below). Returns whether it did; each series releases at most once. |
-| `migrate_counters(limit)` | Permissionless, run after upgrading from a version without these counters. Reads at most `limit` (1..=`MAX_PAGE_SCAN` = 200) entries per call, first every position (to rebuild per-series counts), then every series (to rebuild `ActiveSeriesCount`). Returns `true` when done. Until then `create_series`, pruning and `release_series_slot` fail with `MigrationPending`. Fresh deployments start migrated. |
-
-#### Retention policy
-
-A **series is terminal** once it is `Settled` or `Cancelled`. Its
-retention period, `PRUNE_RETENTION` (30 days), runs from its anchor:
-
-- **Settled:** the later of the settlement time and the end of the exercise window (`expiry + settlement_window`).
-- **Cancelled:** the cancellation time.
-
-Series closed before this version have no recorded close time and fall
-back to `expiry`, which is never earlier than the real anchor.
-
-A **position is terminal**, and carries no liability, when:
-
-| Series | Side | Terminal when |
-|---|---|---|
-| Cancelled | either | its refund was claimed (`is_settled`) |
-| Settled | Short | its collateral was reclaimed (`is_settled`) |
-| Settled | Long | exercised, auto-exercised or forfeited (`is_exercised`), or it expired worthless (payout 0) |
-
-An unexercised in-the-money long is never pruned while its payout is
-still claimable: it becomes terminal only after `sweep_forfeited` pays
-it out (after the 90-day forfeiture window). An unreclaimed short and an
-unrefunded position of a cancelled series are never pruned either.
-
-Pruned ids are never reused. `get_position` / `get_series` return
-`None` for them; `get_position_status` / `get_series_status` return
-`Pruned` for an allocated id whose entry was pruned, `None` for an id
-that was never allocated, and `Live(record)` otherwise. The
-`position_pruned` / `series_pruned` events are the permanent record for
-indexers. Oracle history is out of scope (it has its own ring buffer).
-There is no keeper bounty yet.
-
-#### Active-series cap
-
-`ActiveSeriesCount(underlying)` counts series that hold a listing slot.
-`create_series` takes a slot; a series gives it back exactly once
-(guarded by `SeriesReleased(series_id)`) when it:
-
-- is **Settled** and its exercise window has closed. Unexercised ITM longs don't keep it active: they're tracked in `OrphanedLiabilities` and still block pruning until swept;
-- is **Cancelled** and every position has taken its refund. An empty series is released as soon as it's cancelled, otherwise on the last refund;
-- is **pruned**, if it hadn't released already.
-
-An Active series, including one past expiry that hasn't been settled,
-always counts. Cancelled releases happen automatically; a settled
-series is released by anyone calling `release_series_slot` (or
-`prune_series`) once its window has closed. There is no `Voided` state
-in this contract; `Cancelled` covers it. `get_series_count_for_underlying`
-still returns the lifetime count, but it no longer caps anything.
-
-### Vault integration
-
-| Function | Description |
-|---|---|
-| `escrow_series_to_vault(vault_contract, series_id)` | For a Cancelled series: moves its entire remaining refund liability — tracked incrementally in `SeriesEscrow` since the series' first `buy_option`/`write_option`, debited by whichever claim path (`claim_refund` or `claim_refund_from_vault`) any given position actually uses — out of options_market's own shared balance and into `vault`, tagged by `series_id`. Permissionless (only relocates the contract's own funds into a vault it already trusts, authorizes nothing new); callable at most once per series, since it zeroes `SeriesEscrow` on success. See "Known gaps" for exactly what this does and doesn't fix. |
+A series listed while a vault is pinned keeps that vault for life
+(`get_series_vault`, `is_vault_backed`). Every `write_option` on it
+deposits the writer's collateral into the vault under tag `series_id`
+(the market authorizes the vault's nested token pull explicitly), and
+every exercise payout, reclaim and short-side refund is withdrawn from
+that tag only. A payout a series' own collateral can't cover fails with
+the vault's `InsufficientEscrowBalance` — it never draws on another
+series' collateral. Series listed with no vault pinned keep collateral in
+the market's own balance, as before. In the protocol's deployment the
+vault's admin is the market (handed over two-step with
+`accept_vault_admin`).
 
 ### Views
 
-`get_admin`, `is_paused`, `get_fee_rate`, `get_premium_pool`,
-`get_series_count_for_underlying` (lifetime), `get_active_series_count`,
-`get_max_active_series`, `get_series_position_counts` (`{ live, open }`),
-`get_migration_state`, `is_migrated`, `get_position_status`,
-`get_series_status`,
-`get_series_id`, `get_series`, `get_position`,
+`get_admin`, `get_pending_admin`, `get_oracle`, `get_vault`,
+`get_series_vault(series_id)`, `is_vault_backed(series_id)`, `is_paused`,
+`get_fee_rate`, `get_settlement_window`, `get_premium_pool`,
+`get_series_count_for_underlying`, `get_series`, `get_position`,
 `get_user_positions`, `get_underlying_price`, `get_series_escrow`
-(remaining not-yet-claimed refund liability for a series), `get_stats`
-(total premiums collected, total open interest, series count),
-`get_orphaned_liabilities`, `sync_orphaned_liabilities`.
-
-Paginated views (`limit` must be 1..=`MAX_PAGE_LIMIT` (50), else
-`InvalidPageLimit`). Each call reads at most `MAX_PAGE_SCAN` (200)
-entries, matching or not, so a page may come back short — keep paging
-until `next_cursor` is 0. Missing (e.g. archived) entries are skipped.
-At `limit = 50` in the test harness: `get_series_page` ≈ 2.0M CPU /
-187KB, `get_user_positions_page` ≈ 1.7M CPU / 162KB.
-
-| View | Description |
-|---|---|
-| `get_series_page(cursor, limit, filter)` | Series with id > `cursor`, in id order. `SeriesFilter { state, underlying, option_type }` — each a list of accepted values, empty = any. `state` is the stored state (stays `Active` past expiry until settled/cancelled). Returns `SeriesPage { items, next_cursor }`. |
-| `get_user_positions_page(user, cursor, limit, side)` | `user`'s positions from index `cursor` of their position list, optionally only `Long` or `Short`. Returns `PositionPage { items, next_cursor }`. |
-| `get_series_by_underlying(symbol)` | Every series id listed on `symbol`, oldest first (secondary index maintained on create; ids of pruned series are dropped). |
-| `get_position_value(position_id)` | **Indicative only — never used for settlement.** Intrinsic value at the settlement price if set, else the last recorded underlying price (0 if neither). Positive for longs, negative for shorts, 0 once exercised/settled. |
-| `get_account_summary(user)` | **Indicative only.** `AccountSummary { open_positions, long_value, short_liability, collateral_locked, net_value }` over `user`'s open positions. |
+(refund liability still in the market's own balance), `get_stats`
+(premiums collected net of fees, open interest, series count),
+`get_multisig`, `upgrade_action_id(hash)`, `schema_version`,
+`migration_state`.
 
 ### Errors
 
 | # | Error | | # | Error |
 |---|---|---|---|---|
-| 1 | `AlreadyInitialized` | | 18 | `SeriesNotCancelled` |
-| 2 | `Unauthorized` | | 19 | `InvalidFeeRate` |
-| 3 | `SeriesNotFound` | | 20 | `TooManySeriesForUnderlying` (active-series cap) |
-| 4 | `SeriesNotActive` | | 21 | `InsufficientPremiumPool` |
-| 5 | `SeriesNotExpired` | | 22 | `InvalidSeriesParams` |
-| 6 | `PositionNotFound` | | 23 | `InvalidBatchSize` |
-| 7 | `InsufficientPremium` | | 24 | `NothingToEscrow` |
-| 8 | `InsufficientCollateral` | | 25 | `PremiumBelowMinimum` |
-| 9 | `AlreadyExercised` | | 26 | `NotEligibleForForfeiture` |
-| 10 | `AlreadySettled` | | 27 | `DuplicateSeries` |
-| 11 | `ExerciseWindowClosed` | | 28 | `InvalidSplitAmount` |
-| 12 | `ZeroContracts` | | 29 | `NotPrunable` |
-| 13 | `PriceNotSet` | | 30 | `RetentionNotElapsed` |
-| 14 | `NotInTheMoney` | | 31 | `SeriesHasPositions` |
-| 15 | `WrongSide` | | 32 | `MigrationPending` |
-| 16 | `ExpiryTooSoon` | | 33 | `InvalidActiveSeriesCap` |
-| 17 | `ContractPaused` | | 34 | `InvalidPageLimit` |
+| 1 | `AlreadyInitialized` | | 19 | `InvalidFeeRate` |
+| 2 | `Unauthorized` | | 20 | `TooManySeriesForUnderlying` |
+| 3 | `SeriesNotFound` | | 21 | `InsufficientPremiumPool` |
+| 4 | `SeriesNotActive` | | 22 | `InvalidSeriesParams` |
+| 5 | `SeriesNotExpired` | | 23 | `InvalidBatchSize` |
+| 6 | `PositionNotFound` | | 24 | `NothingToEscrow` |
+| 7 | `InsufficientPremium` | | 25 | `PremiumBelowMinimum` |
+| 8 | `InsufficientCollateral` | | 35 | `UnauthorizedVault` |
+| 9 | `AlreadyExercised` | | 36 | `NoPendingAdmin` |
+| 10 | `AlreadySettled` | | 100–104 | migration errors |
+| 11 | `ExerciseWindowClosed` | | | |
+| 12 | `ZeroContracts` | | | |
+| 13 | `PriceNotSet` | | | |
+| 14 | `NotInTheMoney` | | | |
+| 15 | `WrongSide` | | | |
+| 16 | `ExpiryTooSoon` | | | |
+| 17 | `ContractPaused` | | | |
+| 18 | `SeriesNotCancelled` | | | |
+
+Codes 26–34 are reserved by entrypoints (forfeiture, duplicate series,
+splitting, pruning, pagination) that are not part of this build.
 
 ## `price_oracle` reference
 
+### Aggregation
+
+`get_price(symbol)` and `aggregate(symbol)` combine feeder reports in
+this order, implemented as pure functions over a slice of prices in
+`price_oracle/src/outlier_filter.rs` and `price_oracle/src/math.rs`:
+
+1. **Freshness.** Only reports from currently authorized feeders that are
+   at most `max_staleness` seconds old count (admin-settable, default one
+   hour). This runs first, so a stale report can neither count toward the
+   quorum nor skew the filter.
+2. **Outlier filter** (median absolute deviation). With `center` = median
+   of the fresh reports and `mad` = median of `|report − center|`, a
+   report survives if `|report − center| <= max(3 × mad, |center| × 1%)`.
+   The 1% floor keeps honest reports when most feeders agree exactly
+   (`mad` = 0). With fewer than 3 fresh reports nothing is filtered —
+   there is no majority to say which one is the outlier, and the quorum
+   below covers that case. With 3 or more, at least half the reports
+   (rounded up) always survive.
+3. **Median** of the surviving reports. For an even count it is the
+   midpoint of the two middle reports **rounded down** (toward negative
+   infinity); e.g. `[10, 21]` → `15`. Computed as `lo + (hi − lo) / 2` in
+   unsigned arithmetic, so it cannot overflow, and it always lies within
+   `[min, max]` of the surviving reports.
+4. **Quorum.** At least `min_reports` reports must survive the filter
+   (admin-settable, default 1, at most `MAX_FEEDERS`). Otherwise there is
+   no price: `get_price` returns `None` and `aggregate` fails with
+   `QuorumNotMet`. A feeder set that has mostly gone stale or been removed
+   therefore fails closed instead of degrading to a single reporter.
+
+All arithmetic is integer-only on the 7-decimal fixed-point prices; no
+step panics on any report values.
+
 ### Admin
 
+Every row except `initialize` has a `_via_multisig(multisig_contract,
+action_id, ...)` twin; see [Admin functions and `Auth`](#admin-functions-and-auth).
+
+| Function | Class | Description |
+|---|---|---|
+| `initialize(admin)` | — | One-time setup. `max_staleness` = 3600, `min_reports` = 1. |
+| `set_max_staleness(seconds)` | Standard | Freshness window. Rejects zero (`InvalidStaleness`). |
+| `set_min_reports(count)` | Standard | Quorum of surviving fresh reports. `1..=MAX_FEEDERS` (`InvalidMinReports`). |
+| `add_feeder(feeder)` / `remove_feeder(feeder)` | Standard | Authorize/revoke a reporter; at most `MAX_FEEDERS` (16). A removed feeder's past reports stay readable via `get_latest_report` but no longer count. Blocked while paused. |
+| `transfer_admin(new_admin)` | Critical | Two-step; `accept_admin()` completes it. |
+| `pause()` / `unpause()` | Emergency | Blocks feeder changes, `report_price` and `aggregate`. `get_price` keeps working. |
+| `upgrade` / `upgrade_via_multisig` / `set_multisig` / `migrate` | Critical | Same as every contract. |
+
+### Feeders and keepers
+
 | Function | Description |
 |---|---|
-| `initialize(admin)` | One-time setup. Defaults `max_staleness` to 1 hour and `min_reports` to 1. |
-| `transfer_admin(new_admin)` | Hands off control. Requires the **current** admin's signature. |
-| `transfer_admin_via_multisig(multisig_contract, action_id, new_admin)` | Permissionless alternative to `transfer_admin`: cross-calls a deployed `multisig` and checks `is_executable(action_id, class)` instead of requiring the current admin's own signature. |
-| `add_feeder(feeder)` / `remove_feeder(feeder)` | Authorize/revoke a price reporter. Capped at `MAX_FEEDERS` (16). A removed feeder's past reports stay readable via `get_latest_report` (audit trail) but no longer count toward the aggregate. |
-| `add_feeder_via_multisig(multisig_contract, action_id, feeder)` / `remove_feeder_via_multisig(...)` | Permissionless alternatives: cross-call a deployed `multisig` and check `is_executable(action_id, class)` instead of requiring the admin's own signature. Still enforce `FeederAlreadyAdded`/`TooManyFeeders`/`FeederNotFound` — approval changes who can call these, not the underlying invariants. |
-| `set_max_staleness(seconds)` | How old a report can be and still count toward `get_price`. Rejects zero. |
-| `set_max_staleness_via_multisig(multisig_contract, action_id, seconds)` | Permissionless alternative: cross-calls a deployed `multisig` and checks `is_executable(action_id, class)` instead of requiring the admin's own signature. Still rejects zero — approval changes who can call it, not what a valid staleness bound is. |
-| `set_min_reports(count)` | How many CURRENTLY-fresh feeder reports `get_price` requires before it returns an aggregate at all. Without this, a single fresh report is enough the moment every other feeder's report goes stale or gets removed — that one feeder then fully determines the price with no averaging effect. Rejects zero. |
-| `set_min_reports_via_multisig(multisig_contract, action_id, count)` | Permissionless alternative: cross-calls a deployed `multisig` and checks `is_executable(action_id, class)` instead of requiring the admin's own signature. Still rejects zero. |
-| `pause()` / `unpause()` | Emergency stop. Blocks `add_feeder`, `remove_feeder`, `report_price`. Does **not** block `get_price` — a pause freezes changes to the feed, it doesn't hide the last-known price. |
-| `pause_via_multisig(multisig_contract, action_id)` / `unpause_via_multisig(...)` | Permissionless alternative to `pause`/`unpause`: cross-calls a deployed `multisig` and checks `is_executable(action_id, class)` instead of requiring the admin's own signature. No `require_auth()` — the M-of-N approval itself is what authorizes the call. |
-
-### Feeders
-
-| Function | Description |
-|---|---|
-| `report_price(feeder, symbol, price)` | Records this feeder's own observation. Requires the feeder's signature and current authorization; rejects non-positive prices. |
+| `report_price(feeder, symbol, price)` | Records the feeder's own observation (feeder signature; positive prices only). |
+| `aggregate(symbol) -> PriceRound` | Permissionless. Runs the pipeline above and records the result as the symbol's next round `{ round_id, price, timestamp, reports_used, reports_discarded }` (event `round_aggregated`). Fails with `NoFreshReports` or `QuorumNotMet` and writes nothing otherwise. |
 
 ### Views
 
-| Function | Description |
-|---|---|
-| `get_price(symbol)` | Median across every currently-authorized feeder's report that's within `max_staleness` — but only if at least `min_reports` of them are fresh; otherwise `None` even if some reports exist. `None` if nothing is fresh — callers must not treat that as "price is zero." |
-| `get_latest_report(symbol, feeder)` | One feeder's raw report, regardless of freshness or current authorization. |
-| `is_feeder`, `get_feeder_count`, `get_max_staleness`, `get_min_reports`, `get_admin`, `is_paused` | |
+`get_price(symbol) -> Option<i128>` (the pipeline above, as a read — what
+options_market cross-calls), `get_latest_round(symbol)`,
+`get_latest_report(symbol, feeder)` (raw, regardless of freshness),
+`is_feeder`, `get_feeders`, `get_feeder_count`, `get_max_staleness`,
+`get_min_reports`, `get_admin`, `get_pending_admin`, `is_paused`,
+`get_multisig`.
 
 ### Events
 
-`admin_transferred`, `paused`, `unpaused`, `max_staleness_updated`,
-`min_reports_updated`, `feeder_added`, `feeder_removed`,
-`price_reported` — one per state change, so an off-chain indexer doesn't
-have to poll every view function to track what changed.
+`admin_transfer_proposed`, `admin_transferred`, `paused`, `unpaused`,
+`max_staleness_updated`, `min_reports_updated`, `feeder_added`,
+`feeder_removed`, `price_reported`, `round_aggregated` (topics
+`symbol`; data `(round_id, price, reports_used, reports_discarded)`),
+`multisig_approval_used`.
 
 ### Errors
 
-| # | Error |
-|---|---|
-| 1 | `AlreadyInitialized` |
-| 2 | `FeederAlreadyAdded` |
-| 3 | `FeederNotFound` |
-| 4 | `NotAFeeder` |
-| 5 | `InvalidPrice` |
-| 6 | `ContractPaused` |
-| 7 | `InvalidStaleness` |
-| 8 | `TooManyFeeders` |
-| 9 | `Unauthorized` |
-| 10 | `InvalidMinReports` |
+| # | Error | | # | Error |
+|---|---|---|---|---|
+| 1 | `AlreadyInitialized` | | 8 | `TooManyFeeders` |
+| 2 | `FeederAlreadyAdded` | | 9 | `Unauthorized` |
+| 3 | `FeederNotFound` | | 10 | `InvalidMinReports` |
+| 4 | `NotAFeeder` | | 11 | `NoFreshReports` |
+| 5 | `InvalidPrice` | | 12 | `QuorumNotMet` |
+| 6 | `ContractPaused` | | 13 | `NoPendingAdmin` |
+| 7 | `InvalidStaleness` | | 100–104 | migration errors |
 
 ## `vault` reference
 
-A per-(token, tag) escrow ledger. One deployment holds any number of
-allowlisted tokens and serves any number of integrator contracts
-(`options_market`, an LP pool, an insurance fund, ...). The token passed
-to `initialize` is the **default token** used by the `_legacy` wrappers.
-
-### Tag scheme
-
-A tag is a `#[contracttype] struct Tag { owner: Address, kind: Symbol, id: u64 }`,
-and the storage key is the full triple, so two integrators — or two id
-spaces inside one integrator — can never collide by construction.
-`options_market` uses `(self, "series", series_id)` for series escrow and
-reserves `(self, "position", position_id)` for per-position custody.
-
-A plain struct was chosen over a `BytesN<32>` hash of it: the key is only
-an address + a short symbol + a u64 larger than a hash, and in exchange
-storage keys and events stay self-describing (an indexer doesn't need a
-preimage registry to tell what a tag refers to).
-
-Legacy `u64` tags map to `(legacy owner, "legacy", id)`, where the legacy
-owner is the admin at `initialize` time (fixed, so a later
-`transfer_admin` can't orphan legacy balances).
-
-### Trust model
-
-- **Tag owners** (integrators) are the only ones who can move escrow.
-  A tag's owner is recorded as `TagOwner(tag) = tag.owner` on its first
-  deposit, and `withdraw` / `transfer_tag` require that owner's
-  `require_auth()`. In the intended integration the owner is a contract,
-  so its own cross-contract call satisfies the check without a human
-  signature. A bug in one integrator can therefore only ever reach its
-  own tags.
-- **Creating a tag** requires `tag.owner` to be in the integrator
-  registry (or be the legacy owner) and to authorize. End users can
-  deposit into a contract-owned tag only with that contract's auth, and
-  the contract still owns it. `transfer_tag` between different owners
-  requires **both** owners to authorize.
-- **The admin** configures the vault (token allowlist, integrator
-  registry, pause, sweeping untagged funds) but owns no integrator's
-  tags. Moving escrow without the owner is an **emergency-only** power,
-  available solely through multisig approval (`withdraw_via_multisig`,
-  `transfer_tag_via_multisig`), and still capped at each tag's balance.
+A per-tag escrow ledger for a single token. `tag` is a caller-defined
+`u64` (options_market uses its `series_id`); a withdrawal or tag transfer
+can never take more than the tag's own balance, whatever the vault's raw
+token balance is.
 
 ### Admin
 
-| Function | Description |
-|---|---|
-| `initialize(admin, token, max_pause_duration)` | One-time setup. `token` becomes the default token and is allowlisted. `max_pause_duration` (seconds, non-zero) is immutable afterward — see "Pause and the escape hatch". |
-| `transfer_admin(new_admin)` | Hands off control. Requires the **current** admin's signature. Does not hand over any tag. |
-| `transfer_admin_via_multisig(multisig_contract, action_id, new_admin)` | Permissionless alternative to `transfer_admin`: cross-calls a deployed `multisig` and checks `is_executable(action_id, class)` instead of requiring the current admin's own signature. |
-| `pause()` / `unpause()` | Emergency stop. Blocks **both** `deposit` and `withdraw` (and `transfer_tag`, `set_beneficiary`). Time-bounded: see "Pause and the escape hatch" below. |
-| `pause_via_multisig(multisig_contract, action_id)` / `unpause_via_multisig(...)` | Permissionless alternative to `pause`/`unpause`: cross-calls a deployed `multisig` and checks `is_executable(action_id, class)` instead of requiring the admin's own signature. No `require_auth()` — the M-of-N approval itself is what authorizes the call. |
-| `set_token_allowed(token, allowed)` / `set_token_allowed_via_multisig(multisig_contract, action_id, token, allowed)` | Manages the token allowlist. Removing a token only blocks **new** deposits; existing balances stay withdrawable, transferable and sweepable. |
-| `set_integrator(integrator, allowed)` / `set_integrator_via_multisig(multisig_contract, action_id, integrator, allowed)` | Manages the integrator registry (who may create tags). Deregistering blocks new tags only. |
-| `withdraw(token, tag, to, amount)` | Pays `amount` of `(token, tag)`'s escrow to `to`. Requires the tag owner. Panics with `InsufficientEscrowBalance` if the tag doesn't have that much earmarked, and `InsufficientVaultBalance` (instead of a token error) if the vault's actual balance can't cover it. Emits `shortfall_detected` if the ledger is under-backed. |
-| `withdraw_via_multisig(multisig_contract, action_id, token, tag, to, amount)` | Permissionless alternative to `withdraw`: cross-calls a deployed `multisig` and checks `is_executable(action_id, class)` instead of requiring the admin's own signature. Meant for manual recovery/migration when the calling contract itself can't produce that signature. Still enforces `InsufficientEscrowBalance`. |
-| `sweep_untagged(token, to)` / `sweep_untagged_via_multisig(multisig_contract, action_id, token, to)` | Recovers `token` that landed on the vault directly, bypassing `deposit`: the actual balance minus `get_total_escrowed(token)`. Panics with `NoUntaggedFunds` if there's nothing to recover — including when there is a shortfall instead. |
-| `transfer_tag(token, from_tag, to_tag, amount)` | Reassigns escrow between tags with no token movement — meant for the roll_position case. Requires `from_tag`'s owner, and `to_tag`'s owner too if different. `TotalEscrowed` is unaffected. |
-| `transfer_tag_via_multisig(multisig_contract, action_id, token, from_tag, to_tag, amount)` | Permissionless alternative to `transfer_tag`: cross-calls a deployed `multisig` and checks `is_executable(action_id, class)` instead of requiring the admin's own signature. A new `to_tag` is recorded as owned by `to_tag.owner`. |
-| `withdraw_batch(ops: Vec<(token, tag, to, amount)>)` | Batched `withdraw`: one admin auth check, up to `MAX_BATCH` (50) entries, every entry validated against in-flight balances (the same tag may repeat) before anything is written, one token transfer per distinct recipient, all-or-nothing. One `withdrawn` event per entry. ~4x cheaper than sequential calls (10 entries: 0.92M vs 3.80M CPU instructions, 175KB vs 844KB memory). |
-| `transfer_tag_batch(ops: Vec<(token, from_tag, to_tag, amount)>)` | Batched `transfer_tag`, same validation and all-or-nothing semantics. One `tag_transferred` event per entry. |
-| `migrate_legacy(ids)` | Moves pre-upgrade `Escrow(u64)` entries to `Escrow(default token, legacy_tag(id))`, owned by the current admin; the old `TotalEscrowed` moves to the default token's total on the first call. Idempotent. |
+Every row except `initialize` has a `_via_multisig(multisig_contract,
+action_id, ...)` twin; see [Admin functions and `Auth`](#admin-functions-and-auth).
+In the protocol's deployment the admin is options_market.
+
+| Function | Class | Description |
+|---|---|---|
+| `initialize(admin, token)` | — | One-time setup. |
+| `withdraw(tag, to, amount)` | Critical | Pays `amount` of `tag`'s escrow to `to`; `InsufficientEscrowBalance` if the tag holds less. |
+| `transfer_tag(from_tag, to_tag, amount)` | Critical | Re-earmarks escrow between tags; no tokens move. |
+| `sweep_untagged(to)` | Standard | Recovers tokens sent to the vault without `deposit` (balance above the ledger total). |
+| `transfer_admin(new_admin)` | Critical | Two-step; `accept_admin()` completes it. |
+| `pause()` / `unpause()` | Emergency | Blocks `deposit`, `withdraw`, `transfer_tag`. |
+| `upgrade` / `upgrade_via_multisig` / `set_multisig` / `migrate` | Critical | Same as every contract. Set the trusted multisig **before** handing the admin to options_market. |
 
 ### Depositors
 
 | Function | Description |
 |---|---|
-| `deposit(from, token, tag, amount) -> i128` | Pulls `amount` of an allowlisted `token` from `from` and credits `(token, tag)`. Requires `from`'s signature (and, on a tag's first deposit, its owner's). Credits — and returns — the **measured** balance delta, not `amount`: a fee-on-transfer token credits only what arrived. Costs two extra `balance` reads per deposit. |
-| `set_beneficiary(tag, beneficiary)` | Registers who may `emergency_withdraw` the tag. Requires the tag owner's signature; rejected while paused, so a beneficiary can't be redirected once the escape-hatch clock is running. |
-| `emergency_withdraw(tag, beneficiary)` | Escape hatch: once the vault has been paused for more than `max_pause_duration`, the tag's registered beneficiary (signing) receives the tag's whole balance. Emits `emergency_withdrawn`. |
-
-### Legacy wrappers (default token, `u64` tags)
-
-`deposit_legacy(from, id, amount)`, `withdraw_legacy(id, to, amount)`,
-`transfer_tag_legacy(from_id, to_id, amount)`, `balance_of_legacy(id)`,
-`legacy_tag(id)`.
-
-### Pause and the escape hatch
-
-A pause is an incident tool, not a custody seizure. `pause` records
-`PausedAt`; once the vault has counted as paused for **more than**
-`max_pause_duration` (fixed at `initialize`), each tag's registered
-beneficiary can `emergency_withdraw` that tag's balance without the
-admin. Pause time is **cumulative**: unpausing adds the elapsed pause to
-an accrued total, and that total only resets after the vault has stayed
-unpaused for a full `max_pause_duration` — so a brief unpause/re-pause
-can't restart the clock. Tags without a registered beneficiary have no
-hatch. For options_market's series-tagged escrow, the market contract is
-the tag owner and would have to register beneficiaries itself (out of
-scope here; possible follow-up with per-position tags).
+| `deposit(from, tag, amount)` | Pulls `amount` from `from` (signature required) and credits `tag`. The vault measures its own balance before and after; if less than `amount` arrived (fee-on-transfer, a no-op transfer, a lying `balance`), the deposit fails with `DeltaMismatch`. |
 
 ### Views
 
-`balance_of(token, tag)`, `get_total_escrowed(token)`,
-`get_shortfall(token)` (`max(0, TotalEscrowed(token) − balance)`),
-`get_tag_owner(tag)`, `is_token_allowed(token)`, `is_integrator(addr)`,
-`get_admin`, `get_token`, `is_paused`,
-`get_tag_count`, `get_tags(cursor, limit)`, `verify_ledger(cursor, limit) -> (partial_sum, next_cursor)`,
-`get_beneficiary(tag)`, `get_max_pause_duration`,
-`get_paused_at`, `get_pause_duration` (seconds counted toward the limit now).
-
-`get_tags`/`verify_ledger` page through the ActiveTags index (every tag
-with a nonzero balance; `limit` capped at 100). The index uses
-swap-remove, so read all pages against one ledger snapshot.
-
-### Ledger reconciliation
-
-The vault's invariant is `sum(Escrow(tag)) == TotalEscrowed <= token.balance(vault)`.
-Monitors can check it over RPC:
-
-```sh
-count=$(stellar contract invoke --id $VAULT -- get_tag_count)
-cursor=0; sum=0
-while [ "$cursor" -lt "$count" ]; do
-  read partial cursor < <(stellar contract invoke --id $VAULT -- \
-    verify_ledger --cursor $cursor --limit 100 | tr -d '[]",' )
-  sum=$((sum + partial))
-done
-total=$(stellar contract invoke --id $VAULT -- get_total_escrowed | tr -d '"')
-[ "$sum" = "$total" ] && echo "ledger OK ($sum)" || echo "MISMATCH: $sum != $total"
-```
-
-Building with `--features invariants` compiles a full post-condition check
-into every mutating entrypoint (tests/fuzzing only, never production wasm);
-CI runs the suite that way, including a 10,000-op random fuzz test.
-
-### Clawback risk
-
-A SAC issuer with clawback enabled can reduce the vault's balance
-directly, leaving it below `TotalEscrowed`. The vault cannot prevent
-this; it makes it visible instead: `get_shortfall(token)` reports the gap,
-`withdraw` emits `shortfall_detected` whenever it sees one (at the cost
-of one extra `balance` read), payouts the vault can no longer cover fail
-with `InsufficientVaultBalance`, and `sweep_untagged` returns
-`NoUntaggedFunds` rather than trapping. Shortfall socialization across
-tags is out of scope — the last withdrawers of an under-backed token
-absorb it.
+`balance_of(tag)`, `get_total_escrowed`, `get_admin`, `get_pending_admin`,
+`get_token`, `is_paused`, `get_multisig`.
 
 ### Events
 
-`admin_transferred`, `paused`, `unpaused`, `token_allowed`,
-`integrator_set`, `legacy_migrated`, `beneficiary_set`,
-`emergency_withdrawn` (topics `(emergency_withdrawn, beneficiary, tag)`,
-data `amount`), and the token-scoped ones:
-`deposited` / `withdrawn` (topics `token`, full `tag`; data `(from|to, amount)`),
-`tag_transferred` (topic `token`; data `(from_tag, to_tag, amount)`),
-`swept_untagged` (topics `token`, `to`), `shortfall_detected` (topic `token`).
+`deposited` / `withdrawn` (topics `from`/`to`, `tag`; data `amount`),
+`tag_transferred` (topics `from_tag`, `to_tag`; data `amount`),
+`swept_untagged`, `admin_transfer_proposed`, `admin_transferred`,
+`paused`, `unpaused`, `multisig_approval_used`.
 
 ### Errors
 
-| # | Error |
-|---|---|
-| 1 | `AlreadyInitialized` |
-| 2 | `InvalidAmount` |
-| 3 | `InsufficientEscrowBalance` |
-| 4 | `ContractPaused` |
-| 5 | `NoUntaggedFunds` |
-| 6 | `Unauthorized` |
-| 7 | `TokenNotAllowed` |
-| 8 | `UnregisteredIntegrator` |
-| 9 | `InsufficientVaultBalance` |
+1 `AlreadyInitialized`, 2 `InvalidAmount`, 3 `InsufficientEscrowBalance`,
+4 `ContractPaused`, 5 `NoUntaggedFunds`, 6 `Unauthorized`,
+7 `DeltaMismatch`, 8 `NoPendingAdmin`, 100–104 migration errors.
 
 ## `multisig` reference
 
@@ -699,8 +570,8 @@ M-of-N. `approval_ttl` is fixed at initialization.
 > **Note:** the timelock tiers (`is_executable`, `delays`) and custom
 > account (`__check_auth`) documented below were described by #150, but
 > their source was never committed. The multisig here was restored from
-> #149 and does not implement them yet; `zenith-common`'s
-> `is_executable` cross-call has nothing to call until they're rebuilt.
+> #149 and does not implement them yet. `zenith-common` calls the
+> multisig's `is_approved(action_id)`, which it does implement.
 
 ### Why rotation exists, and how it stays safe
 
@@ -952,41 +823,50 @@ register ──approve──▶ Pending ──threshold──▶ is_approved ─
 
 ## `timelock` reference
 
-Meant to hold the admin role on every other Zenith contract, so any
-parameter or code change is visible on-chain for at least `min_delay`
-seconds before it can run. Modelled on OpenZeppelin's TimelockController.
+Holds the admin role on options_market, price_oracle and vault-like
+contracts, so every admin change is visible on-chain for at least
+`min_delay` seconds before it can run. The consumer contracts don't know
+their admin is a timelock: it satisfies `admin.require_auth()` by being
+the direct invoker of the calls it executes. Hand-off runbook:
+[docs/runbooks/timelock-handoff.md](docs/runbooks/timelock-handoff.md).
+
+| Role | Who | Can |
+|---|---|---|
+| Proposer | one address (multisig account, later the governor) | `schedule`, `schedule_after`, `cancel` |
+| Executor | anyone, unless `set_exec(Some(addr))` restricts it | `execute` a ready operation |
+| Canceller | the proposer, the guardian (until lock-in), and addresses granted with `set_canc` | `cancel` a pending operation |
+| Guardian | set at `initialize`, removed by `lock_in` | `cancel`, `guardian_set_proposer` (immediate rollback) |
 
 | Function | Description |
 |---|---|
-| `initialize(min_delay, proposers, executors, cancellers)` | One-time setup. Empty `executors` means anyone may execute a ready operation. There is no admin afterwards. |
-| `schedule(proposer, calls, predecessor, salt, delay) -> id` | Proposer-only. `calls` is a `Vec<Call { target, function, args }>`; `delay >= min_delay`. The id is `sha256(xdr((calls, predecessor, salt)))` (see `hash_operation`). Rejects an id that's already pending or done. |
-| `execute(executor, calls, predecessor, salt)` | Executor-only (unless open). Requires the operation ready and `predecessor` (if any) done. Runs every call in order via `invoke_contract`; any revert reverts the whole batch. |
-| `cancel(canceller, id)` | Canceller-only. Removes a pending operation. |
+| `initialize(proposer, guardian, min_delay, grace_period)` | One-time setup. |
+| `schedule(op_id, targets, fns, args, delay) -> ready_at` | Proposer only. A batch of calls, executable from `now + delay` (`delay >= min_delay`) until `ready_at + grace_period`. |
+| `schedule_after(op_id, predecessor, targets, fns, args, delay)` | Same, but only executable after `predecessor` has executed. The predecessor must already exist, so dependencies always point back in time and can't cycle; a cancelled predecessor only blocks its own dependents. |
+| `execute(op_id)` | Runs every call in order; any revert reverts the whole operation. `NotReady` before `ready_at`, `Expired` after the grace period, `PredecessorNotDone`. |
+| `cancel(caller, op_id)` | A canceller removes a pending operation. |
+| `guardian_set_proposer(new_proposer)` | Guardian only, until lock-in. |
 
-**Self-administration.** Soroban forbids re-entry, so a `Call` whose
-`target` is the timelock itself is dispatched internally by `execute`:
-`update_delay(u64)`, `grant_role(Role, Address)`, `revoke_role(Role, Address)`,
-`set_open_executor(bool)`. These changes are therefore only reachable
-through a delayed operation.
+**Self-calls.** Soroban forbids re-entry, so an operation targeting the
+timelock itself is applied in place by `execute`: `set_prop(Address)`,
+`set_delay(u64)`, `set_canc(Address, bool)`, `set_exec(Option<Address>)`,
+`lock_in()`, `migrate(u32, u32)`. Every role change is therefore delayed.
 
-**Views:** `get_timestamp(id)` (0 unknown, 1 done, else ready-at),
-`is_operation`, `is_operation_pending`, `is_operation_ready`,
-`is_operation_done`, `get_min_delay`, `has_role(role, account)`,
-`is_open_executor`, `hash_operation`.
+**Clock.** Every delay is a ledger-**timestamp** delay — the same clock the
+governor's proposal `eta` uses — never a ledger count.
 
-**Events:** `scheduled`, `executed`, `cancelled`, `min_delay_changed`, `role_changed`.
+**Views:** `get_operation`, `is_pending`, `is_ready`, `is_done`,
+`get_proposer`, `get_guardian`, `is_locked_in`, `is_canceller`,
+`get_executor`, `get_min_delay`, `get_grace_period`, `schema_version`.
 
-**Errors:** 1 `AlreadyInitialized`, 2 `Unauthorized`, 3 `InsufficientDelay`,
-4 `AlreadyScheduled`, 5 `NotReady`, 6 `PredecessorNotDone`, 7 `NotPending`,
-8 `UnknownSelfCall`, 9 `EmptyOperation`.
+**Events:** `scheduled` (topics `op_id`; data `(ready_at, predecessors)`),
+`executed`, `canceled`, `proposer_set`, `canceller_set`, `executor_set`,
+`min_delay_set`, `locked_in`.
 
-### Operations guide
-
-1. Deploy the timelock, then `transfer_admin(timelock)` on each contract.
-2. A proposer schedules the change, e.g. `calls = [Call { target: options_market, function: "set_fee_rate", args: [25u32] }]`, with a unique `salt`, and announces the id.
-3. During the delay users can exit; a canceller can `cancel(id)`.
-4. Once `is_operation_ready(id)`, an executor calls `execute` with the exact same `calls`/`predecessor`/`salt`.
-5. Use `predecessor` to force ordering (e.g. a migration after an `upgrade`).
+**Errors:** 1 `AlreadyInitialized`, 2 `Unauthorized`, 3 `InvalidOperation`,
+4 `DelayTooShort`, 5 `OperationExists`, 6 `OperationNotFound`,
+7 `NotReady`, 8 `Expired`, 9 `AlreadyDone`, 10 `LockedIn`,
+11 `UnknownSelfCall`, 12 `PredecessorNotFound`, 13 `PredecessorNotDone`,
+100–104 migration errors.
 
 ## `params` reference
 
@@ -1015,7 +895,6 @@ Views: `get_param(key) -> Option<{value, min, max, updated_at}>`,
 |---|---|---|---|---|
 | `fee_bps` | options_market fee rate | basis points | `[0, 1000]` | local `FeeRateBps` (50) |
 | `settle_w` | options_market exercise window after expiry | seconds | `[3600, 604800]` | 86,400 |
-| `max_ser` | options_market cap on concurrently active series per underlying | series | `[1, 500]` | local `MaxActiveSeries` (50) |
 
 options_market points at a registry via admin-only
 `set_params_registry(registry)`. It caches both values in instance
@@ -1042,73 +921,33 @@ start, limit)` (paginated, `limit` capped at 50). Events:
 
 ## Known gaps
 
-- **Cross-position accounting on cancellation is now opt-in via `vault`,
-  not the default.** `claim_refund` still pays every position directly
-  out of options_market's own undifferentiated balance, unchanged — a
-  writer's collateral refund and a buyer's premium refund on the same
-  cancelled series still nominally draw from that same shared pot.
-  `escrow_series_to_vault` / `claim_refund_from_vault` are the fix, but
-  they're additive alternatives a caller has to choose to use per
-  series, not a replacement for `claim_refund`: the original 100+
-  existing tests around `claim_refund` needed zero changes, and nothing
-  requires a cancelled series to ever call `escrow_series_to_vault` at
-  all. The integration tags escrow by `series_id` (not per-position) and
-  tracks each series' outstanding liability incrementally in
-  `SeriesEscrow`, debited by whichever claim path (`claim_refund` or
-  `claim_refund_from_vault`) a given position actually uses — so calling
-  `escrow_series_to_vault` after some positions already claimed the
-  original way still only moves what's genuinely left, never double.
-  It does NOT fix the deeper, separate issue below it (pooled premium):
-  if `write_option` has already paid a buyer's premium contribution out
-  to some writer as that writer's own premium before the series gets
-  cancelled, `SeriesEscrow` still promises that buyer a full refund
-  (matching `claim_refund`'s own existing behavior) even though part of
-  what they contributed has already left the contract for good —
-  `escrow_series_to_vault` would then try to move more into `vault` than
-  the series actually has left, and fail on the token transfer rather
-  than silently under- or over-paying anyone. Full routing of active
-  trading (`buy_option`/`write_option`/`exercise`/`reclaim_collateral`)
-  through `vault` — the only way to close that deeper gap — remains the
-  real, invasive rewrite described below; this integration deliberately
-  stops short of it.
 - **No order matching.** This is a pooled market, not an order book —
-  writers and buyers don't get matched 1:1, and the premium pool
-  (`PremiumPool`) is shared across EVERY series in the contract, not
-  scoped to one — so `write_option`'s `InsufficientPremiumPool` check is
-  a contract-wide pool-level constraint, not a guarantee that any
-  specific buyer's trade funded any specific writer's premium, or even
-  that the writer and buyer are in the same series at all. That's a
-  design choice, not a bug, but it's also the root cause of the
-  cancellation edge case called out above: premium a buyer contributed
-  can already be gone (paid to some writer, possibly in a different
-  series) by the time their own series gets cancelled.
-- **`set_settlement_price_from_oracle` is additive, not a replacement.**
-  The original trusted-oracle-address flow (`set_settlement_price`)
-  still exists unchanged — a series can be settled either way, and
-  nothing stops mixing both across different series. That's intentional
-  (zero risk to the original flow's existing test coverage) but means
-  there's no enforcement that a series *must* use the cross-contract
-  path just because a `price_oracle` deployment exists.
-- **Every admin-gated function on options_market, price_oracle, and
-  vault now has a `_via_multisig` alternative — except `initialize`.**
-  options_market: `pause`, `unpause`, `transfer_admin`, `set_fee_rate`,
-  `upgrade`, `cancel_series`, `create_series`, `update_premium`.
-  price_oracle: `pause`, `unpause`, `transfer_admin`,
-  `set_max_staleness`, `set_min_reports`, `add_feeder`, `remove_feeder`.
-  vault: `pause`, `unpause`, `transfer_admin`, `set_token_allowed`,
-  `set_integrator`, `sweep_untagged`, plus the emergency-only `withdraw`
-  and `transfer_tag` (whose normal path is tag-owner-gated, not admin). `initialize` can't have one by construction — there
-  is no admin, and therefore no Multisig deployment trusted by this
-  contract, until it runs. Every `_via_multisig` function is additive
-  (the original admin-gated version is unchanged) and checks
-  `is_executable(action_id, class)` on a deployed Multisig instead of a
-  single signature, sharing the same `x_inner` implementation (and so
-  the same validation) as the original — approval
-  only changes who can call a function, never what a valid call to it
-  looks like. Callers still choose their own stable `action_id` scheme
-  per function, since Multisig never interprets what an id means.
-  `exercise_batch`/`reclaim_batch` (owner/writer-gated, same as the
-  functions they batch) and `escrow_series_to_vault` (permissionless)
-  fall outside this pattern entirely — none of them are admin-gated to
-  begin with, so there's no single-signature check for a `_via_multisig`
-  variant to replace.
+  writers and buyers aren't matched 1:1, and the premium pool
+  (`PremiumPool`) is shared across every series, so `write_option`'s
+  `InsufficientPremiumPool` check is a contract-wide constraint. A
+  vault-backed series' collateral only covers payouts up to what its own
+  writers locked: if a series has more long contracts than short ones,
+  the excess longs' payouts fail (`InsufficientEscrowBalance`) instead of
+  being paid out of other series' collateral.
+- **Premium refunds on cancellation still come from the pooled
+  balance.** `SeriesEscrow` tracks each cancelled series' outstanding
+  premium refunds and `escrow_series_to_vault` moves them into the
+  series' vault tag, but premium a buyer contributed may already have
+  been paid to a writer (possibly in another series). Writer collateral
+  of vault-backed series is fully isolated per series.
+- **Covered-call collateral is notional at listing price.** A call that
+  finishes far enough in the money can owe more than its writer locked;
+  `reclaim_collateral` floors at zero and the long's payout fails rather
+  than drawing on other funds (see `call_collateral.rs`, not wired in).
+- **Token deltas.** The vault rejects deposits whose measured balance
+  delta falls short; options_market itself still records premiums and
+  collateral at the requested amount (#115 tests are `#[ignore]`d).
+- **Approval classes are informational.** `require_admin_or_multisig`
+  records each consumed approval's `ActionClass`, but the multisig has a
+  single approval tier until its timelock tiers are rebuilt; use the
+  timelock as admin for delayed changes.
+- **Not part of this build:** options_market forfeiture sweeps, position
+  transfer/splitting, pruning and pagination (their error codes 26–34
+  are reserved), and the resource-snapshot suite in
+  `options_market/src/test_resources.rs`, which targets those
+  entrypoints.

@@ -58,9 +58,31 @@ view() {
 }
 
 show_admins() {
-  echo "options_market admin: $(view "$MARKET_ID" get_admin)"
-  echo "price_oracle admin:   $(view "$ORACLE_ID" get_admin)"
+  echo "options_market admin: $(view "$MARKET_ID" get_admin) (pending: $(view "$MARKET_ID" get_pending_admin))"
+  echo "price_oracle admin:   $(view "$ORACLE_ID" get_admin) (pending: $(view "$ORACLE_ID" get_pending_admin))"
   echo "vault admin:          $(view "$VAULT_ID" get_admin) (must stay options_market)"
+}
+
+# Every _via_multisig path (including the short emergency-pause path that
+# stays available once the timelock is admin) only accepts the contract's
+# trusted multisig. Print it so a missing pin is caught before hand-off.
+show_trusted_multisig() {
+  echo "options_market trusted multisig: $(view "$MARKET_ID" get_multisig)"
+  echo "price_oracle trusted multisig:   $(view "$ORACLE_ID" get_multisig)"
+  echo "vault trusted multisig:          $(view "$VAULT_ID" get_multisig)"
+}
+
+# Step one of a two-step admin transfer on options_market and price_oracle,
+# signed by the current admin $1. Nothing changes hands until step two.
+propose_both() {
+  invoke "$MARKET_ID" "$1" transfer_admin --new_admin "$2"
+  invoke "$ORACLE_ID" "$1" transfer_admin --new_admin "$2"
+}
+
+# Step two, signed by the pending admin $1 (an account).
+accept_both() {
+  invoke "$MARKET_ID" "$1" accept_admin
+  invoke "$ORACLE_ID" "$1" accept_admin
 }
 
 # Schedules a timelock batch as $1 (the current proposer). Remaining args:

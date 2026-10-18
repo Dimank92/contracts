@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Rollback stage 2: the multisig (timelock proposer) schedules
-# transfer_admin back to itself. Run with PHASE=schedule, then after
-# TL_DELAY with PHASE=execute.
+# transfer_admin back to itself through the timelock, then accepts.
+#
+#   PHASE=schedule  multisig: schedule transfer_admin(multisig) x2
+#   PHASE=execute   anyone, after TL_DELAY
+#   PHASE=accept    multisig: accept_admin on both contracts
 source "$(dirname "$0")/common.sh"
 require MULTISIG_ACCOUNT PHASE
 
@@ -14,6 +17,10 @@ case "$PHASE" in
     ;;
   execute)
     tl_execute "$MULTISIG_ACCOUNT" "$ID"
+    show_admins
+    ;;
+  accept)
+    accept_both "$MULTISIG_ACCOUNT"
     show_admins
     ;;
 esac

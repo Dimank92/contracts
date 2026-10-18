@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Rollback stage 1: the multisig account returns admin to the deployer.
+# Rollback stage 1: the multisig account returns admin to the deployer
+# (two-step: the multisig proposes, the deployer accepts).
 source "$(dirname "$0")/common.sh"
 require DEPLOYER MULTISIG_ACCOUNT
 
-invoke "$MARKET_ID" "$MULTISIG_ACCOUNT" transfer_admin --new_admin "$DEPLOYER"
-invoke "$ORACLE_ID" "$MULTISIG_ACCOUNT" transfer_admin --new_admin "$DEPLOYER"
+propose_both "$MULTISIG_ACCOUNT" "$DEPLOYER"
+accept_both "$DEPLOYER"
 show_admins

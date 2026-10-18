@@ -16,7 +16,7 @@ test_adversaries = { package = "zenith-test-adversaries", path = "../test_advers
 
 Then register any adversary in a test `Env`:
 
-```rust
+```rust,ignore
 use test_adversaries::tokens::FeeOnTransferToken;
 let bad_token = env.register_contract(None, FeeOnTransferToken);
 ```
@@ -68,10 +68,10 @@ work against them transparently.
 
 | Struct | Issue # | Behaviour | Boundary |
 |---|---|---|---|
-| `AlwaysApproveMultisig` | 115 | `is_executable()` always returns `true`. Any action is immediately "approved" with no quorum. | Every `_via_multisig` entrypoint — must validate multisig address, not trust any contract |
-| `NeverApproveMultisig` | 115 | `is_executable()` always returns `false`. No action ever proceeds. | Confirms `_via_multisig` paths propagate `Unauthorized` |
+| `AlwaysApproveMultisig` | 115 | `is_approved()` always returns `true`. Any action is immediately "approved" with no quorum. | Every `_via_multisig` entrypoint — must validate multisig address, not trust any contract |
+| `NeverApproveMultisig` | 115 | `is_approved()` always returns `false`. No action ever proceeds. | Confirms `_via_multisig` paths propagate `Unauthorized` |
 | `SingleSignerMultisig` | 115 | 1-of-1 threshold. Fine-grained: `set_action_approved(action_id, bool)` controls per-action approval. | Positive-path cross-contract multisig tests |
-| `ExpiredApprovalMultisig` | 115 | `is_executable()` always returns `false` (treats every approval as expired, `approval_ttl = 1s`). | Confirms stale approvals are not cached across ledgers |
+| `ExpiredApprovalMultisig` | 115 | `is_approved()` always returns `false` (treats every approval as expired, `approval_ttl = 1s`). | Confirms stale approvals are not cached across ledgers |
 
 ---
 
