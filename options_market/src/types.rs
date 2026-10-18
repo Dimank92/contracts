@@ -33,6 +33,12 @@ pub enum DataKey {
     Vault,
     /// Records which vault holds escrow for a specific series: series_id -> Address
     SeriesVault(u64),
+    /// Cap on concurrently active series per underlying (instance storage).
+    MaxActiveSeries,
+    /// Current count of active-slot-holding series for a given underlying.
+    ActiveSeriesCount(Symbol),
+    /// Migration flag: whether migrate_counters has completed.
+    Migrated,
 }
 
 // ─── Data Types ───────────────────────────────────────────────────────────────
