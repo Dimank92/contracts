@@ -77,6 +77,31 @@ Soroban (Stellar smart contract) crates for the Zenith options protocol.
   on reviewer quorum, reclaimable by the funder after a missed deadline
   plus grace period. Operations guide:
   [`docs/grants_escrow.md`](docs/grants_escrow.md).
+- [`governor/`](governor) — on-chain proposal and voting contract modelled
+  on OpenZeppelin Governor with the Timelock-control extension. ZEN-token
+  holders `propose` batches of contract calls, vote For / Against / Abstain
+  with their power as of the proposal's snapshot ledger, and successful
+  proposals are `queue`d into the timelock, which executes them after its
+  own delay. The governor never sits in the execution call stack, so a
+  proposal can target the governor's own parameter setters without tripping
+  Soroban's no-re-entry rule. Flash-vote resistance is built in: voting power
+  is read at the snapshot ledger, which is in the past by the time voting
+  opens. See [docs/governance.md](docs/governance.md).
+- [`staking/`](staking) — stake ZEN, earn a pro-rata share of protocol fees.
+  Synthetix `StakingRewards`-style accumulator adapted for instantaneous fee
+  notifications: every `notify_reward(token, amount)` from the pinned fee
+  splitter bumps `RewardPerToken(token)` by `amount × ACC_PRECISION /
+  total_staked`, and each staker's accrued rewards are
+  `stake × (RewardPerToken − UserPaid) / ACC_PRECISION`. All updates are
+  O(1) per reward token, independent of the number of stakers.
+  See [docs/staking-economics.md](docs/staking-economics.md).
+- [`streams/`](streams) — linear, per-second token streams with an optional
+  cliff, funded upfront by the funder (typically the treasury).
+  `streamed(t) = total × (t − start) / (end − start)`, floored, clamped to
+  `[0, total]` and zero before `cliff`. Because every intermediate value is
+  floored and the recipient can only ever withdraw
+  `streamed(now) − withdrawn`, the total paid out can never exceed the
+  deposit. See [docs/streams.md](docs/streams.md).
 - [`test_adversaries/`](test_adversaries) — **dev-dependency only, never
   deployed**. A reusable library of adversarial Soroban contracts for
   negative-path testing at every cross-contract trust boundary (issue #115).
@@ -97,6 +122,36 @@ Soroban (Stellar smart contract) crates for the Zenith options protocol.
   See [`test_adversaries/CATALOG.md`](test_adversaries/CATALOG.md) for the
   full adversary catalog with per-adversary documentation.
 
+## Crate status
+
+The table below summarises the implementation state of every top-level
+crate as of this writing. **Implemented** means the crate has a
+`#[contract]` (or an rlib) with all entrypoints described in the
+README/docs present and tested. **Partial** means entrypoints are
+present but one or more referenced features are not yet built (see the
+linked issues). **Stub** means `lib.rs` is empty or a placeholder —
+the crate compiles but ships no meaningful logic. Tests that exercise
+unbuilt paths are `#[ignore]`d with the tracking issue; the CI
+`workspace-compile` job fails on any bare `#[ignore]` to keep that
+discipline.
+
+| Crate | Status | Notes |
+|---|---|---|
+| `common` | Implemented | rlib; migrations framework, upgrade helpers, pause/admin helpers |
+| `options_market` | Partial | Core trading and settlement implemented; `set_settlement_price_from_oracle` cross-call path is additive but `price_oracle` lib.rs is a stub — see issue #115 |
+| `price_oracle` | Stub | `lib.rs` is 0 bytes; all entrypoints described in the README are **not yet implemented** — see issue #115 |
+| `vault` | Stub | `lib.rs` is an 8-line placeholder; all entrypoints described in the README are **not yet implemented** — see issue #115 |
+| `timelock` | Stub | `lib.rs` is empty; all entrypoints described in the README are **not yet implemented** — see issue #115 |
+| `multisig` | Partial | Core approve/execute flow implemented; `is_executable` / timelock-tier delays and `__check_auth` custom-account mode **not yet implemented** — see issue #150 |
+| `lp_pool` | Implemented | Epoch-queued deposits/withdrawals, write_option/reclaim_collateral calls verified against options_market signatures |
+| `lp_token` | Implemented | SEP-41 conformant; pool-pin mint authorization verified |
+| `params` | Implemented | Timelock-controlled parameter registry; bounds-change delay path implemented |
+| `governor` | Implemented | Proposal/voting lifecycle implemented; depends on timelock (stub) for queue/execute — see issue #115 |
+| `grants_escrow` | Implemented | Milestone-based escrow fully implemented |
+| `staking` | Implemented | Synthetix-style accumulator implemented |
+| `streams` | Implemented | Linear vesting streams with cliff implemented |
+| `test_adversaries` | Implemented | Dev-only adversarial contract library |
+
 ## Building and testing
 
 The repo is one Cargo workspace (root `Cargo.toml`: shared
@@ -112,7 +167,7 @@ cargo xtask ci             # fmt --check, clippy, wasm checks, tests — same as
 
 Add `-p <crate>` (e.g. `-p options_market`) to scope any command. Release
 wasm lands in `target/wasm32-unknown-unknown/release/`. `cargo xtask help`
-lists the rest (`clippy`, `fmt`, `graph`, `check-wasm`, `check-imports`).
+lists the rest (`clippy`, `fmt`, `graph`, `check-wasm`, `check-imports`, `check-ignore`).
 
 Why an xtask: options_market calls price_oracle, vault and params through
 `contractimport!` against their *compiled wasm* (a source dependency
@@ -474,6 +529,12 @@ At `limit = 50` in the test harness: `get_series_page` ≈ 2.0M CPU /
 
 ## `price_oracle` reference
 
+> **Stub — not yet implemented, see issue #115.** `price_oracle/src/lib.rs`
+> is 0 bytes. Every entrypoint, event, and error described below reflects
+> the intended design; none of it is callable on a deployed contract today.
+> Tests that depend on a live price_oracle instance are `#[ignore]`d with
+> issue #115 and will be un-ignored when this crate lands.
+
 ### Admin
 
 | Function | Description |
@@ -527,6 +588,12 @@ have to poll every view function to track what changed.
 | 10 | `InvalidMinReports` |
 
 ## `vault` reference
+
+> **Stub — not yet implemented, see issue #115.** `vault/src/lib.rs`
+> is an 8-line placeholder. Every entrypoint, event, and error described
+> below reflects the intended design; none of it is callable on a deployed
+> contract today. Tests that depend on a live vault instance are
+> `#[ignore]`d with issue #115 and will be un-ignored when this crate lands.
 
 A per-(token, tag) escrow ledger. One deployment holds any number of
 allowlisted tokens and serves any number of integrator contracts
@@ -781,6 +848,12 @@ without it. Set it below the total weight when you initialize.
 
 ### Timelock tiers
 
+> **Not yet implemented — see issue #150.** The `is_executable` function,
+> the `delays` struct, and the per-class delay enforcement described below
+> have not been committed. `zenith-common`'s `require_admin_or_multisig`
+> currently calls `is_approved` (not `is_executable`), so no timelocked
+> multisig path is enforced in any deployed contract today.
+
 Every `_via_multisig` entrypoint declares an `ActionClass`, and checks
 `is_executable(action_id, class)`: the action must be approved **and**
 have stayed at threshold for that class's delay. The approval that
@@ -797,6 +870,11 @@ the timer. `reset` clears it too. Delays are immutable (set at
 | `Critical` | `delays.critical` (e.g. 72h) | `transfer_admin_via_multisig` (all); options_market `upgrade`; vault `withdraw`, `transfer_tag`, `sweep_untagged` (all `_via_multisig`) |
 
 ### Custom account (`__check_auth`)
+
+> **Not yet implemented — see issue #150.** The `AccountConfig` type,
+> `__check_auth` entrypoint, and ed25519 multi-signature verification
+> described below have not been committed. Setting the multisig address
+> as a plain `admin` on any contract will not work until this is rebuilt.
 
 With an `AccountConfig`, the multisig's own address works as a plain
 `admin: Address` in any contract: every existing `admin.require_auth()`
@@ -952,6 +1030,12 @@ register ──approve──▶ Pending ──threshold──▶ is_approved ─
 
 ## `timelock` reference
 
+> **Stub — not yet implemented, see issue #115.** `timelock/src/lib.rs`
+> is empty. Every entrypoint, event, and error described below reflects
+> the intended design; none of it is callable on a deployed contract today.
+> `governor/` depends on this contract for `queue`/`execute` and will not
+> be fully functional until this crate lands.
+
 Meant to hold the admin role on every other Zenith contract, so any
 parameter or code change is visible on-chain for at least `min_delay`
 seconds before it can run. Modelled on OpenZeppelin's TimelockController.
@@ -1039,6 +1123,34 @@ Views: `get_grant`, `get_grant_count`, `has_approved`,
 start, limit)` (paginated, `limit` capped at 50). Events:
 `grant_created`, `milestone_submitted`, `milestone_approved`,
 `milestone_released`, `funds_reclaimed`.
+
+## `governor` reference
+
+Proposal / voting lifecycle modelled on OpenZeppelin Governor with the
+Timelock-control extension. The governor never sits in the execution
+call stack; it schedules operations into the timelock, which executes
+them separately.
+
+> **Depends on a stub — queue/execute paths non-functional until issue #115
+> lands.** `governor::queue` cross-calls `timelock::schedule` and
+> `governor::state` checks `timelock::is_done`; both calls will fail until
+> `timelock/src/lib.rs` is implemented.
+
+| Function | Description |
+|---|---|
+| `initialize(token, timelock, voting_delay, voting_period, quorum_bps, proposal_threshold)` | One-time setup. `voting_delay` and `voting_period` are in ledger sequence numbers; `quorum_bps` is 1–10000. |
+| `propose(proposer, targets, fns, args) -> proposal_id` | Signer-threshold-gated. Records a batch of contract calls; snapshot is the current ledger. |
+| `cast_vote(voter, proposal_id, support)` | `support`: 0 = Against, 1 = For, 2 = Abstain. Power read at the snapshot. |
+| `queue(proposal_id)` | Anyone, once the proposal has succeeded. Calls `timelock::schedule`. |
+| `cancel(proposer, proposal_id)` | Proposer only (or anyone if proposer dropped below threshold). |
+| `get_proposal(proposal_id)` | Returns the full `Proposal` struct. |
+| `state(proposal_id)` | Returns `ProposalState` (Pending / Active / Canceled / Defeated / Succeeded / Queued / Expired / Executed). |
+
+Views: `get_token`, `get_timelock`, `get_voting_delay`, `get_voting_period`,
+`get_quorum_bps`, `get_proposal_threshold`, `has_voted(proposal_id, voter)`.
+
+Events: `proposal_created`, `vote_cast`, `proposal_queued`,
+`proposal_canceled`.
 
 ## Known gaps
 

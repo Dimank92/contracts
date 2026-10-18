@@ -58,6 +58,11 @@ Commands:
   fmt [--check]  `cargo fmt --all`.
   check-imports  Verify every contractimport! is declared in wasm-deps and
                  points at the shared target/ directory.
+  check-ignore   Fail if any #[ignore] in the workspace lacks a tracking-issue
+                 reference in the same attribute or an adjacent // comment.
+                 Emits the offending file and line number. Accepts
+                 `#[ignore = \"#N ...\"]` or a `// #N` / `// issue #N` /
+                 `// https://...` comment on the line before or after.
   check-wasm     Inspect built wasm for linked-in testutils/host code.
   graph          Print the wasm build order and each crate's wasm needs.
   ci             fmt --check, check-imports, build, check-wasm, clippy, test.
@@ -91,6 +96,7 @@ fn run() -> Result<()> {
         "clippy" => clippy(&ws, &opts),
         "fmt" => fmt(&ws, &opts),
         "check-imports" => check_imports(&ws),
+        "check-ignore" => check_ignore(&ws),
         "check-wasm" => check_wasm(&ws, &opts),
         "graph" => graph(&ws),
         "ci" => ci(&ws),
@@ -632,6 +638,100 @@ fn check_imports(ws: &Workspace) -> Result<()> {
     }
 }
 
+/// Scans every `.rs` file in the workspace for `#[ignore]` annotations that
+/// lack a tracking-issue reference, and fails with actionable diagnostics if
+/// any are found.
+///
+/// An `#[ignore]` is considered documented when ANY of these hold:
+/// - the attribute carries a message: `#[ignore = "... #N ..."]`
+/// - the attribute carries a URL:     `#[ignore = "... https://... ..."]`
+/// - the line immediately before or after contains a `//` comment that has
+///   `#<digits>`, `issue`, or `https://` in it
+///
+/// This keeps the annotation style flexible (both inline and adjacent-comment
+/// forms are accepted) while banning bare `#[ignore]` with no traceable
+/// reason.
+fn check_ignore(ws: &Workspace) -> Result<()> {
+    let mut errors: Vec<String> = Vec::new();
+
+    for (name, pkg) in &ws.packages {
+        let mut files = Vec::new();
+        collect_rs_files(&pkg.dir.join("src"), &mut files)?;
+        // Also scan test/ directories (integration_tests, etc.)
+        collect_rs_files(&pkg.dir.join("tests"), &mut files)?;
+
+        for file in files {
+            let src = fs::read_to_string(&file)
+                .map_err(|e| format!("reading {}: {e}", file.display()))?;
+            let lines: Vec<&str> = src.lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                let trimmed = line.trim();
+                if !is_ignore_attr(trimmed) {
+                    continue;
+                }
+                // 1. Inline message on the attribute itself.
+                if has_tracking_ref(trimmed) {
+                    continue;
+                }
+                // 2. Adjacent comment: check the line above and below.
+                let above = if i > 0 { lines[i - 1].trim() } else { "" };
+                let below = lines.get(i + 1).copied().unwrap_or("").trim();
+                if (above.starts_with("//") && has_tracking_ref(above))
+                    || (below.starts_with("//") && has_tracking_ref(below))
+                {
+                    continue;
+                }
+                let rel = file
+                    .strip_prefix(&ws.root)
+                    .unwrap_or(&file)
+                    .display()
+                    .to_string();
+                errors.push(format!(
+                    "{name}: {rel}:{}: #[ignore] without a tracking-issue reference \
+                     (add `= \"#N reason\"` or a `// #N` / `// issue #N` / `// https://...` \
+                     comment on an adjacent line)",
+                    i + 1
+                ));
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        eprintln!("xtask: all #[ignore] annotations carry a tracking reference");
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
+}
+
+/// Returns true if `line` looks like a `#[ignore ...]` attribute (with or
+/// without a message string).
+fn is_ignore_attr(line: &str) -> bool {
+    // Match `#[ignore]` and `#[ignore = "..."]`.
+    let s = line.trim_start_matches('#').trim_start_matches('[');
+    s.starts_with("ignore")
+        && {
+            let rest = s.trim_start_matches("ignore");
+            rest.starts_with(']') || rest.starts_with(' ') || rest.starts_with('=')
+        }
+}
+
+/// Returns true if `text` contains an issue/URL reference.
+fn has_tracking_ref(text: &str) -> bool {
+    // `#[ignore = "closes #183 ..."]`  →  has `= "..."` with a reference inside
+    // `// #183`, `// issue #183`, `// https://github.com/...`
+    let lower = text.to_ascii_lowercase();
+    // Issue number pattern: `#<one-or-more digits>`
+    let has_issue_num = text.contains('#')
+        && text
+            .split('#')
+            .skip(1)
+            .any(|s| s.chars().next().map_or(false, |c| c.is_ascii_digit()));
+    let has_url = lower.contains("https://") || lower.contains("http://");
+    let has_issue_word = lower.contains("issue");
+    has_issue_num || has_url || has_issue_word
+}
+
 fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Ok(());
@@ -839,9 +939,10 @@ fn ci(ws: &Workspace) -> Result<()> {
         check: true,
         ..Opts::default()
     };
-    let steps: [(&str, &dyn Fn() -> Result<()>); 6] = [
+    let steps: [(&str, &dyn Fn() -> Result<()>); 7] = [
         ("fmt --check", &|| fmt(ws, &check)),
         ("check-imports", &|| check_imports(ws)),
+        ("check-ignore", &|| check_ignore(ws)),
         ("build", &|| build(ws, &all)),
         ("check-wasm", &|| check_wasm(ws, &all)),
         ("clippy", &|| clippy(ws, &all)),
