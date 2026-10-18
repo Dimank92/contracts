@@ -273,3 +273,81 @@ pub fn action_id_from_u64(env: &Env, discriminant: u64) -> BytesN<32> {
     bytes[..8].copy_from_slice(&discriminant.to_le_bytes());
     BytesN::from_array(env, &bytes)
 }
+
+// ─── ReferenceMultisig ───────────────────────────────────────────────────────
+
+/// Not an adversary: an honest M-of-N multisig speaking exactly the
+/// interface `zenith-common` calls — `u64` action ids and
+/// `is_executable(action_id, class)`, with zero timelock delay for every
+/// class.
+///
+/// The real `multisig` crate moved to `BytesN<32>` action ids in #149 and
+/// its `is_executable`/timelock tiers (#150) were never committed (see the
+/// note in the README's multisig section), so it can't currently stand in
+/// for the multisig `options_market` / `price_oracle` / `vault` cross-call.
+/// Their `_via_multisig` positive-path tests use this instead until that
+/// interface is restored.
+#[contract]
+pub struct ReferenceMultisig;
+
+#[contracttype]
+enum ReferenceKey {
+    Signers,
+    Threshold,
+    Approved(u64, Address),
+    Count(u64),
+}
+
+#[contractimpl]
+impl ReferenceMultisig {
+    pub fn initialize(env: Env, signers: Vec<Address>, threshold: u32, _approval_ttl: u64) {
+        assert!(threshold > 0 && threshold <= signers.len());
+        env.storage()
+            .instance()
+            .set(&ReferenceKey::Signers, &signers);
+        env.storage()
+            .instance()
+            .set(&ReferenceKey::Threshold, &threshold);
+    }
+
+    /// Records `signer`'s approval of `action_id`; approving twice counts once.
+    pub fn approve(env: Env, signer: Address, action_id: u64) {
+        signer.require_auth();
+        let signers: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&ReferenceKey::Signers)
+            .unwrap();
+        assert!(signers.contains(&signer), "not a signer");
+        let key = ReferenceKey::Approved(action_id, signer);
+        if env.storage().instance().has(&key) {
+            return;
+        }
+        env.storage().instance().set(&key, &true);
+        let count = Self::get_approval_count(env.clone(), action_id);
+        env.storage()
+            .instance()
+            .set(&ReferenceKey::Count(action_id), &(count + 1));
+    }
+
+    pub fn get_approval_count(env: Env, action_id: u64) -> u32 {
+        env.storage()
+            .instance()
+            .get(&ReferenceKey::Count(action_id))
+            .unwrap_or(0)
+    }
+
+    pub fn is_approved(env: Env, action_id: u64) -> bool {
+        let threshold: u32 = env
+            .storage()
+            .instance()
+            .get(&ReferenceKey::Threshold)
+            .unwrap();
+        Self::get_approval_count(env, action_id) >= threshold
+    }
+
+    /// Approved at threshold; every class's delay is zero.
+    pub fn is_executable(env: Env, action_id: u64, _class: ActionClass) -> bool {
+        Self::is_approved(env, action_id)
+    }
+}

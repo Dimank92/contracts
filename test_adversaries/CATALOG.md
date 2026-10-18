@@ -72,6 +72,7 @@ work against them transparently.
 | `NeverApproveMultisig` | 115 | `is_executable()` always returns `false`. No action ever proceeds. | Confirms `_via_multisig` paths propagate `Unauthorized` |
 | `SingleSignerMultisig` | 115 | 1-of-1 threshold. Fine-grained: `set_action_approved(action_id, bool)` controls per-action approval. | Positive-path cross-contract multisig tests |
 | `ExpiredApprovalMultisig` | 115 | `is_executable()` always returns `false` (treats every approval as expired, `approval_ttl = 1s`). | Confirms stale approvals are not cached across ledgers |
+| `ReferenceMultisig` | 172 | **Not an adversary.** Honest M-of-N over `u64` action ids: `approve(signer, action_id)`, `is_executable()` true once `threshold` signers approved, zero delay for every class. Stands in for the real `multisig`, whose `BytesN<32>` ids and missing `is_executable` (#150) don't match what `zenith-common` calls. | Positive-path `_via_multisig` tests in options_market and price_oracle |
 
 ---
 
