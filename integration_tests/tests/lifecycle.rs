@@ -298,10 +298,13 @@ fn the_heaviest_seam_calls_fit_the_default_budget() {
     });
     p.warp_to(p.expiry(series_id));
     p.report(&[75 * UNIT, 75 * UNIT, 75 * UNIT]);
-    measure("set_settlement_price_from_oracle (market -> oracle)", &|| {
-        p.market
-            .set_settlement_price_from_oracle(&series_id, &p.oracle.address);
-    });
+    measure(
+        "set_settlement_price_from_oracle (market -> oracle)",
+        &|| {
+            p.market
+                .set_settlement_price_from_oracle(&series_id, &p.oracle.address);
+        },
+    );
     measure("exercise (market -> vault withdraw)", &|| {
         p.market.exercise(&buyer, &long);
     });

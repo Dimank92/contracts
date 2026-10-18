@@ -2160,6 +2160,7 @@ dependencies = [
  "soroban-sdk",
  "zenith-common",
  "zenith-multisig",
+ "zenith-test-adversaries",
 ]
 
 [[package]]
