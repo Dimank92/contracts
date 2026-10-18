@@ -21,7 +21,9 @@ pub mod upgrade;
 #[cfg(test)]
 mod test;
 
-use soroban_sdk::{contracttype, panic_with_error, vec, Address, Env, IntoVal, Symbol, Val};
+use soroban_sdk::{
+    contracttype, panic_with_error, vec, Address, BytesN, Env, IntoVal, Symbol, Val,
+};
 
 /// Mirrors multisig's `ActionClass` (same `u32` encoding) without
 /// exporting a spec entry into consumer contracts.
@@ -39,14 +41,20 @@ pub enum Auth {
     /// The address stored under the contract's admin key must sign.
     Admin,
     /// `(multisig_contract, action_id)`: the multisig must report the
-    /// action as executable for the entrypoint's `ActionClass`.
-    Multisig(Address, u64),
+    /// action as executable for the entrypoint's `ActionClass`. Action ids
+    /// are the multisig's opaque `BytesN<32>`.
+    Multisig(Address, BytesN<32>),
 }
 
 /// Cross-calls `multisig.is_executable(action_id, class)`. Uses
 /// `invoke_contract` directly rather than a `contractimport!` client, so
 /// no consumer needs multisig's wasm to compile.
-pub fn is_executable(env: &Env, multisig: &Address, action_id: u64, class: ActionClass) -> bool {
+pub fn is_executable(
+    env: &Env,
+    multisig: &Address,
+    action_id: &BytesN<32>,
+    class: ActionClass,
+) -> bool {
     env.invoke_contract(
         multisig,
         &Symbol::new(env, "is_executable"),
@@ -71,7 +79,7 @@ pub fn require_admin_or_multisig<K, E>(
     match auth {
         Auth::Admin => get_admin(env, admin_key).require_auth(),
         Auth::Multisig(multisig, action_id) => {
-            if !is_executable(env, multisig, *action_id, class) {
+            if !is_executable(env, multisig, action_id, class) {
                 panic_with_error!(env, unauthorized);
             }
         }

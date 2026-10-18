@@ -81,7 +81,7 @@ impl PriceOracle {
     /// executable as `Critical`. `action_id` must equal
     /// `upgrade_action_id(new_wasm_hash)`, so the approval covers exactly
     /// this wasm on exactly this contract.
-    pub fn upgrade_via_multisig(env: Env, action_id: u64, new_wasm_hash: BytesN<32>) {
+    pub fn upgrade_via_multisig(env: Env, action_id: BytesN<32>, new_wasm_hash: BytesN<32>) {
         ttl::extend_instance(&env);
         upgrade::upgrade(
             &env,
@@ -107,7 +107,7 @@ impl PriceOracle {
 
     /// The multisig action id that authorizes upgrading this contract to
     /// `new_wasm_hash` — what signers approve.
-    pub fn upgrade_action_id(env: Env, new_wasm_hash: BytesN<32>) -> u64 {
+    pub fn upgrade_action_id(env: Env, new_wasm_hash: BytesN<32>) -> BytesN<32> {
         upgrade::upgrade_action_id(&env, &new_wasm_hash)
     }
 
@@ -123,7 +123,7 @@ impl PriceOracle {
     /// multisig. `Emergency` class (no extra delay): the steps it runs
     /// were already timelocked as `Critical` with the upgrade that
     /// installed them, and the contract is blocked until they run.
-    pub fn migrate_via_multisig(env: Env, action_id: u64, from: u32, to: u32) -> u32 {
+    pub fn migrate_via_multisig(env: Env, action_id: BytesN<32>, from: u32, to: u32) -> u32 {
         ttl::extend_instance(&env);
         let multisig = upgrade::pinned_multisig(&env)
             .unwrap_or_else(|| panic_with_error!(&env, Error::Unauthorized));
