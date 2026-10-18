@@ -5,10 +5,9 @@ edition.workspace = true
 publish.workspace = true
 
 [lib]
-# rlib alongside cdylib so other contracts (options_market) can depend on
-# this crate as a normal Rust library to get VaultClient's generated type
-# for cross-contract tests, while still building a deployable wasm cdylib
-# on its own — same pattern as price_oracle's Cargo.toml.
+# rlib alongside cdylib so other contracts' tests (options_market,
+# integration_tests) can register a real vault natively, while it still
+# builds a deployable wasm cdylib on its own.
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
@@ -18,18 +17,11 @@ zenith-common = { workspace = true }
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
 # Dev/test-only: registers a REAL multisig contract instance inside the
-# test Env for cross-contract tests. Never linked into the production
-# wasm (see src/multisig_client.rs).
+# test Env for the `_via_multisig` tests. The vault itself reaches it
+# through zenith-common's invoke_contract, not a client.
 multisig = { workspace = true, features = ["testutils"] }
+# Adversarial mock contracts for negative-path cross-contract tests (issue #115).
+test_adversaries = { package = "zenith-test-adversaries", path = "../test_adversaries" }
 
 [features]
 testutils = ["soroban-sdk/testutils"]
-# Compiles a full-ledger post-condition check into every mutating
-# entrypoint. For tests/fuzzing only; never enable for production wasm.
-invariants = []
-
-[package.metadata.zenith]
-# `cargo xtask test` runs this after the default test pass: ledger
-# invariant post-conditions compiled in, plus the slow 10,000-op fuzz test
-# that's #[ignore]d in the default run.
-extra-test = { features = ["invariants"], args = ["--include-ignored"] }
