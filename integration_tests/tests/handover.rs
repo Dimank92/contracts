@@ -6,7 +6,9 @@
 //!   Stage 3  timelock proposer → governor (guardian still multisig)
 //!   Stage 4  lock-in: guardian removed, no more rollback
 //!
-//! The vault's admin stays options_market throughout.
+//! Admin transfers are two-step: the current admin proposes, the new admin
+//! calls `accept_admin` — for the timelock, through one of its own delayed
+//! operations. The vault's admin stays options_market throughout.
 //!
 //! Auth is never mocked wholesale after setup: every privileged call
 //! supplies exactly one signer's authorization, so "X can do it and Y can
@@ -125,8 +127,13 @@ fn deploy<'a>() -> World<'a> {
     oracle.initialize(&deployer);
     let market = OptionsMarketClient::new(&env, &env.register_contract(None, OptionsMarket));
     market.initialize(&deployer, &oracle.address, &usdc, &deployer);
+    // The vault trusts the multisig for its recovery path, then hands its
+    // admin to options_market (which accepts it, two-step).
     let vault = VaultClient::new(&env, &env.register_contract(None, Vault));
-    vault.initialize(&market.address, &usdc);
+    vault.initialize(&deployer, &usdc);
+    vault.set_multisig(&multisig.address);
+    vault.transfer_admin(&market.address);
+    market.accept_vault_admin(&vault.address);
 
     let votes = MockVotesClient::new(&env, &env.register_contract(None, MockVotes));
     let voter = Address::generate(&env);
@@ -220,13 +227,37 @@ impl World<'_> {
         assert_eq!(self.vault.get_admin(), self.market.address);
     }
 
-    /// `who` (an account) calls transfer_admin(new) on both contracts.
+    /// `who` (an account) calls transfer_admin(new) on both contracts:
+    /// step one of the two-step transfer.
     fn transfer_both(&self, who: &Address, new_admin: &Address) {
         let args: Vec<Val> = (new_admin.clone(),).into_val(&self.env);
         self.sign(who, &self.market.address, "transfer_admin", args.clone());
         self.market.transfer_admin(new_admin);
         self.sign(who, &self.oracle.address, "transfer_admin", args);
         self.oracle.transfer_admin(new_admin);
+    }
+
+    /// `who` (an account) accepts a pending admin transfer on both.
+    fn accept_both(&self, who: &Address) {
+        let none: Vec<Val> = ().into_val(&self.env);
+        self.sign(who, &self.market.address, "accept_admin", none.clone());
+        self.market.accept_admin();
+        self.sign(who, &self.oracle.address, "accept_admin", none);
+        self.oracle.accept_admin();
+    }
+
+    /// The timelock's own `accept_admin` calls on both contracts.
+    fn accept_both_calls(&self) -> (Vec<Address>, Vec<Symbol>, Vec<Vec<Val>>) {
+        let e = &self.env;
+        (
+            vec![e, self.market.address.clone(), self.oracle.address.clone()],
+            vec![
+                e,
+                Symbol::new(e, "accept_admin"),
+                Symbol::new(e, "accept_admin"),
+            ],
+            vec![e, Vec::<Val>::new(e), Vec::<Val>::new(e)],
+        )
     }
 
     fn transfer_both_calls(
@@ -286,11 +317,20 @@ impl World<'_> {
 
     fn to_stage1(&self) {
         self.transfer_both(&self.deployer.clone(), &self.ms_account.clone());
+        self.accept_both(&self.ms_account.clone());
+    }
+
+    /// The multisig proposes the timelock, then (as timelock proposer)
+    /// schedules the timelock's acceptance.
+    fn stage1_to_stage2(&self) {
+        self.transfer_both(&self.ms_account.clone(), &self.tl.address.clone());
+        let id = self.ms_schedule(self.accept_both_calls());
+        self.execute_after_delay(&id);
     }
 
     fn to_stage2(&self) {
         self.to_stage1();
-        self.transfer_both(&self.ms_account.clone(), &self.tl.address.clone());
+        self.stage1_to_stage2();
     }
 
     fn to_stage3(&self) {
@@ -334,8 +374,13 @@ fn staged_handover_end_to_end() {
     assert!(!w.admin_can_act(&w.deployer));
     w.assert_vault_invariant();
 
-    // Stage 2
+    // Stage 2: proposing the timelock moves nothing by itself…
     w.transfer_both(&w.ms_account, &w.tl.address);
+    assert!(w.admin_can_act(&w.ms_account));
+    // …the timelock's own delayed accept_admin does.
+    let accept = w.ms_schedule(w.accept_both_calls());
+    w.execute_after_delay(&accept);
+    assert_eq!(w.market.get_admin(), w.tl.address);
     assert!(!w.admin_can_act(&w.ms_account));
     assert!(!w.admin_can_act(&w.deployer));
     let e = &w.env;
@@ -400,6 +445,7 @@ fn rollback_stage1_multisig_returns_admin() {
     let w = deploy();
     w.to_stage1();
     w.transfer_both(&w.ms_account, &w.deployer);
+    w.accept_both(&w.deployer);
     assert!(w.admin_can_act(&w.deployer));
     assert!(!w.admin_can_act(&w.ms_account));
 }
@@ -410,6 +456,7 @@ fn rollback_stage2_multisig_reclaims_admin_through_timelock() {
     w.to_stage2();
     let id = w.ms_schedule(w.transfer_both_calls(&w.ms_account));
     w.execute_after_delay(&id);
+    w.accept_both(&w.ms_account);
     assert!(w.admin_can_act(&w.ms_account));
     w.assert_vault_invariant();
 }
@@ -430,6 +477,7 @@ fn rollback_stage2_guardian_cancels_bad_handover() {
     w.warp(TL_DELAY);
     assert!(w.tl.try_execute(&id).is_err());
     assert_eq!(w.market.get_admin(), w.tl.address);
+    assert_eq!(w.market.get_pending_admin(), None);
 }
 
 #[test]
@@ -477,6 +525,7 @@ fn rollback_stage3_guardian_restores_multisig_proposer() {
     // The multisig is back in control of the timelock.
     let fix = w.ms_schedule(w.transfer_both_calls(&w.ms_account));
     w.execute_after_delay(&fix);
+    w.accept_both(&w.ms_account);
     assert!(w.admin_can_act(&w.ms_account));
 }
 
@@ -502,14 +551,15 @@ fn vault_multisig_recovery_path_survives_every_stage() {
     w.to_stage4();
     w.assert_vault_invariant();
     // The vault's only migration concern is its multisig recovery path:
-    // with 2-of-3 signer approvals it can still re-point the vault admin.
-    let action_id = 9_001u64;
+    // with 2-of-3 signer approvals of its trusted multisig it can still
+    // re-point the vault admin (two-step: the recovery address accepts).
+    let action_id = BytesN::from_array(&w.env, &[0x90; 32]);
     for s in &w.ms_signers[..2] {
         w.sign(
             s,
             &w.multisig.address,
             "approve",
-            (s.clone(), action_id).into_val(&w.env),
+            (s.clone(), action_id.clone()).into_val(&w.env),
         );
         w.multisig.approve(s, &action_id);
     }
@@ -518,5 +568,13 @@ fn vault_multisig_recovery_path_survives_every_stage() {
     w.env.set_auths(&[]);
     w.vault
         .transfer_admin_via_multisig(&w.multisig.address, &action_id, &recovery);
+    assert_eq!(w.vault.get_admin(), w.market.address);
+    w.sign(
+        &recovery,
+        &w.vault.address,
+        "accept_admin",
+        ().into_val(&w.env),
+    );
+    w.vault.accept_admin();
     assert_eq!(w.vault.get_admin(), recovery);
 }
