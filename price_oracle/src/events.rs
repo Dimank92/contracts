@@ -39,3 +39,22 @@ pub fn price_reported(env: &Env, feeder: Address, symbol: Symbol, price: i128) {
     env.events()
         .publish((Symbol::new(env, "price_reported"), feeder, symbol), price);
 }
+
+pub fn admin_transfer_proposed(env: &Env, admin: Address, pending: Address) {
+    env.events().publish(
+        (Symbol::new(env, "admin_transfer_proposed"),),
+        (admin, pending),
+    );
+}
+
+pub fn round_aggregated(env: &Env, symbol: Symbol, round: &crate::types::PriceRound) {
+    env.events().publish(
+        (Symbol::new(env, "round_aggregated"), symbol),
+        (
+            round.round_id,
+            round.price,
+            round.reports_used,
+            round.reports_discarded,
+        ),
+    );
+}

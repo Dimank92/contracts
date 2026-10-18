@@ -345,7 +345,12 @@ fn transfer_admin_hands_off_control() {
 
     let new_admin = Address::generate(&h.env);
     h.client.transfer_admin(&new_admin);
+    // Two-step: nothing moves until the new admin accepts.
+    assert_eq!(h.client.get_admin(), h.admin);
+    assert_eq!(h.client.get_pending_admin(), Some(new_admin.clone()));
+    h.client.accept_admin();
     assert_eq!(h.client.get_admin(), new_admin);
+    assert_eq!(h.client.get_pending_admin(), None);
 
     // Admin-gated calls still work, now authorized against the new admin.
     h.client.add_feeder(&Address::generate(&h.env));
@@ -452,6 +457,7 @@ fn transfer_admin_emits_an_admin_transferred_event_with_old_and_new_admin() {
     let h = setup();
     let new_admin = Address::generate(&h.env);
     h.client.transfer_admin(&new_admin);
+    h.client.accept_admin();
 
     let events = h.env.events().all();
     let (_, _topics, data) = events.last().unwrap();
@@ -513,12 +519,9 @@ fn setup_multisig(h: &Harness) -> (Address, [Address; 3]) {
         ],
         &2,
         &0,
-        &multisig::Delays {
-            standard: 0,
-            critical: 0,
-        },
-        &None,
     );
+    // Only the trusted multisig is accepted by `_via_multisig` paths.
+    h.client.set_multisig(&contract_id);
     (contract_id, signers)
 }
 
@@ -590,6 +593,7 @@ fn transfer_admin_via_multisig_hands_off_control_once_approved() {
     let new_admin = Address::generate(&h.env);
     h.client
         .transfer_admin_via_multisig(&multisig_id, &action_id, &new_admin);
+    h.client.accept_admin();
     assert_eq!(h.client.get_admin(), new_admin);
 }
 
@@ -897,4 +901,313 @@ fn archived_instance_restores_feeders_and_admin() {
 
     assert_eq!(h.client.get_admin(), h.admin);
     assert!(h.client.is_feeder(&feeder));
+}
+
+// ─── aggregation pipeline: freshness → filter → median → quorum (#175) ──────
+
+fn feeders(h: &Harness, n: usize) -> std::vec::Vec<Address> {
+    (0..n)
+        .map(|_| {
+            let f = Address::generate(&h.env);
+            h.client.add_feeder(&f);
+            f
+        })
+        .collect()
+}
+
+fn report_all(h: &Harness, symbol: &Symbol, feeders: &[Address], prices: &[i128]) {
+    for (f, p) in feeders.iter().zip(prices) {
+        h.client.report_price(f, symbol, p);
+    }
+}
+
+fn warp(h: &Harness, secs: u64) {
+    h.env.ledger().with_mut(|l| l.timestamp += secs);
+}
+
+#[test]
+fn get_price_discards_an_outlier_before_taking_the_median() {
+    let h = setup();
+    let xlm = Symbol::new(&h.env, "XLM");
+    let fs = feeders(&h, 4);
+    // Without filtering the median of these four would be 10_005_000.
+    report_all(
+        &h,
+        &xlm,
+        &fs,
+        &[10_000_000, 10_010_000, 9_990_000, 500_000_000],
+    );
+    assert_eq!(h.client.get_price(&xlm), Some(10_000_000));
+}
+
+#[test]
+fn aggregate_writes_a_round_with_the_filtered_median() {
+    let h = setup();
+    let xlm = Symbol::new(&h.env, "XLM");
+    let fs = feeders(&h, 4);
+    report_all(
+        &h,
+        &xlm,
+        &fs,
+        &[10_000_000, 10_010_000, 9_990_000, 500_000_000],
+    );
+    assert_eq!(h.client.get_latest_round(&xlm), None);
+
+    let round = h.client.aggregate(&xlm);
+    assert_eq!(round.round_id, 1);
+    assert_eq!(round.price, 10_000_000);
+    assert_eq!(round.reports_used, 3);
+    assert_eq!(round.reports_discarded, 1);
+    assert_eq!(round.timestamp, h.env.ledger().timestamp());
+    assert_eq!(h.client.get_latest_round(&xlm), Some(round));
+
+    let (_, topics, data) = h.env.events().all().last().unwrap();
+    assert_eq!(
+        Symbol::try_from_val(&h.env, &topics.get(0).unwrap()).unwrap(),
+        Symbol::new(&h.env, "round_aggregated")
+    );
+    let (id, price, used, discarded) =
+        <(u64, i128, u32, u32)>::try_from_val(&h.env, &data).unwrap();
+    assert_eq!((id, price, used, discarded), (1, 10_000_000, 3, 1));
+
+    warp(&h, 60);
+    report_all(&h, &xlm, &fs[..1], &[10_020_000]);
+    assert_eq!(h.client.aggregate(&xlm).round_id, 2);
+}
+
+#[test]
+fn aggregate_without_fresh_reports_fails_and_writes_nothing() {
+    let h = setup();
+    let xlm = Symbol::new(&h.env, "XLM");
+    feeders(&h, 2);
+    assert_eq!(
+        h.client.try_aggregate(&xlm),
+        Err(Ok(crate::error::Error::NoFreshReports.into()))
+    );
+    assert_eq!(h.client.get_latest_round(&xlm), None);
+}
+
+#[test]
+fn aggregate_below_quorum_fails_and_writes_nothing() {
+    let h = setup();
+    let xlm = Symbol::new(&h.env, "XLM");
+    let fs = feeders(&h, 4);
+    report_all(
+        &h,
+        &xlm,
+        &fs,
+        &[10_000_000, 10_010_000, 9_990_000, 500_000_000],
+    );
+    // Exactly min_reports survive: fine.
+    h.client.set_min_reports(&3);
+    assert_eq!(h.client.aggregate(&xlm).reports_used, 3);
+    // min_reports - 1 survive: refused, and round 1 is left untouched.
+    h.client.set_min_reports(&4);
+    assert_eq!(h.client.get_price(&xlm), None);
+    assert_eq!(
+        h.client.try_aggregate(&xlm),
+        Err(Ok(crate::error::Error::QuorumNotMet.into()))
+    );
+    assert_eq!(h.client.get_latest_round(&xlm).unwrap().round_id, 1);
+}
+
+#[test]
+fn single_feeder_dominance_fails_closed() {
+    let h = setup();
+    let xlm = Symbol::new(&h.env, "XLM");
+    let fs = feeders(&h, 3);
+    h.client.set_min_reports(&2);
+    report_all(&h, &xlm, &fs, &[1_000_000, 1_000_100, 999_900]);
+    assert!(h.client.get_price(&xlm).is_some());
+
+    // Two feeders go stale and the third keeps reporting: one feeder
+    // alone must not set the price.
+    warp(&h, 3_601);
+    h.client.report_price(&fs[0], &xlm, &5_000_000);
+    assert_eq!(h.client.get_price(&xlm), None);
+    assert_eq!(
+        h.client.try_aggregate(&xlm),
+        Err(Ok(crate::error::Error::QuorumNotMet.into()))
+    );
+
+    // Same once the others are removed outright.
+    h.client.remove_feeder(&fs[1]);
+    h.client.remove_feeder(&fs[2]);
+    assert_eq!(h.client.get_price(&xlm), None);
+}
+
+#[test]
+fn freshness_is_applied_before_the_filter() {
+    let h = setup();
+    let xlm = Symbol::new(&h.env, "XLM");
+    let fs = feeders(&h, 4);
+    // An old, wildly different report…
+    h.client.report_price(&fs[3], &xlm, &90_000_000);
+    warp(&h, 3_601);
+    // …must neither count as a report nor skew the filter's median/MAD.
+    report_all(&h, &xlm, &fs[..3], &[10_000_000, 10_200_000, 10_100_000]);
+    let round = h.client.aggregate(&xlm);
+    assert_eq!(round.price, 10_100_000);
+    assert_eq!(round.reports_used + round.reports_discarded, 3);
+}
+
+#[test]
+fn shortening_the_freshness_window_drops_reports() {
+    let h = setup();
+    let xlm = Symbol::new(&h.env, "XLM");
+    let fs = feeders(&h, 2);
+    h.client.report_price(&fs[0], &xlm, &1_000_000);
+    warp(&h, 120);
+    h.client.report_price(&fs[1], &xlm, &1_100_000);
+    assert_eq!(h.client.get_price(&xlm), Some(1_050_000));
+    h.client.set_max_staleness(&60);
+    assert_eq!(h.client.get_price(&xlm), Some(1_100_000));
+}
+
+#[test]
+fn even_report_counts_round_down() {
+    let h = setup();
+    let xlm = Symbol::new(&h.env, "XLM");
+    let fs = feeders(&h, 2);
+    report_all(&h, &xlm, &fs, &[1_000_000, 1_000_001]);
+    assert_eq!(h.client.get_price(&xlm), Some(1_000_000));
+}
+
+#[test]
+fn aggregate_is_rejected_while_paused() {
+    let h = setup();
+    let xlm = Symbol::new(&h.env, "XLM");
+    let fs = feeders(&h, 1);
+    report_all(&h, &xlm, &fs, &[1_000_000]);
+    h.client.pause();
+    assert_eq!(
+        h.client.try_aggregate(&xlm),
+        Err(Ok(crate::error::Error::ContractPaused.into()))
+    );
+    // Reads stay live.
+    assert_eq!(h.client.get_price(&xlm), Some(1_000_000));
+}
+
+#[test]
+fn set_min_reports_rejects_more_than_there_can_be_feeders() {
+    let h = setup();
+    assert_eq!(
+        h.client
+            .try_set_min_reports(&(crate::math::MAX_FEEDERS + 1)),
+        Err(Ok(crate::error::Error::InvalidMinReports.into()))
+    );
+}
+
+// ─── admin auth: Auth::Admin vs Auth::Multisig (#176) ───────────────────────
+
+/// Authorizes exactly one call by `who`, so "the stored admin can and a
+/// stranger can't" is checked by the host instead of mock_all_auths.
+fn sign_as(h: &Harness, who: &Address, fn_name: &str, args: soroban_sdk::Vec<soroban_sdk::Val>) {
+    use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+    h.env.mock_auths(&[MockAuth {
+        address: who,
+        invoke: &MockAuthInvoke {
+            contract: &h.client.address,
+            fn_name,
+            args,
+            sub_invokes: &[],
+        },
+    }]);
+}
+
+#[test]
+fn every_admin_entrypoint_rejects_a_wrong_admin() {
+    use soroban_sdk::IntoVal;
+    let h = setup();
+    let e = &h.env;
+    let stranger = Address::generate(e);
+    let feeder = Address::generate(e);
+    let calls: [(&str, soroban_sdk::Vec<soroban_sdk::Val>); 7] = [
+        ("set_max_staleness", (60u64,).into_val(e)),
+        ("set_min_reports", (2u32,).into_val(e)),
+        ("transfer_admin", (stranger.clone(),).into_val(e)),
+        ("pause", ().into_val(e)),
+        ("unpause", ().into_val(e)),
+        ("add_feeder", (feeder.clone(),).into_val(e)),
+        ("set_multisig", (stranger.clone(),).into_val(e)),
+    ];
+    for (name, args) in calls.iter() {
+        sign_as(&h, &stranger, name, args.clone());
+        let result = match *name {
+            "set_max_staleness" => h.client.try_set_max_staleness(&60).is_err(),
+            "set_min_reports" => h.client.try_set_min_reports(&2).is_err(),
+            "transfer_admin" => h.client.try_transfer_admin(&stranger).is_err(),
+            "pause" => h.client.try_pause().is_err(),
+            "unpause" => h.client.try_unpause().is_err(),
+            "add_feeder" => h.client.try_add_feeder(&feeder).is_err(),
+            _ => h.client.try_set_multisig(&stranger).is_err(),
+        };
+        assert!(result, "{} accepted a non-admin signature", name);
+    }
+    // And the real admin's signature works.
+    sign_as(&h, &h.admin, "set_max_staleness", (60u64,).into_val(e));
+    h.client.set_max_staleness(&60);
+    assert_eq!(h.client.get_max_staleness(), 60);
+}
+
+#[test]
+fn a_multisig_approval_authorizes_exactly_one_call() {
+    let h = setup();
+    let (multisig_id, signers) = setup_multisig(&h);
+    let ms = MultisigClient::new(&h.env, &multisig_id);
+    let id = aid(&h.env, 42);
+    ms.approve(&signers[0], &id);
+    ms.approve(&signers[1], &id);
+
+    h.client
+        .set_max_staleness_via_multisig(&multisig_id, &id, &120);
+    assert_eq!(h.client.get_max_staleness(), 120);
+    // The same approved id can't be replayed — for the same function or
+    // a more dangerous one.
+    assert_eq!(
+        h.client
+            .try_set_max_staleness_via_multisig(&multisig_id, &id, &240),
+        Err(Ok(crate::error::Error::Unauthorized.into()))
+    );
+    assert_eq!(
+        h.client
+            .try_transfer_admin_via_multisig(&multisig_id, &id, &Address::generate(&h.env)),
+        Err(Ok(crate::error::Error::Unauthorized.into()))
+    );
+}
+
+#[test]
+fn a_different_multisig_than_the_trusted_one_is_rejected() {
+    let h = setup();
+    let (_trusted, _) = setup_multisig(&h);
+    // A second, perfectly real multisig the caller controls.
+    let rogue_signers = [Address::generate(&h.env), Address::generate(&h.env)];
+    let rogue = MultisigClient::new(&h.env, &h.env.register_contract(None, Multisig));
+    rogue.initialize(
+        &soroban_sdk::vec![&h.env, rogue_signers[0].clone(), rogue_signers[1].clone()],
+        &1,
+        &0,
+    );
+    let id = aid(&h.env, 5);
+    rogue.approve(&rogue_signers[0], &id);
+    assert_eq!(
+        h.client.try_pause_via_multisig(&rogue.address, &id),
+        Err(Ok(crate::error::Error::Unauthorized.into()))
+    );
+}
+
+#[test]
+fn pause_via_multisig_does_not_bypass_pause_on_feeder_changes() {
+    let h = setup();
+    let (multisig_id, signers) = setup_multisig(&h);
+    let ms = MultisigClient::new(&h.env, &multisig_id);
+    let id = aid(&h.env, 8);
+    ms.approve(&signers[0], &id);
+    ms.approve(&signers[1], &id);
+    h.client.pause();
+    assert_eq!(
+        h.client
+            .try_add_feeder_via_multisig(&multisig_id, &id, &Address::generate(&h.env)),
+        Err(Ok(crate::error::Error::ContractPaused.into()))
+    );
 }

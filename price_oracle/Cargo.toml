@@ -1,36 +1,27 @@
 [package]
 name = "zenith-price-oracle"
-version = "0.1.0"
-edition = "2021"
-publish = false
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
 
 [lib]
-# rlib alongside cdylib so other contracts (options_market) can depend on
-# this crate as a normal Rust library to get PriceOracleClient's generated
-# type for cross-contract calls, while still building a deployable wasm
-# cdylib on its own — the standard Soroban pattern for cross-contract
-# dependencies.
+# rlib alongside cdylib so other contracts' tests (options_market,
+# integration_tests) can register a real price_oracle natively, while it
+# still builds a deployable wasm cdylib on its own.
 crate-type = ["cdylib", "rlib"]
 
-[profile.release]
-opt-level = "z"
-overflow-checks = true
-debug = 0
-strip = "symbols"
-debug-assertions = false
-panic = "abort"
-codegen-units = 1
-
 [dependencies]
-soroban-sdk = { version = "21.0.0" }
-zenith-common = { path = "../common" }
+soroban-sdk = { workspace = true }
+zenith-common = { workspace = true }
 
 [dev-dependencies]
-soroban-sdk = { version = "21.0.0", features = ["testutils"] }
+soroban-sdk = { workspace = true, features = ["testutils"] }
+# Property-based tests for the math modules (see README "Property tests").
+proptest = "1"
 # Dev/test-only: registers a REAL multisig contract instance inside the
-# test Env for cross-contract tests. Never linked into the production
-# wasm (see src/multisig_client.rs).
-multisig = { package = "zenith-multisig", path = "../multisig", features = ["testutils"] }
+# test Env for the `_via_multisig` tests. price_oracle itself reaches it
+# through zenith-common's invoke_contract, not a client.
+multisig = { workspace = true, features = ["testutils"] }
 # Adversarial mock contracts for negative-path cross-contract tests (issue #115).
 test_adversaries = { package = "zenith-test-adversaries", path = "../test_adversaries" }
 

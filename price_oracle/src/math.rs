@@ -1,31 +1,72 @@
+//! Integer-only order statistics for price aggregation. No floats, no
+//! allocation, no panics on any input.
+
 /// Caps how many feeders can be authorized at once, so aggregation (a
 /// simple O(n^2) sort over collected reports) stays bounded regardless of
 /// how many feeders the admin adds over the contract's lifetime.
 pub const MAX_FEEDERS: u32 = 16;
 
-/// Median of a small, fixed-size buffer of fresh feeder prices. `count` is
-/// how many of the leading entries in `values` are actually populated —
-/// the buffer itself is always MAX_FEEDERS-sized regardless of how many
-/// feeders are currently fresh, since it's built on the stack rather than
-/// a heap-allocated Vec. Panics on `count == 0`; callers must check for
-/// "no fresh reports" before calling this.
-pub fn median(values: &mut [i128; MAX_FEEDERS as usize], count: usize) -> i128 {
-    assert!(count > 0);
-    // Insertion sort: fine for MAX_FEEDERS-sized input, no allocation needed.
-    for i in 1..count {
+/// Sorts `values` ascending in place. Insertion sort: fine for
+/// MAX_FEEDERS-sized input, no allocation needed.
+pub fn sort(values: &mut [i128]) {
+    for i in 1..values.len() {
         let mut j = i;
         while j > 0 && values[j - 1] > values[j] {
             values.swap(j - 1, j);
             j -= 1;
         }
     }
-    if count % 2 == 1 {
-        values[count / 2]
+}
+
+/// `floor((lo + hi) / 2)` for `lo <= hi`, without the overflow
+/// `(lo + hi) / 2` hits near the ends of the `i128` range: the gap
+/// `hi - lo` always fits in a `u128`, and half of it fits back in an
+/// `i128`, so `lo + gap / 2` can't overflow and never exceeds `hi`.
+pub fn midpoint_floor(lo: i128, hi: i128) -> i128 {
+    let (lo, hi) = if lo <= hi { (lo, hi) } else { (hi, lo) };
+    let half_gap = (hi.abs_diff(lo) / 2) as i128;
+    lo + half_gap
+}
+
+/// Median of `values`, sorting them in place. `None` for an empty slice.
+///
+/// Rounding: for an even count the median is the midpoint of the two
+/// middle values, rounded **down** (toward negative infinity) when that
+/// midpoint isn't a whole number — e.g. `[10, 21]` gives `15`. For the
+/// positive prices this contract stores that is the same as truncation,
+/// and it is the same direction regardless of input order or sign.
+pub fn median(values: &mut [i128]) -> Option<i128> {
+    let n = values.len();
+    if n == 0 {
+        return None;
+    }
+    sort(values);
+    if n % 2 == 1 {
+        Some(values[n / 2])
     } else {
-        values[count / 2 - 1]
-            .checked_add(values[count / 2])
-            .unwrap()
-            / 2
+        Some(midpoint_floor(values[n / 2 - 1], values[n / 2]))
+    }
+}
+
+/// Median of a sorted-in-place slice of unsigned deviations, with the
+/// same round-down rule as `median`. `None` for an empty slice.
+pub fn median_u128(values: &mut [u128]) -> Option<u128> {
+    let n = values.len();
+    if n == 0 {
+        return None;
+    }
+    for i in 1..n {
+        let mut j = i;
+        while j > 0 && values[j - 1] > values[j] {
+            values.swap(j - 1, j);
+            j -= 1;
+        }
+    }
+    if n % 2 == 1 {
+        Some(values[n / 2])
+    } else {
+        let (lo, hi) = (values[n / 2 - 1], values[n / 2]);
+        Some(lo + (hi - lo) / 2)
     }
 }
 
@@ -33,50 +74,61 @@ pub fn median(values: &mut [i128; MAX_FEEDERS as usize], count: usize) -> i128 {
 mod test {
     use super::*;
 
-    fn buf(values: &[i128]) -> ([i128; MAX_FEEDERS as usize], usize) {
+    fn med(values: &[i128]) -> Option<i128> {
         let mut buffer = [0i128; MAX_FEEDERS as usize];
-        for (i, v) in values.iter().enumerate() {
-            buffer[i] = *v;
-        }
-        (buffer, values.len())
+        buffer[..values.len()].copy_from_slice(values);
+        median(&mut buffer[..values.len()])
+    }
+
+    #[test]
+    fn empty_input_has_no_median() {
+        assert_eq!(med(&[]), None);
     }
 
     #[test]
     fn single_value_is_its_own_median() {
-        let (mut b, n) = buf(&[42]);
-        assert_eq!(median(&mut b, n), 42);
+        assert_eq!(med(&[42]), Some(42));
     }
 
     #[test]
     fn odd_count_takes_the_middle_after_sorting() {
-        let (mut b, n) = buf(&[5, 1, 3]);
-        assert_eq!(median(&mut b, n), 3);
+        assert_eq!(med(&[5, 1, 3]), Some(3));
     }
 
     #[test]
     fn even_count_averages_the_two_middle_values() {
-        let (mut b, n) = buf(&[10, 20, 30, 40]);
-        assert_eq!(median(&mut b, n), 25);
+        assert_eq!(med(&[10, 20, 30, 40]), Some(25));
+    }
+
+    #[test]
+    fn even_count_rounds_down_consistently() {
+        assert_eq!(med(&[10, 21]), Some(15));
+        assert_eq!(med(&[21, 10]), Some(15));
+        // Toward negative infinity, not toward zero.
+        assert_eq!(med(&[-21, -10]), Some(-16));
+    }
+
+    #[test]
+    fn ties_at_the_median_are_handled() {
+        assert_eq!(med(&[7, 7, 1, 9]), Some(7));
+        assert_eq!(med(&[5, 5, 5, 5, 6]), Some(5));
     }
 
     #[test]
     fn already_sorted_input_is_unaffected() {
-        let (mut b, n) = buf(&[1, 2, 3, 4, 5]);
-        assert_eq!(median(&mut b, n), 3);
+        assert_eq!(med(&[1, 2, 3, 4, 5]), Some(3));
     }
 
     #[test]
     fn a_single_outlier_does_not_move_the_median() {
         // Median resists outliers the way a mean wouldn't — a stale or
         // manipulated report of 1_000_000 shouldn't move this far from 20.
-        let (mut b, n) = buf(&[18, 19, 20, 21, 1_000_000]);
-        assert_eq!(median(&mut b, n), 20);
+        assert_eq!(med(&[18, 19, 20, 21, 1_000_000]), Some(20));
     }
 
     #[test]
     fn every_feeder_agreeing_is_unaffected_by_sorting() {
-        let (mut b, n) = buf(&[500_000; MAX_FEEDERS as usize]);
-        assert_eq!(median(&mut b, n), 500_000);
+        assert_eq!(med(&[500_000; MAX_FEEDERS as usize]), Some(500_000));
     }
 
     #[test]
@@ -88,9 +140,36 @@ mod test {
         for (i, v) in values.iter_mut().enumerate() {
             *v = MAX_FEEDERS as i128 - i as i128;
         }
-        let (mut b, n) = buf(&values);
-        // Sorted 1..=16, even count -> average of the two middle (8, 9).
-        assert_eq!(median(&mut b, n), 8);
+        // Sorted 1..=16, even count -> floor of the mean of (8, 9).
+        assert_eq!(med(&values), Some(8));
+    }
+
+    #[test]
+    fn extreme_values_do_not_overflow() {
+        assert_eq!(med(&[i128::MAX, i128::MAX]), Some(i128::MAX));
+        assert_eq!(med(&[i128::MIN, i128::MIN]), Some(i128::MIN));
+        assert_eq!(med(&[i128::MIN, i128::MAX]), Some(-1));
+    }
+
+    #[test]
+    fn table_feeder_counts_1_2_3_5() {
+        let cases: [(&[i128], i128); 4] = [
+            (&[1_000], 1_000),
+            (&[1_000, 1_003], 1_001),
+            (&[1_003, 1_000, 1_002], 1_002),
+            (&[1_005, 990, 1_000, 1_010, 995], 1_000),
+        ];
+        for (values, expected) in cases {
+            assert_eq!(med(values), Some(expected), "{:?}", values);
+        }
+    }
+
+    #[test]
+    fn median_u128_matches_the_signed_rounding_rule() {
+        assert_eq!(median_u128(&mut []), None);
+        assert_eq!(median_u128(&mut [3, 1, 2]), Some(2));
+        assert_eq!(median_u128(&mut [10, 21]), Some(15));
+        assert_eq!(median_u128(&mut [u128::MAX, u128::MAX]), Some(u128::MAX));
     }
 }
 
@@ -103,7 +182,6 @@ mod proptests {
     use super::*;
     use proptest::collection::vec;
     use proptest::prelude::*;
-    use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::vec::Vec;
 
     const CASES: u32 = 10_000;
@@ -120,9 +198,8 @@ mod proptests {
     }
 
     fn median_of(values: &[i128]) -> i128 {
-        let mut buffer = [0i128; CAP];
-        buffer[..values.len()].copy_from_slice(values);
-        median(&mut buffer, values.len())
+        let mut copy = values.to_vec();
+        median(&mut copy).unwrap()
     }
 
     proptest! {
@@ -172,13 +249,13 @@ mod proptests {
             prop_assert!(median_of(&values) <= median_of(&raised));
         }
 
-        /// Shifting every report by c shifts the median by exactly c: for
-        /// positive values the even-count average truncates the same way
-        /// before and after, since the sum moves by 2c.
+        /// Shifting every report by c shifts the median by exactly c: the
+        /// round-down midpoint depends only on the gap between the two
+        /// middle values, which a shift leaves unchanged.
         #[test]
         fn is_translation_equivariant(
             values in reports(),
-            c in 0i128..=1_000_000_000_000_000,
+            c in -1_000_000_000_000_000i128..=1_000_000_000_000_000,
         ) {
             let shifted: Vec<i128> = values.iter().map(|v| v + c).collect();
             prop_assert_eq!(median_of(&shifted), median_of(&values) + c);
@@ -189,7 +266,7 @@ mod proptests {
         #[test]
         fn resists_a_single_outlier(
             values in vec(price(), 3..=CAP),
-            outlier in any::<i64>().prop_map(i128::from),
+            outlier in any::<i128>(),
         ) {
             let honest = &values[1..];
             let mut with_outlier = values.clone();
@@ -200,21 +277,23 @@ mod proptests {
             prop_assert!(min <= m && m <= max);
         }
 
-        /// Whole i128 domain: either the correct value or a failure exactly
-        /// where averaging the two middle values overflows. Once the
-        /// typed-error work lands this becomes Ok/Err with no panic.
+        /// Whole i128 domain: never panics, and always returns exactly the
+        /// floor of the middle value(s) — computed here in wider
+        /// arithmetic via two halves, so overflow can't hide a mismatch.
         #[test]
-        fn overflow_is_never_silent(values in vec(any::<i128>(), 1..=CAP)) {
+        fn is_exact_on_the_whole_domain(values in vec(any::<i128>(), 1..=CAP)) {
             let mut sorted = values.clone();
             sorted.sort();
             let n = sorted.len();
             let expected = if n % 2 == 1 {
-                Some(sorted[n / 2])
+                sorted[n / 2]
             } else {
-                sorted[n / 2 - 1].checked_add(sorted[n / 2]).map(|s| s / 2)
+                let (a, b) = (sorted[n / 2 - 1], sorted[n / 2]);
+                // floor((a + b) / 2) == a.div_euclid(2) + b.div_euclid(2)
+                //   + (a.rem_euclid(2) + b.rem_euclid(2)) / 2
+                a.div_euclid(2) + b.div_euclid(2) + (a.rem_euclid(2) + b.rem_euclid(2)) / 2
             };
-            let actual = catch_unwind(AssertUnwindSafe(|| median_of(&values))).ok();
-            prop_assert_eq!(actual, expected);
+            prop_assert_eq!(median_of(&values), expected);
         }
     }
 }

@@ -1,6 +1,4 @@
-#![no_std]
-
-use soroban_sdk::{contracterror, contracttype, symbol_short, Address, Env, Symbol};
+use soroban_sdk::{contracterror, contracttype, symbol_short, vec, Address, Env, IntoVal, Symbol};
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -34,7 +32,7 @@ impl MultiSourceOracleAdapter {
         let now = env.ledger().timestamp();
 
         // 1. Query Primary (e.g. Zenith native feeder)
-        let primary = Self::read_feed(env, primary_oracle, symbol);
+        let primary = Self::read_feed(env, primary_oracle, symbol.clone());
         let fallback = Self::read_feed(env, fallback_oracle, symbol);
 
         match (primary, fallback) {
@@ -43,8 +41,9 @@ impl MultiSourceOracleAdapter {
                 let f_fresh = now.saturating_sub(f.timestamp) <= max_staleness;
 
                 if p_fresh && f_fresh {
-                    let diff = if p.price > f.price { p.price - f.price } else { f.price - p.price };
-                    let max_diff = (p.price * tolerance_bps as i128) / 10_000;
+                    let diff = p.price.abs_diff(f.price);
+                    let max_diff =
+                        p.price.unsigned_abs().saturating_mul(tolerance_bps as u128) / 10_000;
                     if diff > max_diff {
                         return Err(AdapterError::ToleranceExceeded);
                     }
@@ -63,9 +62,25 @@ impl MultiSourceOracleAdapter {
         }
     }
 
-    fn read_feed(env: &Env, _source: &Address, _symbol: Symbol) -> Option<PriceQuote> {
+    /// Reads `source.get_price(symbol)` (the price_oracle interface). A
+    /// source that reverts, returns `None`, or returns a non-positive
+    /// price yields `None` — never a zero or negative "price". The
+    /// source's aggregate is already freshness-gated, so the quote is
+    /// stamped with the current ledger time.
+    fn read_feed(env: &Env, source: &Address, symbol: Symbol) -> Option<PriceQuote> {
+        let price = env
+            .try_invoke_contract::<Option<i128>, soroban_sdk::Error>(
+                source,
+                &Symbol::new(env, "get_price"),
+                vec![env, symbol.into_val(env)],
+            )
+            .ok()?
+            .ok()??;
+        if price <= 0 {
+            return None;
+        }
         Some(PriceQuote {
-            price: 10_000_000, // Normalized $1.00
+            price,
             timestamp: env.ledger().timestamp(),
             source: symbol_short!("SEP40"),
         })
