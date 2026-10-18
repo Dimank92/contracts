@@ -39,3 +39,15 @@ pub fn price_reported(env: &Env, feeder: Address, symbol: Symbol, price: i128) {
     env.events()
         .publish((Symbol::new(env, "price_reported"), feeder, symbol), price);
 }
+
+pub fn multisig_set(env: &Env, multisig: Address) {
+    env.events()
+        .publish((Symbol::new(env, "multisig_set"),), multisig);
+}
+
+pub fn symbol_precision_set(env: &Env, symbol: Symbol, precision: u32) {
+    env.events().publish(
+        (Symbol::new(env, "symbol_precision_set"), symbol),
+        precision,
+    );
+}

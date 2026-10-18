@@ -15,6 +15,15 @@ pub enum DataKey {
     /// persistent storage instead of instance storage.
     IsFeeder(Address),
     Feeders,
+    /// Latest `oracle_adapter::FeederReport` from one feeder for one symbol.
     PriceReport(Symbol, Address),
+    /// Unused since the original contract; kept so the variant indices
+    /// (and therefore every stored key) stay unchanged.
     AggregatedPrice(Symbol),
+    /// The one multisig `*_via_multisig` entrypoints trust, pinned by the
+    /// admin with `set_multisig`. Unset means those entrypoints are off.
+    TrustedMultisig,
+    /// Meaningful decimals (0..=PRICE_DECIMALS) a symbol is quoted with.
+    /// A symbol with no entry is unknown and can't be reported.
+    SymbolPrecision(Symbol),
 }

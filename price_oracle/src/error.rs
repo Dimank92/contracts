@@ -14,6 +14,16 @@ pub enum Error {
     TooManyFeeders = 8,
     Unauthorized = 9,
     InvalidMinReports = 10,
+    // Report ingest and the read path (oracle_adapter).
+    UnknownSymbol = 11,
+    FutureTimestamp = 12,
+    StaleReport = 13,
+    InvalidDecimals = 14,
+    PrecisionExceeded = 15,
+    NoReports = 16,
+    StalePrice = 17,
+    BelowQuorum = 18,
+    ArithmeticOverflow = 19,
     // Schema migrations (zenith_common::migrations) — same codes in
     // every Zenith contract. See docs/migrations.md.
     SchemaVersionMismatch = 100,
