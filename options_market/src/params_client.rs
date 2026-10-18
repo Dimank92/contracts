@@ -5,6 +5,4 @@
 //! Requires params' wasm in the shared workspace target/ before this crate
 //! can compile at all; `cargo xtask build` handles that (see
 //! `[package.metadata.zenith] wasm-deps` in ../Cargo.toml).
-soroban_sdk::contractimport!(
-    file = "../target/wasm32-unknown-unknown/release/zenith_params.wasm"
-);
+soroban_sdk::contractimport!(file = "../target/wasm32-unknown-unknown/release/zenith_params.wasm");

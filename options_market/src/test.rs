@@ -1,5 +1,7 @@
 #![cfg(test)]
 
+extern crate std;
+
 use crate::{OptionSeries, OptionType, OptionsMarket, OptionsMarketClient, PositionSide};
 use multisig::{Multisig, MultisigClient};
 use price_oracle::{PriceOracle, PriceOracleClient};
@@ -10,6 +12,10 @@ use soroban_sdk::{
 use vault::{Vault, VaultClient};
 
 const USDC_DECIMALS: i128 = 10_000_000; // matches PRICE_PRECISION
+
+fn aid(env: &Env, n: u8) -> BytesN<32> {
+    BytesN::from_array(env, &[n; 32])
+}
 
 struct Harness<'a> {
     env: Env,
@@ -289,7 +295,7 @@ fn write_covered_call_locks_collateral_equal_to_notional() {
 
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &required);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &required, &0);
     let position = h.client.get_position(&pos_id).unwrap();
 
     assert!(position.side == PositionSide::Short);
@@ -312,7 +318,7 @@ fn write_cash_secured_put_requires_110_percent_of_strike() {
 
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &required);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &required, &0);
     let position = h.client.get_position(&pos_id).unwrap();
     assert_eq!(position.collateral_locked, required);
 }
@@ -326,7 +332,7 @@ fn write_option_rejects_undercollateralized_offer() {
     mint(&h, &writer, 700_000_000);
     // Offers exactly 100% of strike for a put, which needs 110%.
     h.client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 }
 
 #[test]
@@ -340,7 +346,7 @@ fn write_option_rejects_a_write_with_no_buyer_premium_to_draw_from() {
     // empty — write_option must not pay the writer out of its own
     // just-deposited collateral, which isn't a premium anyone paid.
     h.client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 }
 
 #[test]
@@ -355,7 +361,7 @@ fn write_option_succeeds_once_the_pool_partially_covers_it() {
     let writer = Address::generate(&h.env);
     mint(&h, &writer, 700_000_000);
     h.client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     // The writer's premium exactly drained the pool the lone buyer funded.
     assert_eq!(h.client.get_premium_pool(), 0);
@@ -458,7 +464,7 @@ fn exercise_rejects_a_short_position() {
     mint(&h, &writer, 700_000_000);
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     advance_past_expiry(&h, series_id);
     h.client.set_settlement_price(&series_id, &(750_000_000));
@@ -604,7 +610,7 @@ fn reclaim_collateral_returns_locked_minus_max_loss() {
     mint(&h, &writer, 700_000_000);
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     advance_past_expiry(&h, series_id);
     h.client.set_settlement_price(&series_id, &(750_000_000)); // ITM by 50
@@ -633,7 +639,7 @@ fn reclaim_collateral_returns_everything_when_otm() {
     mint(&h, &writer, 700_000_000);
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     advance_past_expiry(&h, series_id);
     h.client.set_settlement_price(&series_id, &(650_000_000)); // OTM
@@ -677,7 +683,7 @@ fn reclaim_collateral_twice_is_rejected() {
     mint(&h, &writer, 700_000_000);
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     advance_past_expiry(&h, series_id);
     h.client.set_settlement_price(&series_id, &(650_000_000));
@@ -697,10 +703,10 @@ fn reclaim_batch_pays_out_every_position_in_the_list() {
     mint(&h, &writer, 1_400_000_000);
     let pos_a = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
     let pos_b = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     advance_past_expiry(&h, series_id);
     h.client.set_settlement_price(&series_id, &(750_000_000)); // ITM by 50 each
@@ -735,7 +741,7 @@ fn reclaim_batch_is_all_or_nothing() {
     mint(&h, &writer, 700_000_000);
     let valid_pos = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
     let never_created_pos_id = 9_999u64;
 
     advance_past_expiry(&h, series_id);
@@ -821,7 +827,7 @@ fn full_lifecycle_covered_call_itm() {
     mint(&h, &writer, 700_000_000);
     let writer_pos = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     let series: OptionSeries = h.client.get_series(&series_id).unwrap();
     assert_eq!(series.open_interest, 2 * USDC_DECIMALS); // one long + one short
@@ -847,6 +853,10 @@ fn transfer_admin_hands_off_control() {
 
     let new_admin = Address::generate(&h.env);
     h.client.transfer_admin(&new_admin);
+    // Two-step: nothing moves until the new admin accepts.
+    assert_eq!(h.client.get_admin(), h.admin);
+    assert_eq!(h.client.get_pending_admin(), Some(new_admin.clone()));
+    h.client.accept_admin();
     assert_eq!(h.client.get_admin(), new_admin);
 
     // create_series still works, now authorized against the NEW admin
@@ -905,7 +915,7 @@ fn write_option_is_rejected_while_paused() {
     let writer = Address::generate(&h.env);
     mint(&h, &writer, 700_000_000);
     h.client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 }
 
 /// A pause must not trap funds already at risk: an existing writer can still
@@ -919,7 +929,7 @@ fn pause_does_not_block_settlement_of_existing_positions() {
     mint(&h, &writer, 700_000_000);
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     h.client.pause();
 
@@ -962,7 +972,7 @@ fn cancelled_series_refunds_writer_full_collateral() {
     mint(&h, &writer, 700_000_000);
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     h.client.cancel_series(&series_id);
 
@@ -1029,7 +1039,6 @@ fn setup_vault(h: &Harness) -> Address {
 #[test]
 fn escrow_then_claim_refund_from_vault_pays_buyer_net_of_fee() {
     let h = setup();
-    h.env.mock_all_auths_allowing_non_root_auth();
     let vault_id = setup_vault(&h);
     let series_id = make_series(&h, OptionType::Call, 700_000_000, 40_000_000);
 
@@ -1061,9 +1070,10 @@ fn escrow_then_claim_refund_from_vault_pays_buyer_net_of_fee() {
 #[test]
 fn escrow_then_claim_refund_from_vault_pays_writer_full_collateral() {
     let h = setup();
-    h.env.mock_all_auths_allowing_non_root_auth();
-    let vault_id = setup_vault(&h);
+    // Listed before any vault is pinned: collateral stays in the market's
+    // own balance until escrow_series_to_vault moves it.
     let series_id = make_series(&h, OptionType::Call, 700_000_000, 40_000_000);
+    let vault_id = setup_vault(&h);
     // Funds the (contract-wide) premium pool from a DECOY series that
     // never gets cancelled — using the series under test itself would
     // inflate ITS OWN SeriesEscrow with a buyer position whose premium
@@ -1080,7 +1090,7 @@ fn escrow_then_claim_refund_from_vault_pays_writer_full_collateral() {
     mint(&h, &writer, 700_000_000);
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     h.client.cancel_series(&series_id);
     h.client.escrow_series_to_vault(&vault_id, &series_id);
@@ -1095,7 +1105,6 @@ fn escrow_then_claim_refund_from_vault_pays_writer_full_collateral() {
 #[should_panic(expected = "Error(Contract, #18)")] // SeriesNotCancelled
 fn escrow_series_to_vault_rejects_a_still_active_series() {
     let h = setup();
-    h.env.mock_all_auths_allowing_non_root_auth();
     let vault_id = setup_vault(&h);
     let series_id = make_series(&h, OptionType::Call, 700_000_000, 40_000_000);
     h.client.escrow_series_to_vault(&vault_id, &series_id);
@@ -1105,7 +1114,6 @@ fn escrow_series_to_vault_rejects_a_still_active_series() {
 #[should_panic(expected = "Error(Contract, #24)")] // NothingToEscrow
 fn escrow_series_to_vault_rejects_a_second_call() {
     let h = setup();
-    h.env.mock_all_auths_allowing_non_root_auth();
     let vault_id = setup_vault(&h);
     let series_id = make_series(&h, OptionType::Call, 700_000_000, 40_000_000);
     let buyer = Address::generate(&h.env);
@@ -1122,7 +1130,6 @@ fn escrow_series_to_vault_rejects_a_second_call() {
 #[should_panic(expected = "Error(Contract, #24)")] // NothingToEscrow
 fn escrow_series_to_vault_rejects_a_series_with_no_positions() {
     let h = setup();
-    h.env.mock_all_auths_allowing_non_root_auth();
     let vault_id = setup_vault(&h);
     let series_id = make_series(&h, OptionType::Call, 700_000_000, 40_000_000);
     h.client.cancel_series(&series_id);
@@ -1140,7 +1147,6 @@ fn escrow_series_to_vault_rejects_a_series_with_no_positions() {
 #[test]
 fn escrow_series_to_vault_only_moves_the_remaining_liability() {
     let h = setup();
-    h.env.mock_all_auths_allowing_non_root_auth();
     let vault_id = setup_vault(&h);
     let series_id = make_series(&h, OptionType::Call, 700_000_000, 40_000_000);
 
@@ -1175,7 +1181,6 @@ fn escrow_series_to_vault_only_moves_the_remaining_liability() {
 #[should_panic(expected = "Error(Contract, #10)")] // AlreadySettled
 fn claim_refund_from_vault_twice_is_rejected() {
     let h = setup();
-    h.env.mock_all_auths_allowing_non_root_auth();
     let vault_id = setup_vault(&h);
     let series_id = make_series(&h, OptionType::Call, 700_000_000, 40_000_000);
     let buyer = Address::generate(&h.env);
@@ -1193,7 +1198,6 @@ fn claim_refund_from_vault_twice_is_rejected() {
 #[test]
 fn series_escrowed_to_vault_event_carries_series_id_and_amount() {
     let h = setup();
-    h.env.mock_all_auths_allowing_non_root_auth();
     let vault_id = setup_vault(&h);
     let series_id = make_series(&h, OptionType::Call, 700_000_000, 40_000_000);
     let buyer = Address::generate(&h.env);
@@ -1212,16 +1216,16 @@ fn series_escrowed_to_vault_event_carries_series_id_and_amount() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #26)")] // UnauthorizedVault
+#[should_panic(expected = "Error(Contract, #35)")] // UnauthorizedVault
 fn escrow_series_to_vault_rejects_unauthorized_vault() {
     let h = setup();
-    h.env.mock_all_auths_allowing_non_root_auth();
     let _vault_id = setup_vault(&h);
     let fake_vault = Address::generate(&h.env);
     let series_id = make_series(&h, OptionType::Call, 700_000_000, 40_000_000);
     let buyer = Address::generate(&h.env);
     mint(&h, &buyer, 1_000 * USDC_DECIMALS);
-    h.client.buy_option(&buyer, &series_id, &USDC_DECIMALS, &(50 * USDC_DECIMALS));
+    h.client
+        .buy_option(&buyer, &series_id, &USDC_DECIMALS, &(50 * USDC_DECIMALS));
     h.client.cancel_series(&series_id);
 
     // Passing fake_vault must fail with UnauthorizedVault
@@ -1231,16 +1235,20 @@ fn escrow_series_to_vault_rejects_unauthorized_vault() {
 #[test]
 fn rotating_vault_after_escrow_still_pays_refund_from_original_vault() {
     let h = setup();
-    h.env.mock_all_auths_allowing_non_root_auth();
     let original_vault = setup_vault(&h);
     let series_id = make_series(&h, OptionType::Call, 700_000_000, 40_000_000);
     let buyer = Address::generate(&h.env);
     mint(&h, &buyer, 1_000 * USDC_DECIMALS);
-    let pos_id = h.client.buy_option(&buyer, &series_id, &USDC_DECIMALS, &(50 * USDC_DECIMALS));
+    let pos_id = h
+        .client
+        .buy_option(&buyer, &series_id, &USDC_DECIMALS, &(50 * USDC_DECIMALS));
     h.client.cancel_series(&series_id);
 
     h.client.escrow_series_to_vault(&original_vault, &series_id);
-    assert_eq!(h.client.get_series_vault(&series_id), Some(original_vault.clone()));
+    assert_eq!(
+        h.client.get_series_vault(&series_id),
+        Some(original_vault.clone())
+    );
 
     // Rotate pinned vault to a new vault
     let new_vault = setup_vault(&h);
@@ -1248,7 +1256,8 @@ fn rotating_vault_after_escrow_still_pays_refund_from_original_vault() {
 
     // Claim refund still succeeds against the original vault recorded in SeriesVault
     let before = balance(&h, &buyer);
-    h.client.claim_refund_from_vault(&original_vault, &buyer, &pos_id);
+    h.client
+        .claim_refund_from_vault(&original_vault, &buyer, &pos_id);
     assert_eq!(balance(&h, &buyer) - before, 39_800_000);
     assert!(h.client.get_position(&pos_id).unwrap().is_settled);
 }
@@ -1387,6 +1396,8 @@ fn setup_price_oracle(h: &Harness) -> Address {
     let contract_id = h.env.register_contract(None, PriceOracle);
     let client = PriceOracleClient::new(&h.env, &contract_id);
     client.initialize(&admin);
+    // set_settlement_price_from_oracle only reads the market's own oracle.
+    h.client.set_oracle(&contract_id);
     contract_id
 }
 
@@ -1468,6 +1479,8 @@ fn setup_multisig(h: &Harness) -> (Address, [Address; 3]) {
         &2,
         &0,
     );
+    // Only the trusted multisig is accepted by `_via_multisig` paths.
+    h.client.set_multisig(&contract_id);
     (contract_id, signers)
 }
 
@@ -1477,7 +1490,7 @@ fn pause_via_multisig_pauses_once_the_action_is_approved() {
     let (multisig_id, signers) = setup_multisig(&h);
     let multisig_client = MultisigClient::new(&h.env, &multisig_id);
 
-    let action_id = 1u64;
+    let action_id = aid(&h.env, 1);
     multisig_client.approve(&signers[0], &action_id);
     multisig_client.approve(&signers[1], &action_id); // 2 of 3, reaches threshold
 
@@ -1494,9 +1507,9 @@ fn pause_via_multisig_rejects_when_not_yet_approved() {
     let multisig_client = MultisigClient::new(&h.env, &multisig_id);
 
     // Only 1 of 3 — below the 2-of-3 threshold.
-    multisig_client.approve(&signers[0], &1u64);
+    multisig_client.approve(&signers[0], &aid(&h.env, 1));
 
-    h.client.pause_via_multisig(&multisig_id, &1u64);
+    h.client.pause_via_multisig(&multisig_id, &aid(&h.env, 1));
 }
 
 #[test]
@@ -1507,7 +1520,7 @@ fn unpause_via_multisig_unpauses_once_the_action_is_approved() {
 
     let (multisig_id, signers) = setup_multisig(&h);
     let multisig_client = MultisigClient::new(&h.env, &multisig_id);
-    let action_id = 2u64;
+    let action_id = aid(&h.env, 2);
     multisig_client.approve(&signers[0], &action_id);
     multisig_client.approve(&signers[1], &action_id);
 
@@ -1523,7 +1536,8 @@ fn unpause_via_multisig_rejects_when_not_yet_approved() {
     let (multisig_id, _signers) = setup_multisig(&h);
 
     // No approvals at all for this action_id.
-    h.client.unpause_via_multisig(&multisig_id, &99u64);
+    h.client
+        .unpause_via_multisig(&multisig_id, &aid(&h.env, 99));
 }
 
 #[test]
@@ -1532,13 +1546,14 @@ fn transfer_admin_via_multisig_hands_off_control_once_approved() {
     let (multisig_id, signers) = setup_multisig(&h);
     let multisig_client = MultisigClient::new(&h.env, &multisig_id);
 
-    let action_id = 3u64;
+    let action_id = aid(&h.env, 3);
     multisig_client.approve(&signers[0], &action_id);
     multisig_client.approve(&signers[1], &action_id);
 
     let new_admin = Address::generate(&h.env);
     h.client
         .transfer_admin_via_multisig(&multisig_id, &action_id, &new_admin);
+    h.client.accept_admin();
     assert_eq!(h.client.get_admin(), new_admin);
 }
 
@@ -1550,11 +1565,11 @@ fn transfer_admin_via_multisig_rejects_when_not_yet_approved() {
     let multisig_client = MultisigClient::new(&h.env, &multisig_id);
 
     // Only 1 of 3.
-    multisig_client.approve(&signers[0], &4u64);
+    multisig_client.approve(&signers[0], &aid(&h.env, 4));
 
     let new_admin = Address::generate(&h.env);
     h.client
-        .transfer_admin_via_multisig(&multisig_id, &4u64, &new_admin);
+        .transfer_admin_via_multisig(&multisig_id, &aid(&h.env, 4), &new_admin);
 }
 
 // ─── cross-contract: set_fee_rate_via_multisig ─────────────────────────────
@@ -1565,7 +1580,7 @@ fn set_fee_rate_via_multisig_applies_once_the_action_is_approved() {
     let (multisig_id, signers) = setup_multisig(&h);
     let multisig_client = MultisigClient::new(&h.env, &multisig_id);
 
-    let action_id = 5u64;
+    let action_id = aid(&h.env, 5);
     multisig_client.approve(&signers[0], &action_id);
     multisig_client.approve(&signers[1], &action_id);
 
@@ -1581,7 +1596,7 @@ fn set_fee_rate_via_multisig_rejects_when_not_yet_approved() {
     let (multisig_id, _signers) = setup_multisig(&h);
 
     h.client
-        .set_fee_rate_via_multisig(&multisig_id, &99u64, &100);
+        .set_fee_rate_via_multisig(&multisig_id, &aid(&h.env, 99), &100);
 }
 
 #[test]
@@ -1591,7 +1606,7 @@ fn set_fee_rate_via_multisig_still_enforces_the_ceiling_once_approved() {
     let (multisig_id, signers) = setup_multisig(&h);
     let multisig_client = MultisigClient::new(&h.env, &multisig_id);
 
-    let action_id = 6u64;
+    let action_id = aid(&h.env, 6);
     multisig_client.approve(&signers[0], &action_id);
     multisig_client.approve(&signers[1], &action_id);
 
@@ -1614,7 +1629,7 @@ fn cancel_series_via_multisig_cancels_once_the_action_is_approved() {
 
     let (multisig_id, signers) = setup_multisig(&h);
     let multisig_client = MultisigClient::new(&h.env, &multisig_id);
-    let action_id = 7u64;
+    let action_id = aid(&h.env, 7);
     multisig_client.approve(&signers[0], &action_id);
     multisig_client.approve(&signers[1], &action_id);
     h.client
@@ -1636,7 +1651,7 @@ fn cancel_series_via_multisig_rejects_when_not_yet_approved() {
     let (multisig_id, _signers) = setup_multisig(&h);
 
     h.client
-        .cancel_series_via_multisig(&multisig_id, &99u64, &series_id);
+        .cancel_series_via_multisig(&multisig_id, &aid(&h.env, 99), &series_id);
 }
 
 // ─── cross-contract: upgrade_via_multisig ──────────────────────────────────
@@ -1648,30 +1663,49 @@ fn cancel_series_via_multisig_rejects_when_not_yet_approved() {
 /// the bogus, never-uploaded hash — a different panic than our own
 /// Unauthorized check would raise.
 #[test]
-#[should_panic]
 fn upgrade_via_multisig_reaches_the_host_deployer_once_approved() {
     let h = setup();
     let (multisig_id, signers) = setup_multisig(&h);
     let multisig_client = MultisigClient::new(&h.env, &multisig_id);
 
-    let action_id = 8u64;
+    // Signers approve exactly this wasm hash on exactly this contract.
+    let bogus_hash = BytesN::from_array(&h.env, &[0u8; 32]);
+    let action_id = h.client.upgrade_action_id(&bogus_hash);
     multisig_client.approve(&signers[0], &action_id);
     multisig_client.approve(&signers[1], &action_id);
 
-    let bogus_hash = BytesN::from_array(&h.env, &[0u8; 32]);
-    h.client
-        .upgrade_via_multisig(&multisig_id, &action_id, &bogus_hash);
+    // Past the auth check, the host's deployer rejects the never-uploaded
+    // hash — a host error, not our Unauthorized.
+    let result = h.client.try_upgrade_via_multisig(&action_id, &bogus_hash);
+    assert!(result.is_err());
+    assert_ne!(result, Err(Ok(crate::error::Error::Unauthorized.into())));
 }
 
 #[test]
 #[should_panic(expected = "Error(Contract, #2)")] // Unauthorized
 fn upgrade_via_multisig_rejects_when_not_yet_approved() {
     let h = setup();
-    let (multisig_id, _signers) = setup_multisig(&h);
+    setup_multisig(&h);
 
     let bogus_hash = BytesN::from_array(&h.env, &[0u8; 32]);
+    let action_id = h.client.upgrade_action_id(&bogus_hash);
+    h.client.upgrade_via_multisig(&action_id, &bogus_hash);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")] // Unauthorized
+fn upgrade_via_multisig_rejects_an_approval_for_a_different_hash() {
+    let h = setup();
+    let (multisig_id, signers) = setup_multisig(&h);
+    let multisig_client = MultisigClient::new(&h.env, &multisig_id);
+    let approved_id = h
+        .client
+        .upgrade_action_id(&BytesN::from_array(&h.env, &[1u8; 32]));
+    multisig_client.approve(&signers[0], &approved_id);
+    multisig_client.approve(&signers[1], &approved_id);
+
     h.client
-        .upgrade_via_multisig(&multisig_id, &99u64, &bogus_hash);
+        .upgrade_via_multisig(&approved_id, &BytesN::from_array(&h.env, &[2u8; 32]));
 }
 
 // ─── cross-contract: create_series_via_multisig ────────────────────────────
@@ -1682,7 +1716,7 @@ fn create_series_via_multisig_lists_a_series_once_approved() {
     let (multisig_id, signers) = setup_multisig(&h);
     let multisig_client = MultisigClient::new(&h.env, &multisig_id);
 
-    let action_id = 9u64;
+    let action_id = aid(&h.env, 9);
     multisig_client.approve(&signers[0], &action_id);
     multisig_client.approve(&signers[1], &action_id);
 
@@ -1711,7 +1745,7 @@ fn create_series_via_multisig_rejects_when_not_yet_approved() {
 
     h.client.create_series_via_multisig(
         &multisig_id,
-        &99u64,
+        &aid(&h.env, 99),
         &Symbol::new(&h.env, "XLM"),
         &OptionType::Call,
         &700_000_000,
@@ -1728,7 +1762,7 @@ fn create_series_via_multisig_still_validates_params_once_approved() {
     let (multisig_id, signers) = setup_multisig(&h);
     let multisig_client = MultisigClient::new(&h.env, &multisig_id);
 
-    let action_id = 10u64;
+    let action_id = aid(&h.env, 10);
     multisig_client.approve(&signers[0], &action_id);
     multisig_client.approve(&signers[1], &action_id);
 
@@ -1755,7 +1789,7 @@ fn update_premium_via_multisig_updates_once_approved() {
     let (multisig_id, signers) = setup_multisig(&h);
     let multisig_client = MultisigClient::new(&h.env, &multisig_id);
 
-    let action_id = 11u64;
+    let action_id = aid(&h.env, 11);
     multisig_client.approve(&signers[0], &action_id);
     multisig_client.approve(&signers[1], &action_id);
 
@@ -1781,7 +1815,7 @@ fn update_premium_via_multisig_rejects_when_not_yet_approved() {
 
     h.client.update_premium_via_multisig(
         &multisig_id,
-        &99u64,
+        &aid(&h.env, 99),
         &series_id,
         &45_000_000,
         &500_000_000,
@@ -1843,6 +1877,7 @@ fn admin_transferred_event_carries_old_and_new_admin() {
     let h = setup();
     let new_admin = Address::generate(&h.env);
     h.client.transfer_admin(&new_admin);
+    h.client.accept_admin();
 
     let events = h.env.events().all();
     let (_, _topics, data) = events.last().unwrap();
@@ -1871,7 +1906,7 @@ fn option_written_event_carries_position_and_collateral_data() {
 
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     let events = h.env.events().all();
     let (_, topics, data) = events.last().unwrap();
@@ -1965,7 +2000,7 @@ fn collateral_reclaimed_event_carries_position_and_amount() {
     mint(&h, &writer, 700_000_000);
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     advance_past_expiry(&h, series_id);
     h.client.set_settlement_price(&series_id, &(650_000_000)); // OTM for the call
@@ -1976,4 +2011,306 @@ fn collateral_reclaimed_event_carries_position_and_amount() {
     let (event_pos_id, reclaim) = <(u64, i128)>::try_from_val(&h.env, &data).unwrap();
     assert_eq!(event_pos_id, pos_id);
     assert_eq!(reclaim, 700_000_000); // full collateral back, OTM means no payout owed
+}
+
+// ─── vault-backed series: collateral escrowed per series (#178 seams) ───────
+
+/// Lists a series AFTER pinning a vault, so its collateral lives in the
+/// vault under tag `series_id`.
+fn vault_backed_series(h: &Harness, vault_id: &Address, strike: i128) -> u64 {
+    assert_eq!(h.client.get_vault(), Some(vault_id.clone()));
+    let series_id = make_series(h, OptionType::Call, strike, 40_000_000);
+    assert!(h.client.is_vault_backed(&series_id));
+    series_id
+}
+
+#[test]
+fn write_option_escrows_collateral_in_the_series_vault_tag() {
+    let h = setup();
+    let vault_id = setup_vault(&h);
+    let vault = VaultClient::new(&h.env, &vault_id);
+    let series_id = vault_backed_series(&h, &vault_id, 700_000_000);
+    fund_premium_pool(&h, series_id, USDC_DECIMALS);
+
+    let writer = Address::generate(&h.env);
+    mint(&h, &writer, 700_000_000);
+    let market_before = balance(&h, &h.client.address);
+    h.client
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
+
+    // The collateral sits in the vault, earmarked for this series only…
+    assert_eq!(vault.balance_of(&series_id), 700_000_000);
+    assert_eq!(balance(&h, &vault_id), 700_000_000);
+    // …and not in the market's own balance (which only paid the writer's
+    // premium out of the pool).
+    assert!(balance(&h, &h.client.address) < market_before);
+    assert_eq!(h.client.get_series_vault(&series_id), Some(vault_id));
+}
+
+#[test]
+fn exercise_and_reclaim_on_a_vault_backed_series_pay_from_its_tag() {
+    let h = setup();
+    let vault_id = setup_vault(&h);
+    let vault = VaultClient::new(&h.env, &vault_id);
+    let series_id = vault_backed_series(&h, &vault_id, 700_000_000);
+
+    let buyer = Address::generate(&h.env);
+    mint(&h, &buyer, 1_000 * USDC_DECIMALS);
+    let long = h
+        .client
+        .buy_option(&buyer, &series_id, &USDC_DECIMALS, &(50 * USDC_DECIMALS));
+    let writer = Address::generate(&h.env);
+    mint(&h, &writer, 700_000_000);
+    let short = h
+        .client
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
+
+    let expiry = h.client.get_series(&series_id).unwrap().expiry;
+    h.env.ledger().with_mut(|l| l.timestamp = expiry);
+    h.client.set_settlement_price(&series_id, &750_000_000);
+
+    let buyer_before = balance(&h, &buyer);
+    assert_eq!(h.client.exercise(&buyer, &long), 50_000_000);
+    assert_eq!(balance(&h, &buyer) - buyer_before, 50_000_000);
+    assert_eq!(vault.balance_of(&series_id), 650_000_000);
+
+    let writer_before = balance(&h, &writer);
+    assert_eq!(h.client.reclaim_collateral(&writer, &short), 650_000_000);
+    assert_eq!(balance(&h, &writer) - writer_before, 650_000_000);
+    assert_eq!(vault.balance_of(&series_id), 0);
+}
+
+#[test]
+fn a_payout_cannot_draw_on_another_series_collateral() {
+    let h = setup();
+    let vault_id = setup_vault(&h);
+    let vault = VaultClient::new(&h.env, &vault_id);
+    // Series A has a long but no writer; series B is fully collateralized.
+    let a = vault_backed_series(&h, &vault_id, 700_000_000);
+    let b = vault_backed_series(&h, &vault_id, 650_000_000);
+
+    let buyer = Address::generate(&h.env);
+    mint(&h, &buyer, 1_000 * USDC_DECIMALS);
+    let long_a = h
+        .client
+        .buy_option(&buyer, &a, &USDC_DECIMALS, &(50 * USDC_DECIMALS));
+    fund_premium_pool(&h, b, USDC_DECIMALS);
+    let writer = Address::generate(&h.env);
+    mint(&h, &writer, 700_000_000);
+    h.client
+        .write_option(&writer, &b, &USDC_DECIMALS, &700_000_000, &0);
+    let b_escrow = vault.balance_of(&b);
+    assert!(b_escrow > 0);
+    assert_eq!(vault.balance_of(&a), 0);
+
+    let expiry = h.client.get_series(&a).unwrap().expiry;
+    h.env.ledger().with_mut(|l| l.timestamp = expiry);
+    h.client.set_settlement_price(&a, &750_000_000);
+
+    // The vault holds plenty of tokens — all earmarked for series B.
+    assert_eq!(
+        h.client
+            .try_exercise(&buyer, &long_a)
+            .err()
+            .map(|e| e.is_ok()),
+        Some(true)
+    );
+    assert_eq!(vault.balance_of(&b), b_escrow);
+    assert!(!h.client.get_position(&long_a).unwrap().is_exercised);
+}
+
+#[test]
+fn cancelled_vault_backed_series_refunds_writer_collateral_from_its_tag() {
+    let h = setup();
+    let vault_id = setup_vault(&h);
+    let vault = VaultClient::new(&h.env, &vault_id);
+    let series_id = vault_backed_series(&h, &vault_id, 700_000_000);
+    fund_premium_pool(&h, series_id, USDC_DECIMALS);
+    let writer = Address::generate(&h.env);
+    mint(&h, &writer, 700_000_000);
+    let short = h
+        .client
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
+
+    h.client.cancel_series(&series_id);
+    let before = balance(&h, &writer);
+    h.client.claim_refund(&writer, &short);
+    assert_eq!(balance(&h, &writer) - before, 700_000_000);
+    assert_eq!(vault.balance_of(&series_id), 0);
+}
+
+#[test]
+fn a_series_keeps_its_vault_when_the_pin_moves() {
+    let h = setup();
+    let first = setup_vault(&h);
+    let series_id = vault_backed_series(&h, &first, 700_000_000);
+    let second = setup_vault(&h);
+    assert_eq!(h.client.get_vault(), Some(second.clone()));
+    assert_eq!(h.client.get_series_vault(&series_id), Some(first.clone()));
+
+    fund_premium_pool(&h, series_id, USDC_DECIMALS);
+    let writer = Address::generate(&h.env);
+    mint(&h, &writer, 700_000_000);
+    h.client
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
+    assert_eq!(
+        VaultClient::new(&h.env, &first).balance_of(&series_id),
+        700_000_000
+    );
+    assert_eq!(VaultClient::new(&h.env, &second).balance_of(&series_id), 0);
+}
+
+// ─── settlement is one-shot ─────────────────────────────────────────────────
+
+#[test]
+#[should_panic(expected = "Error(Contract, #10)")] // AlreadySettled
+fn a_settled_series_cannot_be_repriced() {
+    let h = setup();
+    let series_id = make_series(&h, OptionType::Call, 700_000_000, 40_000_000);
+    let expiry = h.client.get_series(&series_id).unwrap().expiry;
+    h.env.ledger().with_mut(|l| l.timestamp = expiry);
+    h.client.set_settlement_price(&series_id, &750_000_000);
+    h.client.set_settlement_price(&series_id, &1_000_000_000);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")] // Unauthorized
+fn set_settlement_price_from_oracle_rejects_an_unconfigured_oracle() {
+    let h = setup();
+    let series_id = make_series(&h, OptionType::Call, 700_000_000, 40_000_000);
+    let trusted = setup_price_oracle(&h);
+    // A second, real price oracle the caller controls.
+    let rogue = h.env.register_contract(None, PriceOracle);
+    PriceOracleClient::new(&h.env, &rogue).initialize(&Address::generate(&h.env));
+    h.client.set_oracle(&trusted);
+    advance_past_expiry(&h, series_id);
+    report_price(&h, &rogue, &Symbol::new(&h.env, "XLM"), 9_999_000_000);
+    h.client
+        .set_settlement_price_from_oracle(&series_id, &rogue);
+}
+
+// ─── admin auth: Auth::Admin vs Auth::Multisig (#176) ───────────────────────
+
+fn sign_as(h: &Harness, who: &Address, fn_name: &str, args: soroban_sdk::Vec<soroban_sdk::Val>) {
+    use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+    h.env.mock_auths(&[MockAuth {
+        address: who,
+        invoke: &MockAuthInvoke {
+            contract: &h.client.address,
+            fn_name,
+            args,
+            sub_invokes: &[],
+        },
+    }]);
+}
+
+#[test]
+fn every_admin_entrypoint_rejects_a_wrong_admin() {
+    use soroban_sdk::IntoVal;
+    let h = setup();
+    let series_id = make_series(&h, OptionType::Call, 700_000_000, 40_000_000);
+    let e = &h.env;
+    let stranger = Address::generate(e);
+    let expiry = e.ledger().timestamp() + 30 * 86_400;
+    let xlm = Symbol::new(e, "XLM");
+
+    let checks: std::vec::Vec<(&str, soroban_sdk::Vec<soroban_sdk::Val>)> = std::vec![
+        ("set_fee_rate", (10u32,).into_val(e)),
+        ("set_params_registry", (stranger.clone(),).into_val(e)),
+        ("set_oracle", (stranger.clone(),).into_val(e)),
+        ("set_vault", (stranger.clone(),).into_val(e)),
+        ("transfer_admin", (stranger.clone(),).into_val(e)),
+        ("pause", ().into_val(e)),
+        ("unpause", ().into_val(e)),
+        (
+            "create_series",
+            (
+                xlm.clone(),
+                OptionType::Put,
+                600_000_000i128,
+                expiry,
+                1_000_000i128,
+                0i128,
+            )
+                .into_val(e),
+        ),
+        (
+            "update_premium",
+            (series_id, 1_000_000i128, 0i128).into_val(e),
+        ),
+        ("cancel_series", (series_id,).into_val(e)),
+        ("set_multisig", (stranger.clone(),).into_val(e)),
+        ("migrate", (1u32, 2u32).into_val(e)),
+    ];
+    for (name, args) in checks {
+        sign_as(&h, &stranger, name, args);
+        let rejected = match name {
+            "set_fee_rate" => h.client.try_set_fee_rate(&10).is_err(),
+            "set_params_registry" => h.client.try_set_params_registry(&stranger).is_err(),
+            "set_oracle" => h.client.try_set_oracle(&stranger).is_err(),
+            "set_vault" => h.client.try_set_vault(&stranger).is_err(),
+            "transfer_admin" => h.client.try_transfer_admin(&stranger).is_err(),
+            "pause" => h.client.try_pause().is_err(),
+            "unpause" => h.client.try_unpause().is_err(),
+            "create_series" => h
+                .client
+                .try_create_series(
+                    &xlm,
+                    &OptionType::Put,
+                    &600_000_000,
+                    &expiry,
+                    &1_000_000,
+                    &0,
+                )
+                .is_err(),
+            "update_premium" => h
+                .client
+                .try_update_premium(&series_id, &1_000_000, &0)
+                .is_err(),
+            "cancel_series" => h.client.try_cancel_series(&series_id).is_err(),
+            "set_multisig" => h.client.try_set_multisig(&stranger).is_err(),
+            _ => h.client.try_migrate(&1, &2).is_err(),
+        };
+        assert!(rejected, "{} accepted a non-admin signature", name);
+    }
+    assert_eq!(h.client.get_admin(), h.admin);
+    assert_eq!(
+        h.client.get_series(&series_id).unwrap().state,
+        crate::SeriesState::Active
+    );
+}
+
+#[test]
+fn a_multisig_approval_cannot_be_replayed_for_another_admin_call() {
+    let h = setup();
+    let (multisig_id, signers) = setup_multisig(&h);
+    let ms = MultisigClient::new(&h.env, &multisig_id);
+    let id = aid(&h.env, 77);
+    ms.approve(&signers[0], &id);
+    ms.approve(&signers[1], &id);
+
+    h.client.set_fee_rate_via_multisig(&multisig_id, &id, &60);
+    let attacker = Address::generate(&h.env);
+    assert!(h
+        .client
+        .try_transfer_admin_via_multisig(&multisig_id, &id, &attacker)
+        .is_err());
+    assert!(h
+        .client
+        .try_set_oracle_via_multisig(&multisig_id, &id, &attacker)
+        .is_err());
+    assert_eq!(h.client.get_pending_admin(), None);
+}
+
+#[test]
+fn accept_vault_admin_lets_the_market_take_over_a_vault() {
+    let h = setup();
+    let deployer = Address::generate(&h.env);
+    let vault_id = h.env.register_contract(None, Vault);
+    let vault = VaultClient::new(&h.env, &vault_id);
+    vault.initialize(&deployer, &h.token);
+    vault.transfer_admin(&h.client.address);
+    assert_eq!(vault.get_admin(), deployer);
+    h.client.accept_vault_admin(&vault_id);
+    assert_eq!(vault.get_admin(), h.client.address);
 }

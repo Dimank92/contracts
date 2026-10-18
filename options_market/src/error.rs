@@ -42,4 +42,16 @@ pub enum Error {
     MigrationPending = 32,
     InvalidActiveSeriesCap = 33,
     InvalidPageLimit = 34,
+    /// The vault passed in isn't the pinned vault (or, for a series that
+    /// already has one, the series' own vault).
+    UnauthorizedVault = 35,
+    /// `accept_admin` with no transfer pending.
+    NoPendingAdmin = 36,
+    // Schema migrations (zenith_common::migrations) — same codes in
+    // every Zenith contract. See docs/migrations.md.
+    SchemaVersionMismatch = 100,
+    InvalidMigrationTarget = 101,
+    MigrationInProgress = 102,
+    NoMigrationInProgress = 103,
+    InvalidMigrationBatch = 104,
 }

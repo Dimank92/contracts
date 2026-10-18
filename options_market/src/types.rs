@@ -6,6 +6,9 @@ use soroban_sdk::{contracttype, Address, Symbol};
 #[derive(Clone)]
 pub enum DataKey {
     Admin,
+    /// The settlement oracle: the account allowed to call
+    /// `set_settlement_price`, or the price_oracle contract
+    /// `set_settlement_price_from_oracle` reads. Re-pointed by `set_oracle`.
     Oracle,
     CollateralToken, // USDC
     FeeRecipient,
@@ -29,23 +32,37 @@ pub enum DataKey {
     /// exactly how much of options_market's own balance to quarantine
     /// into vault for this series — see that function's doc comment.
     SeriesEscrow(u64),
-    /// Pinned trusted vault address
+    /// Pinned trusted vault address (`set_vault`). Series created while a
+    /// vault is pinned keep their writers' collateral in it.
     Vault,
-    /// Records which vault holds escrow for a specific series: series_id -> Address
+    /// Records which vault holds escrow for a specific series: series_id ->
+    /// Address. Set when the series is created against a pinned vault
+    /// (collateral escrowed there from the first write) or, for older
+    /// series, by `escrow_series_to_vault` after cancellation.
     SeriesVault(u64),
+    /// series_id -> true when the series' writer collateral is escrowed
+    /// in `SeriesVault(series_id)` under tag `series_id`, and every payout,
+    /// reclaim and collateral refund for it is withdrawn from that tag.
+    CollateralInVault(u64),
+    /// Optional params registry overriding the fee rate and settlement
+    /// window (see storage::sync_params).
+    ParamsRegistry,
+    /// Registry version the cached fee rate / settlement window came from.
+    ParamsVersion,
+    SettlementWindow,
 }
 
 // ─── Data Types ───────────────────────────────────────────────────────────────
 
 #[contracttype]
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum OptionType {
     Call, // right to BUY at strike
     Put,  // right to SELL at strike
 }
 
 #[contracttype]
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum SeriesState {
     Active,    // accepting trades
     Expired,   // past expiry, awaiting settlement
@@ -54,7 +71,7 @@ pub enum SeriesState {
 }
 
 #[contracttype]
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum PositionSide {
     Long,  // bought option (paid premium)
     Short, // wrote option (received premium, locked collateral)
@@ -62,7 +79,7 @@ pub enum PositionSide {
 
 /// One option series = one expiry × one strike × one type × one underlying
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct OptionSeries {
     pub series_id: u64,
     pub underlying: Symbol, // "XLM" | "BTC" | "ETH" | "SOL"
@@ -81,7 +98,7 @@ pub struct OptionSeries {
 
 /// One user's option position in a series
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct OptionPosition {
     pub position_id: u64,
     pub series_id: u64,

@@ -2,32 +2,15 @@
 //! (version checks, ordering, pagination, the in-progress guard) lives in
 //! `zenith_common::migrations`; this file only registers steps. See
 //! docs/migrations.md for how to author one.
-//!
-//! NOTE: this crate's lib.rs, error.rs, storage.rs and types.rs are
-//! empty on main (emptied by #149). Once they're restored:
-//! - add `mod migrations;` to lib.rs, the migration error variants (codes
-//!   100–104, same names as every other crate) to `Error`, and
-//!   `zenith_common::migrations::init_schema(&env, CURRENT_SCHEMA_VERSION)`
-//!   to `initialize`;
-//! - rewire the existing `upgrade` / `upgrade_via_multisig` onto
-//!   `zenith_common::upgrade::upgrade` (with `UpgradeAuth::Admin` /
-//!   `UpgradeAuth::PinnedMultisig`), which drops the caller-supplied
-//!   `multisig_contract` argument in favour of the pin set here — an ABI
-//!   change to list in tools/spec-diff/allow.txt;
-//! - call `migrations::require_current` from state-changing entrypoints.
-//!
-//! Until `initialize` writes it, a missing `SchemaVersion` reads as
-//! `BASELINE_SCHEMA_VERSION` (1), which is also correct for
-//! already-deployed instances.
 
-use soroban_sdk::{contractimpl, panic_with_error, Address, Env};
+use soroban_sdk::{contractimpl, panic_with_error, Address, BytesN, Env};
 use zenith_common::migrations::{self, MigrationErrors, Step};
-use zenith_common::upgrade;
-use zenith_common::{require_admin_or_multisig, ActionClass, Auth};
+use zenith_common::upgrade::{self, UpgradeAuth};
+use zenith_common::{self as common, require_admin_or_multisig, ActionClass, Auth};
 
 use crate::error::Error;
 use crate::types::DataKey;
-use crate::{ttl, OptionsMarket};
+use crate::{ttl, OptionsMarket, OptionsMarketClient};
 
 /// The layout this wasm reads and writes. Raise it by one in the same PR
 /// that adds the matching arm to `step`.
@@ -64,24 +47,67 @@ pub fn require_current(env: &Env) {
 }
 
 fn require_admin(env: &Env) {
-    zenith_common::get_admin(env, &DataKey::Admin).require_auth();
+    require_admin_or_multisig(
+        env,
+        &DataKey::Admin,
+        &Auth::Admin,
+        ActionClass::Critical,
+        Error::Unauthorized,
+    );
 }
 
-/// Migration entrypoints. A separate `#[contractimpl]` block so the
-/// whole upgrade surface lives in one file.
+/// Upgrade, migration and trusted-multisig entrypoints. A separate
+/// `#[contractimpl]` block so the whole upgrade surface lives in one file.
 #[contractimpl]
 impl OptionsMarket {
-    /// Pins the multisig `migrate_via_multisig` (and, once rewired,
-    /// `upgrade_via_multisig`) trusts. Admin only; re-pinning replaces it.
-    pub fn set_upgrade_multisig(env: Env, multisig: Address) {
+    /// Swaps this contract's wasm, keeping its address and storage.
+    /// Admin only. Follow with `migrate` if the new wasm raises
+    /// `CURRENT_SCHEMA_VERSION` — until then state-changing entrypoints
+    /// fail with `MigrationInProgress`.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) {
         ttl::extend_instance(&env);
-        require_admin(&env);
-        upgrade::pin_multisig(&env, &multisig);
+        upgrade::upgrade(
+            &env,
+            &DataKey::Admin,
+            UpgradeAuth::Admin,
+            new_wasm_hash,
+            Error::Unauthorized,
+        );
     }
 
-    pub fn get_upgrade_multisig(env: Env) -> Option<Address> {
+    /// Permissionless alternative to `upgrade`, authorized by the trusted
+    /// multisig (`set_multisig`) approving `action_id`, which must equal
+    /// `upgrade_action_id(new_wasm_hash)` — so the approval covers
+    /// exactly this wasm on exactly this contract.
+    pub fn upgrade_via_multisig(env: Env, action_id: BytesN<32>, new_wasm_hash: BytesN<32>) {
         ttl::extend_instance(&env);
-        upgrade::pinned_multisig(&env)
+        upgrade::upgrade(
+            &env,
+            &DataKey::Admin,
+            UpgradeAuth::PinnedMultisig(action_id),
+            new_wasm_hash,
+            Error::Unauthorized,
+        );
+    }
+
+    /// The multisig action id that authorizes upgrading this contract to
+    /// `new_wasm_hash` — what signers approve.
+    pub fn upgrade_action_id(env: Env, new_wasm_hash: BytesN<32>) -> BytesN<32> {
+        upgrade::upgrade_action_id(&env, &new_wasm_hash)
+    }
+
+    /// Sets the multisig every `_via_multisig` entrypoint (and
+    /// `upgrade_via_multisig`) trusts; a `_via_multisig` call naming any
+    /// other multisig is rejected. Admin only; setting again replaces it.
+    pub fn set_multisig(env: Env, multisig: Address) {
+        ttl::extend_instance(&env);
+        require_admin(&env);
+        common::set_trusted_multisig(&env, &multisig);
+    }
+
+    pub fn get_multisig(env: Env) -> Option<Address> {
+        ttl::extend_instance(&env);
+        common::trusted_multisig(&env)
     }
 
     /// Runs the registered steps `from+1 ..= to`. Admin only. Returns the
@@ -92,13 +118,13 @@ impl OptionsMarket {
         migrations::migrate(&env, from, to, CURRENT_SCHEMA_VERSION, step, &ERRORS)
     }
 
-    /// Permissionless alternative to `migrate`, authorized by the pinned
-    /// multisig. `Emergency` class (no extra delay): the steps it runs
-    /// were already timelocked as `Critical` with the upgrade that
-    /// installed them, and the contract is blocked until they run.
-    pub fn migrate_via_multisig(env: Env, action_id: u64, from: u32, to: u32) -> u32 {
+    /// Permissionless alternative to `migrate`, authorized by the trusted
+    /// multisig. `Emergency` class: the steps it runs were already
+    /// approved as `Critical` with the upgrade that installed them, and
+    /// the contract is blocked until they run.
+    pub fn migrate_via_multisig(env: Env, action_id: BytesN<32>, from: u32, to: u32) -> u32 {
         ttl::extend_instance(&env);
-        let multisig = upgrade::pinned_multisig(&env)
+        let multisig = common::trusted_multisig(&env)
             .unwrap_or_else(|| panic_with_error!(&env, Error::Unauthorized));
         require_admin_or_multisig(
             &env,
