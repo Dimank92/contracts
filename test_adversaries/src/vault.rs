@@ -76,23 +76,39 @@ impl NoOpVault {
     /// No-op: does NOT push any tokens to `to`.
     pub fn withdraw(_env: Env, _token: Address, _tag: Tag, _to: Address, _amount: i128) {}
 
-    pub fn balance_of(_env: Env, _token: Address, _tag: Tag) -> i128 { 0 }
-    pub fn get_total_escrowed(_env: Env, _token: Address) -> i128 { 0 }
-    pub fn is_paused(_env: Env) -> bool { false }
+    pub fn balance_of(_env: Env, _token: Address, _tag: Tag) -> i128 {
+        0
+    }
+    pub fn get_total_escrowed(_env: Env, _token: Address) -> i128 {
+        0
+    }
+    pub fn is_paused(_env: Env) -> bool {
+        false
+    }
     pub fn get_admin(env: Env) -> Address {
         env.storage().instance().get(&VaultKey::Admin).unwrap()
     }
-    pub fn is_token_allowed(_env: Env, _token: Address) -> bool { true }
-    pub fn is_integrator(_env: Env, _addr: Address) -> bool { true }
+    pub fn is_token_allowed(_env: Env, _token: Address) -> bool {
+        true
+    }
+    pub fn is_integrator(_env: Env, _addr: Address) -> bool {
+        true
+    }
     pub fn set_token_allowed(_env: Env, _token: Address, _allowed: bool) {}
     pub fn set_integrator(_env: Env, _integrator: Address, _allowed: bool) {}
     pub fn transfer_tag(_env: Env, _token: Address, _from: Tag, _to: Tag, _amount: i128) {}
-    pub fn get_tag_owner(_env: Env, _tag: Tag) -> Option<Address> { None }
+    pub fn get_tag_owner(_env: Env, _tag: Tag) -> Option<Address> {
+        None
+    }
 
     // Legacy wrappers
-    pub fn deposit_legacy(_env: Env, _from: Address, _id: u64, _amount: i128) -> i128 { 0 }
+    pub fn deposit_legacy(_env: Env, _from: Address, _id: u64, _amount: i128) -> i128 {
+        0
+    }
     pub fn withdraw_legacy(_env: Env, _id: u64, _to: Address, _amount: i128) {}
-    pub fn balance_of_legacy(_env: Env, _id: u64) -> i128 { 0 }
+    pub fn balance_of_legacy(_env: Env, _id: u64) -> i128 {
+        0
+    }
     pub fn legacy_tag(env: Env, id: u64) -> Tag {
         Tag {
             owner: env.storage().instance().get(&VaultKey::Admin).unwrap(),
@@ -156,19 +172,31 @@ impl WrongBalanceVault {
             .unwrap_or(0)
     }
 
-    pub fn is_paused(_env: Env) -> bool { false }
+    pub fn is_paused(_env: Env) -> bool {
+        false
+    }
     pub fn get_admin(env: Env) -> Address {
         env.storage().instance().get(&VaultKey::Admin).unwrap()
     }
-    pub fn is_token_allowed(_env: Env, _token: Address) -> bool { true }
-    pub fn is_integrator(_env: Env, _addr: Address) -> bool { true }
+    pub fn is_token_allowed(_env: Env, _token: Address) -> bool {
+        true
+    }
+    pub fn is_integrator(_env: Env, _addr: Address) -> bool {
+        true
+    }
     pub fn set_token_allowed(_env: Env, _token: Address, _allowed: bool) {}
     pub fn set_integrator(_env: Env, _integrator: Address, _allowed: bool) {}
     pub fn transfer_tag(_env: Env, _token: Address, _from: Tag, _to: Tag, _amount: i128) {}
-    pub fn get_tag_owner(_env: Env, _tag: Tag) -> Option<Address> { None }
-    pub fn deposit_legacy(_env: Env, _from: Address, _id: u64, _amount: i128) -> i128 { 0 }
+    pub fn get_tag_owner(_env: Env, _tag: Tag) -> Option<Address> {
+        None
+    }
+    pub fn deposit_legacy(_env: Env, _from: Address, _id: u64, _amount: i128) -> i128 {
+        0
+    }
     pub fn withdraw_legacy(_env: Env, _id: u64, _to: Address, _amount: i128) {}
-    pub fn balance_of_legacy(_env: Env, _id: u64) -> i128 { 0 }
+    pub fn balance_of_legacy(_env: Env, _id: u64) -> i128 {
+        0
+    }
     pub fn legacy_tag(env: Env, id: u64) -> Tag {
         Tag {
             owner: env.storage().instance().get(&VaultKey::Admin).unwrap(),
@@ -218,20 +246,34 @@ impl RevertOnWithdrawVault {
             .unwrap_or(0)
     }
 
-    pub fn get_total_escrowed(_env: Env, _token: Address) -> i128 { 0 }
-    pub fn is_paused(_env: Env) -> bool { false }
+    pub fn get_total_escrowed(_env: Env, _token: Address) -> i128 {
+        0
+    }
+    pub fn is_paused(_env: Env) -> bool {
+        false
+    }
     pub fn get_admin(env: Env) -> Address {
         env.storage().instance().get(&VaultKey::Admin).unwrap()
     }
-    pub fn is_token_allowed(_env: Env, _token: Address) -> bool { true }
-    pub fn is_integrator(_env: Env, _addr: Address) -> bool { true }
+    pub fn is_token_allowed(_env: Env, _token: Address) -> bool {
+        true
+    }
+    pub fn is_integrator(_env: Env, _addr: Address) -> bool {
+        true
+    }
     pub fn set_token_allowed(_env: Env, _token: Address, _allowed: bool) {}
     pub fn set_integrator(_env: Env, _integrator: Address, _allowed: bool) {}
     pub fn transfer_tag(_env: Env, _token: Address, _from: Tag, _to: Tag, _amount: i128) {}
-    pub fn get_tag_owner(_env: Env, _tag: Tag) -> Option<Address> { None }
-    pub fn deposit_legacy(_env: Env, _from: Address, _id: u64, _amount: i128) -> i128 { 0 }
+    pub fn get_tag_owner(_env: Env, _tag: Tag) -> Option<Address> {
+        None
+    }
+    pub fn deposit_legacy(_env: Env, _from: Address, _id: u64, _amount: i128) -> i128 {
+        0
+    }
     pub fn withdraw_legacy(_env: Env, _id: u64, _to: Address, _amount: i128) {}
-    pub fn balance_of_legacy(_env: Env, _id: u64) -> i128 { 0 }
+    pub fn balance_of_legacy(_env: Env, _id: u64) -> i128 {
+        0
+    }
     pub fn legacy_tag(env: Env, id: u64) -> Tag {
         Tag {
             owner: env.storage().instance().get(&VaultKey::Admin).unwrap(),
@@ -302,19 +344,31 @@ impl DrainVault {
             .unwrap_or(0)
     }
 
-    pub fn is_paused(_env: Env) -> bool { false }
+    pub fn is_paused(_env: Env) -> bool {
+        false
+    }
     pub fn get_admin(env: Env) -> Address {
         env.storage().instance().get(&VaultKey::Admin).unwrap()
     }
-    pub fn is_token_allowed(_env: Env, _token: Address) -> bool { true }
-    pub fn is_integrator(_env: Env, _addr: Address) -> bool { true }
+    pub fn is_token_allowed(_env: Env, _token: Address) -> bool {
+        true
+    }
+    pub fn is_integrator(_env: Env, _addr: Address) -> bool {
+        true
+    }
     pub fn set_token_allowed(_env: Env, _token: Address, _allowed: bool) {}
     pub fn set_integrator(_env: Env, _integrator: Address, _allowed: bool) {}
     pub fn transfer_tag(_env: Env, _token: Address, _from: Tag, _to: Tag, _amount: i128) {}
-    pub fn get_tag_owner(_env: Env, _tag: Tag) -> Option<Address> { None }
-    pub fn deposit_legacy(_env: Env, _from: Address, _id: u64, _amount: i128) -> i128 { 0 }
+    pub fn get_tag_owner(_env: Env, _tag: Tag) -> Option<Address> {
+        None
+    }
+    pub fn deposit_legacy(_env: Env, _from: Address, _id: u64, _amount: i128) -> i128 {
+        0
+    }
     pub fn withdraw_legacy(_env: Env, _id: u64, _to: Address, _amount: i128) {}
-    pub fn balance_of_legacy(_env: Env, _id: u64) -> i128 { 0 }
+    pub fn balance_of_legacy(_env: Env, _id: u64) -> i128 {
+        0
+    }
     pub fn legacy_tag(env: Env, id: u64) -> Tag {
         Tag {
             owner: env.storage().instance().get(&VaultKey::Admin).unwrap(),
@@ -323,3 +377,4 @@ impl DrainVault {
         }
     }
 }
+

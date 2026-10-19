@@ -369,4 +369,3 @@ fn params_only_via_governance_and_within_bounds() {
     h.gov.set_voting_period(&1_000);
     assert_eq!(h.gov.voting_period(), 1_000);
 }
-

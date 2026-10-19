@@ -32,8 +32,8 @@
 //! point: the batch that was going to run second never runs at all.
 
 use soroban_sdk::{
-    contract, contractimpl, panic_with_error, xdr::ToXdr, Address, BytesN, Env, Symbol,
-    TryFromVal, Val, Vec,
+    contract, contractimpl, panic_with_error, xdr::ToXdr, Address, BytesN, Env, Symbol, TryFromVal,
+    Val, Vec,
 };
 
 #[cfg(test)]
@@ -100,7 +100,9 @@ fn set_role(env: &Env, role: Role, account: &Address, granted: bool) {
 }
 
 fn load(env: &Env, id: &BytesN<32>) -> Option<Operation> {
-    env.storage().persistent().get(&DataKey::Operation(id.clone()))
+    env.storage()
+        .persistent()
+        .get(&DataKey::Operation(id.clone()))
 }
 
 /// The `i`th argument of a self-call, decoded.
@@ -172,12 +174,18 @@ impl Timelock {
             panic_with_error!(&env, Error::InsufficientDelay);
         }
         env.storage().instance().set(&DataKey::MinDelay, &min_delay);
-        env.storage().instance().set(&DataKey::GracePeriod, &grace_period);
+        env.storage()
+            .instance()
+            .set(&DataKey::GracePeriod, &grace_period);
         for p in proposers.iter() {
-            env.storage().instance().set(&DataKey::Proposer(p.clone()), &true);
+            env.storage()
+                .instance()
+                .set(&DataKey::Proposer(p.clone()), &true);
         }
         for e in executors.iter() {
-            env.storage().instance().set(&DataKey::Executor(e.clone()), &true);
+            env.storage()
+                .instance()
+                .set(&DataKey::Executor(e.clone()), &true);
         }
         for c in cancellers.iter() {
             env.storage()
@@ -280,9 +288,8 @@ impl Timelock {
             salt.clone(),
         );
         let key = DataKey::Operation(id.clone());
-        let mut op: Operation = load(&env, &id).unwrap_or_else(|| {
-            panic_with_error!(&env, Error::NotPending)
-        });
+        let mut op: Operation =
+            load(&env, &id).unwrap_or_else(|| panic_with_error!(&env, Error::NotPending));
         if op.done {
             panic_with_error!(&env, Error::NotPending);
         }

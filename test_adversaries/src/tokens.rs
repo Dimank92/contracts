@@ -89,7 +89,13 @@ impl LyingBalanceToken {
         i128::MAX
     }
 
-    pub fn approve(env: Env, from: Address, spender: Address, amount: i128, _expiration_ledger: u32) {
+    pub fn approve(
+        env: Env,
+        from: Address,
+        spender: Address,
+        amount: i128,
+        _expiration_ledger: u32,
+    ) {
         from.require_auth();
         env.storage()
             .instance()
@@ -103,14 +109,29 @@ impl LyingBalanceToken {
             .unwrap_or(0i128)
     }
 
-    pub fn decimals(_env: Env) -> u32 { 7 }
-    pub fn name(env: Env) -> String { String::from_str(&env, "LyingBalanceToken") }
-    pub fn symbol(env: Env) -> String { String::from_str(&env, "LIE") }
+    pub fn decimals(_env: Env) -> u32 {
+        7
+    }
+    pub fn name(env: Env) -> String {
+        String::from_str(&env, "LyingBalanceToken")
+    }
+    pub fn symbol(env: Env) -> String {
+        String::from_str(&env, "LIE")
+    }
     pub fn burn(_env: Env, _from: Address, _amount: i128) {}
     pub fn burn_from(_env: Env, _spender: Address, _from: Address, _amount: i128) {}
-    pub fn transfer_from(_env: Env, _spender: Address, _from: Address, _to: Address, _amount: i128) {}
+    pub fn transfer_from(
+        _env: Env,
+        _spender: Address,
+        _from: Address,
+        _to: Address,
+        _amount: i128,
+    ) {
+    }
     pub fn set_authorized(_env: Env, _id: Address, _authorize: bool) {}
-    pub fn authorized(_env: Env, _id: Address) -> bool { true }
+    pub fn authorized(_env: Env, _id: Address) -> bool {
+        true
+    }
 }
 
 // ─── FeeOnTransferToken ───────────────────────────────────────────────────────
@@ -151,17 +172,21 @@ impl FeeOnTransferToken {
         set_balance(&env, &from, from_bal - amount);
         set_balance(&env, &to, to_bal + delivered);
         // fee is burned (neither credited nor stored)
-        env.events().publish(
-            (symbol_short!("fee_burn"),),
-            (from.clone(), amount, fee),
-        );
+        env.events()
+            .publish((symbol_short!("fee_burn"),), (from.clone(), amount, fee));
     }
 
     pub fn balance(env: Env, id: Address) -> i128 {
         get_balance(&env, &id)
     }
 
-    pub fn approve(env: Env, from: Address, spender: Address, amount: i128, _expiration_ledger: u32) {
+    pub fn approve(
+        env: Env,
+        from: Address,
+        spender: Address,
+        amount: i128,
+        _expiration_ledger: u32,
+    ) {
         from.require_auth();
         env.storage()
             .instance()
@@ -175,18 +200,33 @@ impl FeeOnTransferToken {
             .unwrap_or(0i128)
     }
 
-    pub fn decimals(_env: Env) -> u32 { 7 }
-    pub fn name(env: Env) -> String { String::from_str(&env, "FeeOnTransferToken") }
-    pub fn symbol(env: Env) -> String { String::from_str(&env, "FOT") }
+    pub fn decimals(_env: Env) -> u32 {
+        7
+    }
+    pub fn name(env: Env) -> String {
+        String::from_str(&env, "FeeOnTransferToken")
+    }
+    pub fn symbol(env: Env) -> String {
+        String::from_str(&env, "FOT")
+    }
     pub fn burn(env: Env, from: Address, amount: i128) {
         from.require_auth();
         let bal = get_balance(&env, &from);
         set_balance(&env, &from, bal - amount);
     }
     pub fn burn_from(_env: Env, _spender: Address, _from: Address, _amount: i128) {}
-    pub fn transfer_from(_env: Env, _spender: Address, _from: Address, _to: Address, _amount: i128) {}
+    pub fn transfer_from(
+        _env: Env,
+        _spender: Address,
+        _from: Address,
+        _to: Address,
+        _amount: i128,
+    ) {
+    }
     pub fn set_authorized(_env: Env, _id: Address, _authorize: bool) {}
-    pub fn authorized(_env: Env, _id: Address) -> bool { true }
+    pub fn authorized(_env: Env, _id: Address) -> bool {
+        true
+    }
 }
 
 // ─── RevertOnTransferToken ───────────────────────────────────────────────────
@@ -222,7 +262,13 @@ impl RevertOnTransferToken {
         get_balance(&env, &id)
     }
 
-    pub fn approve(env: Env, from: Address, spender: Address, amount: i128, _expiration_ledger: u32) {
+    pub fn approve(
+        env: Env,
+        from: Address,
+        spender: Address,
+        amount: i128,
+        _expiration_ledger: u32,
+    ) {
         from.require_auth();
         env.storage()
             .instance()
@@ -236,14 +282,29 @@ impl RevertOnTransferToken {
             .unwrap_or(0i128)
     }
 
-    pub fn decimals(_env: Env) -> u32 { 7 }
-    pub fn name(env: Env) -> String { String::from_str(&env, "RevertOnTransferToken") }
-    pub fn symbol(env: Env) -> String { String::from_str(&env, "REVT") }
+    pub fn decimals(_env: Env) -> u32 {
+        7
+    }
+    pub fn name(env: Env) -> String {
+        String::from_str(&env, "RevertOnTransferToken")
+    }
+    pub fn symbol(env: Env) -> String {
+        String::from_str(&env, "REVT")
+    }
     pub fn burn(_env: Env, _from: Address, _amount: i128) {}
     pub fn burn_from(_env: Env, _spender: Address, _from: Address, _amount: i128) {}
-    pub fn transfer_from(_env: Env, _spender: Address, _from: Address, _to: Address, _amount: i128) {}
+    pub fn transfer_from(
+        _env: Env,
+        _spender: Address,
+        _from: Address,
+        _to: Address,
+        _amount: i128,
+    ) {
+    }
     pub fn set_authorized(_env: Env, _id: Address, _authorize: bool) {}
-    pub fn authorized(_env: Env, _id: Address) -> bool { true }
+    pub fn authorized(_env: Env, _id: Address) -> bool {
+        true
+    }
 }
 
 // ─── ReentrantToken ──────────────────────────────────────────────────────────
@@ -273,9 +334,10 @@ enum ReentrantKey {
 impl ReentrantToken {
     pub fn initialize(env: Env, admin: Address) {
         admin.require_auth();
-        env.storage()
-            .instance()
-            .set(&ReentrantKey::Balances(admin.clone()), &1_000_000_000_000i128);
+        env.storage().instance().set(
+            &ReentrantKey::Balances(admin.clone()),
+            &1_000_000_000_000i128,
+        );
     }
 
     pub fn mint(env: Env, to: Address, amount: i128) {
@@ -339,11 +401,8 @@ impl ReentrantToken {
                 // best-effort try_invoke_contract pattern — in testutils
                 // the panic propagates, so tests should wrap this in
                 // should_panic or use try_* client methods.
-                let _: Result<(), _> = env.try_invoke_contract(
-                    &target,
-                    &func,
-                    soroban_sdk::vec![&env],
-                );
+                let _: Result<(), _> =
+                    env.try_invoke_contract(&target, &func, soroban_sdk::vec![&env]);
             }
         }
     }
@@ -355,7 +414,13 @@ impl ReentrantToken {
             .unwrap_or(0i128)
     }
 
-    pub fn approve(env: Env, from: Address, spender: Address, amount: i128, _expiration_ledger: u32) {
+    pub fn approve(
+        env: Env,
+        from: Address,
+        spender: Address,
+        amount: i128,
+        _expiration_ledger: u32,
+    ) {
         from.require_auth();
         env.storage()
             .instance()
@@ -369,14 +434,29 @@ impl ReentrantToken {
             .unwrap_or(0i128)
     }
 
-    pub fn decimals(_env: Env) -> u32 { 7 }
-    pub fn name(env: Env) -> String { String::from_str(&env, "ReentrantToken") }
-    pub fn symbol(env: Env) -> String { String::from_str(&env, "REENT") }
+    pub fn decimals(_env: Env) -> u32 {
+        7
+    }
+    pub fn name(env: Env) -> String {
+        String::from_str(&env, "ReentrantToken")
+    }
+    pub fn symbol(env: Env) -> String {
+        String::from_str(&env, "REENT")
+    }
     pub fn burn(_env: Env, _from: Address, _amount: i128) {}
     pub fn burn_from(_env: Env, _spender: Address, _from: Address, _amount: i128) {}
-    pub fn transfer_from(_env: Env, _spender: Address, _from: Address, _to: Address, _amount: i128) {}
+    pub fn transfer_from(
+        _env: Env,
+        _spender: Address,
+        _from: Address,
+        _to: Address,
+        _amount: i128,
+    ) {
+    }
     pub fn set_authorized(_env: Env, _id: Address, _authorize: bool) {}
-    pub fn authorized(_env: Env, _id: Address) -> bool { true }
+    pub fn authorized(_env: Env, _id: Address) -> bool {
+        true
+    }
 }
 
 // ─── ZeroBalanceToken ─────────────────────────────────────────────────────────
@@ -413,9 +493,17 @@ impl ZeroBalanceToken {
     }
 
     /// Always returns 0, regardless of actual balance.
-    pub fn balance(_env: Env, _id: Address) -> i128 { 0 }
+    pub fn balance(_env: Env, _id: Address) -> i128 {
+        0
+    }
 
-    pub fn approve(env: Env, from: Address, spender: Address, amount: i128, _expiration_ledger: u32) {
+    pub fn approve(
+        env: Env,
+        from: Address,
+        spender: Address,
+        amount: i128,
+        _expiration_ledger: u32,
+    ) {
         from.require_auth();
         env.storage()
             .instance()
@@ -429,14 +517,29 @@ impl ZeroBalanceToken {
             .unwrap_or(0i128)
     }
 
-    pub fn decimals(_env: Env) -> u32 { 7 }
-    pub fn name(env: Env) -> String { String::from_str(&env, "ZeroBalanceToken") }
-    pub fn symbol(env: Env) -> String { String::from_str(&env, "ZERO") }
+    pub fn decimals(_env: Env) -> u32 {
+        7
+    }
+    pub fn name(env: Env) -> String {
+        String::from_str(&env, "ZeroBalanceToken")
+    }
+    pub fn symbol(env: Env) -> String {
+        String::from_str(&env, "ZERO")
+    }
     pub fn burn(_env: Env, _from: Address, _amount: i128) {}
     pub fn burn_from(_env: Env, _spender: Address, _from: Address, _amount: i128) {}
-    pub fn transfer_from(_env: Env, _spender: Address, _from: Address, _to: Address, _amount: i128) {}
+    pub fn transfer_from(
+        _env: Env,
+        _spender: Address,
+        _from: Address,
+        _to: Address,
+        _amount: i128,
+    ) {
+    }
     pub fn set_authorized(_env: Env, _id: Address, _authorize: bool) {}
-    pub fn authorized(_env: Env, _id: Address) -> bool { true }
+    pub fn authorized(_env: Env, _id: Address) -> bool {
+        true
+    }
 }
 
 // ─── OverflowToken ────────────────────────────────────────────────────────────
@@ -472,9 +575,17 @@ impl OverflowToken {
     }
 
     /// Always returns `i128::MAX`.
-    pub fn balance(_env: Env, _id: Address) -> i128 { i128::MAX }
+    pub fn balance(_env: Env, _id: Address) -> i128 {
+        i128::MAX
+    }
 
-    pub fn approve(env: Env, from: Address, spender: Address, amount: i128, _expiration_ledger: u32) {
+    pub fn approve(
+        env: Env,
+        from: Address,
+        spender: Address,
+        amount: i128,
+        _expiration_ledger: u32,
+    ) {
         from.require_auth();
         env.storage()
             .instance()
@@ -488,12 +599,28 @@ impl OverflowToken {
             .unwrap_or(i128::MAX)
     }
 
-    pub fn decimals(_env: Env) -> u32 { 7 }
-    pub fn name(env: Env) -> String { String::from_str(&env, "OverflowToken") }
-    pub fn symbol(env: Env) -> String { String::from_str(&env, "OVF") }
+    pub fn decimals(_env: Env) -> u32 {
+        7
+    }
+    pub fn name(env: Env) -> String {
+        String::from_str(&env, "OverflowToken")
+    }
+    pub fn symbol(env: Env) -> String {
+        String::from_str(&env, "OVF")
+    }
     pub fn burn(_env: Env, _from: Address, _amount: i128) {}
     pub fn burn_from(_env: Env, _spender: Address, _from: Address, _amount: i128) {}
-    pub fn transfer_from(_env: Env, _spender: Address, _from: Address, _to: Address, _amount: i128) {}
+    pub fn transfer_from(
+        _env: Env,
+        _spender: Address,
+        _from: Address,
+        _to: Address,
+        _amount: i128,
+    ) {
+    }
     pub fn set_authorized(_env: Env, _id: Address, _authorize: bool) {}
-    pub fn authorized(_env: Env, _id: Address) -> bool { true }
+    pub fn authorized(_env: Env, _id: Address) -> bool {
+        true
+    }
 }
+

@@ -631,13 +631,16 @@ fn the_stored_operation_is_the_spec_it_was_scheduled_with() {
         predecessor: op.predecessor.clone(),
         salt: op.salt.clone(),
     };
-    assert_eq!(h.client.hash_operation(
-        &spec.targets,
-        &spec.fns,
-        &spec.args,
-        &spec.predecessor,
-        &spec.salt,
-    ), id);
+    assert_eq!(
+        h.client.hash_operation(
+            &spec.targets,
+            &spec.fns,
+            &spec.args,
+            &spec.predecessor,
+            &spec.salt,
+        ),
+        id
+    );
 }
 
 // ── the timelock as the admin of another contract ────────────────────────────

@@ -17,7 +17,9 @@
 //! | [`StaleOracle`]           | Reports a price but marks it as extremely old; any staleness check should reject it. |
 //! | [`NegativePriceOracle`]   | `get_price()` returns `-1` — invalid price for settlement. |
 
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, panic_with_error, Address, Env, Symbol};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, panic_with_error, Address, Env, Symbol,
+};
 
 // ─── shared storage ──────────────────────────────────────────────────────────
 
@@ -64,12 +66,24 @@ impl AlwaysNoneOracle {
     pub fn add_feeder(_env: Env, _feeder: Address) {}
     pub fn remove_feeder(_env: Env, _feeder: Address) {}
     pub fn report_price(_env: Env, _feeder: Address, _symbol: Symbol, _price: i128) {}
-    pub fn is_feeder(_env: Env, _feeder: Address) -> bool { false }
-    pub fn get_feeder_count(_env: Env) -> u32 { 0 }
-    pub fn get_max_staleness(_env: Env) -> u64 { 3600 }
-    pub fn get_min_reports(_env: Env) -> u32 { 1 }
-    pub fn is_paused(_env: Env) -> bool { false }
-    pub fn get_latest_report(_env: Env, _symbol: Symbol, _feeder: Address) -> Option<(i128, u64)> { None }
+    pub fn is_feeder(_env: Env, _feeder: Address) -> bool {
+        false
+    }
+    pub fn get_feeder_count(_env: Env) -> u32 {
+        0
+    }
+    pub fn get_max_staleness(_env: Env) -> u64 {
+        3600
+    }
+    pub fn get_min_reports(_env: Env) -> u32 {
+        1
+    }
+    pub fn is_paused(_env: Env) -> bool {
+        false
+    }
+    pub fn get_latest_report(_env: Env, _symbol: Symbol, _feeder: Address) -> Option<(i128, u64)> {
+        None
+    }
 }
 
 // ─── ExtremeHighOracle ───────────────────────────────────────────────────────
@@ -100,11 +114,21 @@ impl ExtremeHighOracle {
     pub fn add_feeder(_env: Env, _feeder: Address) {}
     pub fn remove_feeder(_env: Env, _feeder: Address) {}
     pub fn report_price(_env: Env, _feeder: Address, _symbol: Symbol, _price: i128) {}
-    pub fn is_feeder(_env: Env, _feeder: Address) -> bool { false }
-    pub fn get_feeder_count(_env: Env) -> u32 { 1 }
-    pub fn get_max_staleness(_env: Env) -> u64 { 3600 }
-    pub fn get_min_reports(_env: Env) -> u32 { 1 }
-    pub fn is_paused(_env: Env) -> bool { false }
+    pub fn is_feeder(_env: Env, _feeder: Address) -> bool {
+        false
+    }
+    pub fn get_feeder_count(_env: Env) -> u32 {
+        1
+    }
+    pub fn get_max_staleness(_env: Env) -> u64 {
+        3600
+    }
+    pub fn get_min_reports(_env: Env) -> u32 {
+        1
+    }
+    pub fn is_paused(_env: Env) -> bool {
+        false
+    }
     pub fn get_latest_report(_env: Env, _symbol: Symbol, _feeder: Address) -> Option<(i128, u64)> {
         Some((i128::MAX, 0))
     }
@@ -136,11 +160,21 @@ impl ExtremeLowOracle {
     pub fn add_feeder(_env: Env, _feeder: Address) {}
     pub fn remove_feeder(_env: Env, _feeder: Address) {}
     pub fn report_price(_env: Env, _feeder: Address, _symbol: Symbol, _price: i128) {}
-    pub fn is_feeder(_env: Env, _feeder: Address) -> bool { false }
-    pub fn get_feeder_count(_env: Env) -> u32 { 1 }
-    pub fn get_max_staleness(_env: Env) -> u64 { 3600 }
-    pub fn get_min_reports(_env: Env) -> u32 { 1 }
-    pub fn is_paused(_env: Env) -> bool { false }
+    pub fn is_feeder(_env: Env, _feeder: Address) -> bool {
+        false
+    }
+    pub fn get_feeder_count(_env: Env) -> u32 {
+        1
+    }
+    pub fn get_max_staleness(_env: Env) -> u64 {
+        3600
+    }
+    pub fn get_min_reports(_env: Env) -> u32 {
+        1
+    }
+    pub fn is_paused(_env: Env) -> bool {
+        false
+    }
     pub fn get_latest_report(_env: Env, _symbol: Symbol, _feeder: Address) -> Option<(i128, u64)> {
         Some((1, 0))
     }
@@ -173,12 +207,24 @@ impl RevertingOracle {
     pub fn add_feeder(_env: Env, _feeder: Address) {}
     pub fn remove_feeder(_env: Env, _feeder: Address) {}
     pub fn report_price(_env: Env, _feeder: Address, _symbol: Symbol, _price: i128) {}
-    pub fn is_feeder(_env: Env, _feeder: Address) -> bool { false }
-    pub fn get_feeder_count(_env: Env) -> u32 { 0 }
-    pub fn get_max_staleness(_env: Env) -> u64 { 3600 }
-    pub fn get_min_reports(_env: Env) -> u32 { 1 }
-    pub fn is_paused(_env: Env) -> bool { false }
-    pub fn get_latest_report(_env: Env, _symbol: Symbol, _feeder: Address) -> Option<(i128, u64)> { None }
+    pub fn is_feeder(_env: Env, _feeder: Address) -> bool {
+        false
+    }
+    pub fn get_feeder_count(_env: Env) -> u32 {
+        0
+    }
+    pub fn get_max_staleness(_env: Env) -> u64 {
+        3600
+    }
+    pub fn get_min_reports(_env: Env) -> u32 {
+        1
+    }
+    pub fn is_paused(_env: Env) -> bool {
+        false
+    }
+    pub fn get_latest_report(_env: Env, _symbol: Symbol, _feeder: Address) -> Option<(i128, u64)> {
+        None
+    }
 }
 
 // ─── StaleOracle ─────────────────────────────────────────────────────────────
@@ -221,11 +267,21 @@ impl StaleOracle {
     pub fn add_feeder(_env: Env, _feeder: Address) {}
     pub fn remove_feeder(_env: Env, _feeder: Address) {}
     pub fn report_price(_env: Env, _feeder: Address, _symbol: Symbol, _price: i128) {}
-    pub fn is_feeder(_env: Env, _feeder: Address) -> bool { false }
-    pub fn get_feeder_count(_env: Env) -> u32 { 1 }
-    pub fn get_max_staleness(_env: Env) -> u64 { 3600 }
-    pub fn get_min_reports(_env: Env) -> u32 { 1 }
-    pub fn is_paused(_env: Env) -> bool { false }
+    pub fn is_feeder(_env: Env, _feeder: Address) -> bool {
+        false
+    }
+    pub fn get_feeder_count(_env: Env) -> u32 {
+        1
+    }
+    pub fn get_max_staleness(_env: Env) -> u64 {
+        3600
+    }
+    pub fn get_min_reports(_env: Env) -> u32 {
+        1
+    }
+    pub fn is_paused(_env: Env) -> bool {
+        false
+    }
 }
 
 // ─── NegativePriceOracle ─────────────────────────────────────────────────────
@@ -258,12 +314,23 @@ impl NegativePriceOracle {
     pub fn add_feeder(_env: Env, _feeder: Address) {}
     pub fn remove_feeder(_env: Env, _feeder: Address) {}
     pub fn report_price(_env: Env, _feeder: Address, _symbol: Symbol, _price: i128) {}
-    pub fn is_feeder(_env: Env, _feeder: Address) -> bool { false }
-    pub fn get_feeder_count(_env: Env) -> u32 { 1 }
-    pub fn get_max_staleness(_env: Env) -> u64 { 3600 }
-    pub fn get_min_reports(_env: Env) -> u32 { 1 }
-    pub fn is_paused(_env: Env) -> bool { false }
+    pub fn is_feeder(_env: Env, _feeder: Address) -> bool {
+        false
+    }
+    pub fn get_feeder_count(_env: Env) -> u32 {
+        1
+    }
+    pub fn get_max_staleness(_env: Env) -> u64 {
+        3600
+    }
+    pub fn get_min_reports(_env: Env) -> u32 {
+        1
+    }
+    pub fn is_paused(_env: Env) -> bool {
+        false
+    }
     pub fn get_latest_report(_env: Env, _symbol: Symbol, _feeder: Address) -> Option<(i128, u64)> {
         Some((-1, 0))
     }
 }
+

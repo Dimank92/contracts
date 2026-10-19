@@ -468,4 +468,3 @@ impl Governor {
         events::param_set(env, "proposal_threshold", value);
     }
 }
-

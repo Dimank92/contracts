@@ -62,11 +62,7 @@ fn fee_on_transfer_token_deposit_credits_only_received_delta() {
     env.invoke_contract::<()>(
         &token_id,
         &Symbol::new(&env, "mint"),
-        soroban_sdk::vec![
-            &env,
-            depositor.clone().into(),
-            1_000_000i128.into(),
-        ],
+        soroban_sdk::vec![&env, depositor.clone().into(), 1_000_000i128.into(),],
     );
 
     // When vault is implemented:
@@ -300,21 +296,12 @@ fn safe_inbound_transfer_with_fee_on_transfer_token_returns_delta_mismatch() {
     env.invoke_contract::<()>(
         &token_id,
         &Symbol::new(&env, "mint"),
-        soroban_sdk::vec![
-            &env,
-            sender.clone().into(),
-            1_000_000i128.into(),
-        ],
+        soroban_sdk::vec![&env, sender.clone().into(), 1_000_000i128.into(),],
     );
 
     // Ask for 1_000_000 but only 900_000 will arrive (10% fee).
-    let result = TokenTransferGuard::safe_inbound_transfer(
-        &env,
-        &token_id,
-        &sender,
-        &recipient,
-        1_000_000,
-    );
+    let result =
+        TokenTransferGuard::safe_inbound_transfer(&env, &token_id, &sender, &recipient, 1_000_000);
     // 900_000 < 1_000_000 → DeltaMismatch
     assert_eq!(result, Err(TokenError::DeltaMismatch));
 }
@@ -341,19 +328,11 @@ fn safe_inbound_transfer_with_revert_token_panics() {
     env.invoke_contract::<()>(
         &token_id,
         &Symbol::new(&env, "mint"),
-        soroban_sdk::vec![
-            &env,
-            sender.clone().into(),
-            1_000_000i128.into(),
-        ],
+        soroban_sdk::vec![&env, sender.clone().into(), 1_000_000i128.into(),],
     );
 
     // RevertOnTransferToken.transfer() always panics — should propagate.
-    let _ = TokenTransferGuard::safe_inbound_transfer(
-        &env,
-        &token_id,
-        &sender,
-        &recipient,
-        1_000_000,
-    );
+    let _ =
+        TokenTransferGuard::safe_inbound_transfer(&env, &token_id, &sender, &recipient, 1_000_000);
 }
+

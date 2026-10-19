@@ -40,8 +40,10 @@ pub fn pin_multisig(env: &Env, multisig: &Address) {
     env.storage()
         .instance()
         .set(&UpgradeKey::PinnedMultisig, multisig);
-    env.events()
-        .publish((Symbol::new(env, "upgrade_multisig_pinned"),), multisig.clone());
+    env.events().publish(
+        (Symbol::new(env, "upgrade_multisig_pinned"),),
+        multisig.clone(),
+    );
 }
 
 pub fn pinned_multisig(env: &Env) -> Option<Address> {
@@ -91,3 +93,4 @@ pub fn upgrade<K, E>(
     env.events()
         .publish((Symbol::new(env, "upgraded"),), new_wasm_hash);
 }
+

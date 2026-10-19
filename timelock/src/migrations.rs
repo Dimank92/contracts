@@ -78,4 +78,3 @@ impl Timelock {
         migrations::migration_state(&env)
     }
 }
-

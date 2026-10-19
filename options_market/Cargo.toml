@@ -62,4 +62,4 @@ resource-wasm = []
 # in dependency order, into the shared workspace target/ directory;
 # `cargo xtask check-imports` fails if a contractimport! path isn't listed.
 [package.metadata.zenith]
-wasm-deps = ["zenith-price-oracle", "zenith-vault", "zenith-params"]
+wasm-deps = ["zenith-price-oracle", "zenith-vault", "zenith-params", "zenith-multisig"]

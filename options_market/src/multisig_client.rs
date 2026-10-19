@@ -9,5 +9,5 @@
 //! crate can compile at all — see the repo README for the build order
 //! this implies.
 soroban_sdk::contractimport!(
-    file = "../multisig/target/wasm32-unknown-unknown/release/zenith_multisig.wasm"
+    file = "../target/wasm32-unknown-unknown/release/zenith_multisig.wasm"
 );

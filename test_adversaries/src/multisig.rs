@@ -14,9 +14,7 @@
 //! | [`ThresholdZeroMultisig`] | Initialized with threshold 0; models misconfigurations that should be rejected at `initialize`. |
 //! | [`SingleSignerMultisig`]  | Only one signer and threshold 1; the weakest legitimate multisig. |
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype, Address, BytesN, Env, Vec,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, BytesN, Env, Vec};
 
 // ─── ActionClass mirrors zenith-common's enum (same u32 repr) ──────────────
 
@@ -50,7 +48,9 @@ pub struct AlwaysApproveMultisig;
 #[contractimpl]
 impl AlwaysApproveMultisig {
     pub fn initialize(env: Env, signers: Vec<Address>, _threshold: u32, _approval_ttl: u64) {
-        env.storage().instance().set(&symbol_multisig("INIT"), &signers);
+        env.storage()
+            .instance()
+            .set(&symbol_multisig("INIT"), &signers);
     }
 
     /// Always returns `true`.
@@ -58,15 +58,29 @@ impl AlwaysApproveMultisig {
         true
     }
 
-    pub fn is_approved(_env: Env, _action_id: u64) -> bool { true }
+    pub fn is_approved(_env: Env, _action_id: u64) -> bool {
+        true
+    }
     pub fn approve(_env: Env, _signer: Address, _action_id: u64) {}
     pub fn revoke(_env: Env, _signer: Address, _action_id: u64) {}
-    pub fn is_signer(_env: Env, _address: Address) -> bool { true }
-    pub fn get_signer_count(_env: Env) -> u32 { 1 }
-    pub fn get_threshold(_env: Env) -> u32 { 1 }
-    pub fn get_approval_ttl(_env: Env) -> u64 { 0 }
-    pub fn has_approved(_env: Env, _action_id: u64, _signer: Address) -> bool { true }
-    pub fn get_approval_count(_env: Env, _action_id: u64) -> u32 { u32::MAX }
+    pub fn is_signer(_env: Env, _address: Address) -> bool {
+        true
+    }
+    pub fn get_signer_count(_env: Env) -> u32 {
+        1
+    }
+    pub fn get_threshold(_env: Env) -> u32 {
+        1
+    }
+    pub fn get_approval_ttl(_env: Env) -> u64 {
+        0
+    }
+    pub fn has_approved(_env: Env, _action_id: u64, _signer: Address) -> bool {
+        true
+    }
+    pub fn get_approval_count(_env: Env, _action_id: u64) -> u32 {
+        u32::MAX
+    }
 }
 
 // ─── NeverApproveMultisig ────────────────────────────────────────────────────
@@ -83,7 +97,9 @@ pub struct NeverApproveMultisig;
 #[contractimpl]
 impl NeverApproveMultisig {
     pub fn initialize(env: Env, signers: Vec<Address>, _threshold: u32, _approval_ttl: u64) {
-        env.storage().instance().set(&symbol_multisig("INIT"), &signers);
+        env.storage()
+            .instance()
+            .set(&symbol_multisig("INIT"), &signers);
     }
 
     /// Always returns `false`.
@@ -91,15 +107,29 @@ impl NeverApproveMultisig {
         false
     }
 
-    pub fn is_approved(_env: Env, _action_id: u64) -> bool { false }
+    pub fn is_approved(_env: Env, _action_id: u64) -> bool {
+        false
+    }
     pub fn approve(_env: Env, _signer: Address, _action_id: u64) {}
     pub fn revoke(_env: Env, _signer: Address, _action_id: u64) {}
-    pub fn is_signer(_env: Env, _address: Address) -> bool { false }
-    pub fn get_signer_count(_env: Env) -> u32 { 0 }
-    pub fn get_threshold(_env: Env) -> u32 { u32::MAX }
-    pub fn get_approval_ttl(_env: Env) -> u64 { 0 }
-    pub fn has_approved(_env: Env, _action_id: u64, _signer: Address) -> bool { false }
-    pub fn get_approval_count(_env: Env, _action_id: u64) -> u32 { 0 }
+    pub fn is_signer(_env: Env, _address: Address) -> bool {
+        false
+    }
+    pub fn get_signer_count(_env: Env) -> u32 {
+        0
+    }
+    pub fn get_threshold(_env: Env) -> u32 {
+        u32::MAX
+    }
+    pub fn get_approval_ttl(_env: Env) -> u64 {
+        0
+    }
+    pub fn has_approved(_env: Env, _action_id: u64, _signer: Address) -> bool {
+        false
+    }
+    pub fn get_approval_count(_env: Env, _action_id: u64) -> u32 {
+        0
+    }
 }
 
 // ─── SingleSignerMultisig ────────────────────────────────────────────────────
@@ -173,9 +203,15 @@ impl SingleSignerMultisig {
         stored.map(|s| s == address).unwrap_or(false)
     }
 
-    pub fn get_signer_count(_env: Env) -> u32 { 1 }
-    pub fn get_threshold(_env: Env) -> u32 { 1 }
-    pub fn get_approval_ttl(_env: Env) -> u64 { 0 }
+    pub fn get_signer_count(_env: Env) -> u32 {
+        1
+    }
+    pub fn get_threshold(_env: Env) -> u32 {
+        1
+    }
+    pub fn get_approval_ttl(_env: Env) -> u64 {
+        0
+    }
 
     pub fn has_approved(env: Env, action_id: u64, _signer: Address) -> bool {
         env.storage()
@@ -190,7 +226,11 @@ impl SingleSignerMultisig {
             .instance()
             .get(&SingleSignerKey::Approved(action_id))
             .unwrap_or(false);
-        if approved { 1 } else { 0 }
+        if approved {
+            1
+        } else {
+            0
+        }
     }
 }
 
@@ -233,19 +273,34 @@ impl ExpiredApprovalMultisig {
         false // always expired
     }
 
-    pub fn is_approved(_env: Env, _action_id: u64) -> bool { false }
+    pub fn is_approved(_env: Env, _action_id: u64) -> bool {
+        false
+    }
     pub fn approve(env: Env, _signer: Address, action_id: u64) {
-        env.storage()
-            .instance()
-            .set(&ExpiredKey::ApprovalTime(action_id), &env.ledger().timestamp());
+        env.storage().instance().set(
+            &ExpiredKey::ApprovalTime(action_id),
+            &env.ledger().timestamp(),
+        );
     }
     pub fn revoke(_env: Env, _signer: Address, _action_id: u64) {}
-    pub fn is_signer(_env: Env, _address: Address) -> bool { true }
-    pub fn get_signer_count(_env: Env) -> u32 { 3 }
-    pub fn get_threshold(_env: Env) -> u32 { 2 }
-    pub fn get_approval_ttl(_env: Env) -> u64 { 1 } // 1 second → immediately expires
-    pub fn has_approved(_env: Env, _action_id: u64, _signer: Address) -> bool { false }
-    pub fn get_approval_count(_env: Env, _action_id: u64) -> u32 { 0 }
+    pub fn is_signer(_env: Env, _address: Address) -> bool {
+        true
+    }
+    pub fn get_signer_count(_env: Env) -> u32 {
+        3
+    }
+    pub fn get_threshold(_env: Env) -> u32 {
+        2
+    }
+    pub fn get_approval_ttl(_env: Env) -> u64 {
+        1
+    } // 1 second → immediately expires
+    pub fn has_approved(_env: Env, _action_id: u64, _signer: Address) -> bool {
+        false
+    }
+    pub fn get_approval_count(_env: Env, _action_id: u64) -> u32 {
+        0
+    }
 }
 
 // ─── helper ──────────────────────────────────────────────────────────────────
@@ -257,8 +312,8 @@ fn symbol_multisig(s: &str) -> soroban_sdk::Symbol {
     // in a short symbol. The actual value is never read back — it's just used
     // to mark initialization.
     let _ = s; // suppress unused-parameter warning in this shim
-    // return a BytesN<32> or use a unit type instead —
-    // for initialization we just store a bool flag.
+               // return a BytesN<32> or use a unit type instead —
+               // for initialization we just store a bool flag.
     soroban_sdk::Symbol::short("INIT")
 }
 
@@ -273,3 +328,4 @@ pub fn action_id_from_u64(env: &Env, discriminant: u64) -> BytesN<32> {
     bytes[..8].copy_from_slice(&discriminant.to_le_bytes());
     BytesN::from_array(env, &bytes)
 }
+
