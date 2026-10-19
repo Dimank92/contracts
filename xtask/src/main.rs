@@ -21,6 +21,16 @@
 //! workspace member's features (in particular dev-dependency `testutils`)
 //! are unified into it; `check-wasm` verifies that on the actual artifacts.
 
+mod bindings;
+mod errors;
+mod events_doc;
+mod lint;
+mod source;
+
+use bindings::bindings;
+use errors::errors;
+use events_doc::events;
+use lint::check_panics;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -59,10 +69,27 @@ Commands:
   check-imports  Verify every contractimport! is declared in wasm-deps and
                  points at the shared target/ directory.
   check-wasm     Inspect built wasm for linked-in testutils/host code.
+  check-panics   Fail on `.unwrap()`, `.expect(`, `panic!` or `unreachable!`
+                 in non-test contract code, and on any `pub fn` in a
+                 `#[contractimpl]` block that doesn't return `Result`.
+  errors [--check]
+                 Regenerate docs/errors.md from every crate's src/error.rs;
+                 with --check, fail if it's out of date instead.
+  events [--check]
+                 Regenerate docs/events-reference.md from events.json; with
+                 --check, fail if it's out of date instead.
+  bindings [--check]
+                 Regenerate the @zenith/contracts TypeScript clients in
+                 bindings/ from the built wasm (needs the `stellar` CLI);
+                 with --check, fail if they're out of date instead.
   graph          Print the wasm build order and each crate's wasm needs.
-  ci             fmt --check, check-imports, build, check-wasm, clippy, test.
+  ci             fmt --check, check-imports, check-panics, errors --check,
+                 events --check, build, check-wasm, clippy, test.
 
-<crate> is a package name (zenith-vault) or directory (vault). Default: all.
+<crate> is a package name (zenith-vault) or directory (vault). Default:
+every workspace crate except those listed in `[workspace.metadata.zenith]
+incomplete` (crates whose sources are missing on main; see README `Known
+gaps`). Name one with -p to build it anyway.
 ";
 
 fn main() -> ExitCode {
@@ -92,6 +119,10 @@ fn run() -> Result<()> {
         "fmt" => fmt(&ws, &opts),
         "check-imports" => check_imports(&ws),
         "check-wasm" => check_wasm(&ws, &opts),
+        "check-panics" => check_panics(&ws),
+        "errors" => errors(&ws, &opts),
+        "bindings" => bindings(&ws, &opts),
+        "events" => events(&ws, &opts),
         "graph" => graph(&ws),
         "ci" => ci(&ws),
         other => Err(format!("unknown command `{other}`\n\n{USAGE}")),
@@ -140,6 +171,9 @@ struct Package {
     /// Has a cdylib target, i.e. produces a deployable wasm.
     is_contract: bool,
     wasm_deps: Vec<String>,
+    /// `self-wasm = true`: the crate's tests load its own release wasm
+    /// (e.g. to exercise a real upgrade), so it's built before testing.
+    self_wasm: bool,
     /// Workspace crates this one links as source: (package name, dev-only).
     path_deps: Vec<(String, bool)>,
     extra_test: Option<ExtraTest>,
@@ -149,6 +183,8 @@ struct Workspace {
     root: PathBuf,
     target_dir: PathBuf,
     packages: BTreeMap<String, Package>,
+    /// `[workspace.metadata.zenith] incomplete`: skipped unless named.
+    incomplete: BTreeSet<String>,
 }
 
 impl Workspace {
@@ -230,6 +266,7 @@ impl Workspace {
                     lib_name,
                     is_contract,
                     wasm_deps: strings(&zenith["wasm-deps"]),
+                    self_wasm: zenith["self-wasm"].as_bool().unwrap_or(false),
                     path_deps,
                     extra_test,
                 },
@@ -254,10 +291,22 @@ impl Workspace {
             }
         }
 
+        let incomplete: BTreeSet<String> = strings(&meta["metadata"]["zenith"]["incomplete"])
+            .into_iter()
+            .collect();
+        for name in &incomplete {
+            if !packages.contains_key(name) {
+                return Err(format!(
+                    "[workspace.metadata.zenith] incomplete lists `{name}`, which is not a workspace package"
+                ));
+            }
+        }
+
         Ok(Workspace {
             root,
             target_dir,
             packages,
+            incomplete,
         })
     }
 
@@ -279,20 +328,37 @@ impl Workspace {
             .ok_or_else(|| format!("no workspace crate matches `{sel}`"))
     }
 
-    /// The requested crates, or every workspace member.
+    /// The requested crates, or every complete workspace member.
     fn selection(&self, requested: &[String]) -> Result<Vec<String>> {
         if requested.is_empty() {
-            Ok(self.packages.keys().cloned().collect())
+            self.note_incomplete();
+            Ok(self.complete().cloned().collect())
         } else {
             requested.iter().map(|r| self.resolve(r)).collect()
         }
     }
 
-    fn contracts(&self) -> Vec<String> {
+    fn complete(&self) -> impl Iterator<Item = &String> {
         self.packages
-            .iter()
-            .filter(|(_, p)| p.is_contract)
-            .map(|(name, _)| name.clone())
+            .keys()
+            .filter(|name| !self.incomplete.contains(*name))
+    }
+
+    fn note_incomplete(&self) {
+        if !self.incomplete.is_empty() {
+            let names: Vec<&str> = self.incomplete.iter().map(String::as_str).collect();
+            eprintln!(
+                "xtask: note: skipping incomplete crates: {} (see README \"Known gaps\")",
+                names.join(", ")
+            );
+        }
+    }
+
+    /// Every complete contract.
+    fn contracts(&self) -> Vec<String> {
+        self.complete()
+            .filter(|name| self.packages[*name].is_contract)
+            .cloned()
             .collect()
     }
 
@@ -376,6 +442,13 @@ impl Workspace {
             return Ok(());
         }
         ensure_wasm_target()?;
+        let wasm_opt = wasm_opt_available();
+        if !wasm_opt {
+            eprintln!(
+                "xtask: note: wasm-opt (binaryen) not found; wasm is left as rustc wrote it, \
+                 which Soroban 21 can't load if your toolchain emits reference-types"
+            );
+        }
         for (i, name) in order.iter().enumerate() {
             eprintln!("xtask: [{}/{}] wasm {name}", i + 1, order.len());
             // One invocation per contract: keeps feature unification to
@@ -389,6 +462,9 @@ impl Workspace {
                 WASM_TARGET,
                 "--release",
             ])?;
+            if wasm_opt {
+                lower_to_mvp(&self.wasm_path(name)?)?;
+            }
         }
         Ok(())
     }
@@ -396,16 +472,27 @@ impl Workspace {
     /// Builds the wasm that `selection` needs before it can compile
     /// natively with all targets (tests included).
     fn build_wasm_for_native(&self, selection: &[String]) -> Result<()> {
-        let roots = selection
+        let mut roots: BTreeSet<String> = selection
             .iter()
             .flat_map(|name| self.wasm_needed_by(name, true))
             .collect();
+        roots.extend(
+            selection
+                .iter()
+                .filter(|name| self.packages[*name].self_wasm)
+                .cloned(),
+        );
         self.build_wasm(&roots)
     }
 
     fn package_flags(&self, requested: &[String], selection: &[String]) -> Vec<String> {
         if requested.is_empty() {
-            vec!["--workspace".into()]
+            let mut flags = vec!["--workspace".to_string()];
+            for name in &self.incomplete {
+                flags.push("--exclude".into());
+                flags.push(name.clone());
+            }
+            flags
         } else {
             selection
                 .iter()
@@ -466,6 +553,41 @@ fn strings(v: &Value) -> Vec<String> {
         .collect()
 }
 
+fn wasm_opt_available() -> bool {
+    Command::new("wasm-opt")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+/// Rust >= 1.82's prebuilt `core` for wasm32-unknown-unknown uses the
+/// reference-types encoding of `call_indirect`, which the Soroban 21 host
+/// rejects. Re-encoding through binaryen with only the MVP features
+/// Soroban accepts (plus sign-ext and mutable globals) fixes the encoding
+/// without optimizing anything, so sizes and behavior are unchanged.
+fn lower_to_mvp(wasm: &Path) -> Result<()> {
+    let status = Command::new("wasm-opt")
+        .args([
+            "--mvp-features",
+            "--enable-sign-ext",
+            "--enable-mutable-globals",
+        ])
+        .arg(wasm)
+        .arg("-o")
+        .arg(wasm)
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|e| format!("failed to run wasm-opt: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "wasm-opt couldn't re-encode {} as MVP wasm ({status})",
+            wasm.display()
+        ))
+    }
+}
+
 fn ensure_wasm_target() -> Result<()> {
     // Only a friendlier error than rustc's; skipped without rustup.
     let Ok(out) = Command::new("rustup")
@@ -490,6 +612,7 @@ fn ensure_wasm_target() -> Result<()> {
 
 fn build(ws: &Workspace, opts: &Opts) -> Result<()> {
     if opts.packages.is_empty() {
+        ws.note_incomplete();
         return ws.build_wasm(&ws.contracts().into_iter().collect());
     }
     let mut roots = BTreeSet::new();
@@ -505,6 +628,11 @@ fn build(ws: &Workspace, opts: &Opts) -> Result<()> {
 
 fn test(ws: &Workspace, opts: &Opts) -> Result<()> {
     let selection = ws.selection(&opts.packages)?;
+    if selection.iter().any(|n| ws.packages[n].self_wasm) && !wasm_opt_available() {
+        return Err(
+            "tests that load their own wasm (self-wasm) need wasm-opt (binaryen) on PATH".into(),
+        );
+    }
     ws.build_wasm_for_native(&selection)?;
 
     let mut args = vec!["test".to_string()];
@@ -543,11 +671,15 @@ fn clippy(ws: &Workspace, opts: &Opts) -> Result<()> {
 }
 
 fn fmt(ws: &Workspace, opts: &Opts) -> Result<()> {
-    if opts.check {
-        ws.cargo(&["fmt", "--all", "--", "--check"])
-    } else {
-        ws.cargo(&["fmt", "--all"])
+    let mut args = vec!["fmt".to_string()];
+    for name in ws.complete() {
+        args.push("-p".into());
+        args.push(name.clone());
     }
+    if opts.check {
+        args.extend(["--", "--check"].map(String::from));
+    }
+    ws.cargo(&args)
 }
 
 fn graph(ws: &Workspace) -> Result<()> {
@@ -575,7 +707,8 @@ fn graph(ws: &Workspace) -> Result<()> {
 
 fn check_imports(ws: &Workspace) -> Result<()> {
     let mut errors = Vec::new();
-    for (name, pkg) in &ws.packages {
+    for name in ws.complete() {
+        let pkg = &ws.packages[name];
         let mut files = Vec::new();
         collect_rs_files(&pkg.dir.join("src"), &mut files)?;
         let mut imported = BTreeSet::new();
@@ -839,9 +972,12 @@ fn ci(ws: &Workspace) -> Result<()> {
         check: true,
         ..Opts::default()
     };
-    let steps: [(&str, &dyn Fn() -> Result<()>); 6] = [
+    let steps: [(&str, &dyn Fn() -> Result<()>); 9] = [
         ("fmt --check", &|| fmt(ws, &check)),
         ("check-imports", &|| check_imports(ws)),
+        ("check-panics", &|| check_panics(ws)),
+        ("errors --check", &|| errors(ws, &check)),
+        ("events --check", &|| events(ws, &check)),
         ("build", &|| build(ws, &all)),
         ("check-wasm", &|| check_wasm(ws, &all)),
         ("clippy", &|| clippy(ws, &all)),

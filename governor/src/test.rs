@@ -1,12 +1,12 @@
 #![cfg(test)]
 
-use crate::{Governor, GovernorClient, ProposalState};
+use crate::test_timelock::{MockTimelock, MockTimelockClient};
+use crate::{Error, Governor, GovernorClient, ProposalState};
 use soroban_sdk::{
     contract, contractimpl, contracttype,
     testutils::{Address as _, Ledger as _},
     vec, Address, BytesN, Env, IntoVal, Symbol, Val, Vec,
 };
-use timelock::{Timelock, TimelockClient};
 
 const DELAY_LEDGERS: u32 = 10;
 const PERIOD_LEDGERS: u32 = 720;
@@ -23,7 +23,7 @@ enum VotesKey {
 
 /// Minimal checkpointed voting token standing in for gov_token.
 #[contract]
-struct MockVotes;
+pub struct MockVotes;
 
 fn past(checkpoints: Vec<(u32, i128)>, ledger: u32) -> i128 {
     let mut value = 0;
@@ -61,7 +61,7 @@ impl MockVotes {
 struct Harness<'a> {
     env: Env,
     gov: GovernorClient<'a>,
-    tl: TimelockClient<'a>,
+    tl: MockTimelockClient<'a>,
     votes: MockVotesClient<'a>,
     proposer: Address,
     guardian: Address,
@@ -77,7 +77,7 @@ fn setup<'a>() -> Harness<'a> {
 
     let votes = MockVotesClient::new(&env, &env.register_contract(None, MockVotes));
     let gov_id = env.register_contract(None, Governor);
-    let tl = TimelockClient::new(&env, &env.register_contract(None, Timelock));
+    let tl = MockTimelockClient::new(&env, &env.register_contract(None, MockTimelock));
     let guardian = Address::generate(&env);
     tl.initialize(&gov_id, &guardian, &TL_DELAY, &TL_GRACE);
     let gov = GovernorClient::new(&env, &gov_id);
@@ -165,7 +165,10 @@ fn full_lifecycle_through_timelock() {
     let h = setup();
     let id = h.propose_quorum(500);
     assert_eq!(h.gov.state(&id), ProposalState::Pending);
-    assert!(h.gov.try_cast_vote(&h.alice, &id, &1).is_err());
+    assert_eq!(
+        h.gov.try_cast_vote(&h.alice, &id, &1),
+        Err(Ok(Error::InvalidState))
+    );
 
     h.to_active();
     assert_eq!(h.gov.state(&id), ProposalState::Active);
@@ -196,7 +199,7 @@ fn tie_is_defeat() {
     h.gov.cast_vote(&h.bob, &id, &0);
     h.to_ended();
     assert_eq!(h.gov.state(&id), ProposalState::Defeated);
-    assert!(h.gov.try_queue(&id).is_err());
+    assert_eq!(h.gov.try_queue(&id), Err(Ok(Error::InvalidState)));
 }
 
 #[test]
@@ -231,8 +234,14 @@ fn double_vote_rejected() {
     let id = h.propose_quorum(500);
     h.to_active();
     h.gov.cast_vote(&h.alice, &id, &1);
-    assert!(h.gov.try_cast_vote(&h.alice, &id, &0).is_err());
-    assert!(h.gov.try_cast_vote_by_sig(&h.alice, &id, &1).is_err());
+    assert_eq!(
+        h.gov.try_cast_vote(&h.alice, &id, &0),
+        Err(Ok(Error::AlreadyVoted))
+    );
+    assert_eq!(
+        h.gov.try_cast_vote_by_sig(&h.alice, &id, &1),
+        Err(Ok(Error::AlreadyVoted))
+    );
 }
 
 #[test]
@@ -241,7 +250,10 @@ fn vote_after_deadline_rejected() {
     let id = h.propose_quorum(500);
     h.to_active();
     h.to_ended();
-    assert!(h.gov.try_cast_vote(&h.alice, &id, &1).is_err());
+    assert_eq!(
+        h.gov.try_cast_vote(&h.alice, &id, &1),
+        Err(Ok(Error::InvalidState))
+    );
 }
 
 #[test]
@@ -249,7 +261,10 @@ fn invalid_support_rejected() {
     let h = setup();
     let id = h.propose_quorum(500);
     h.to_active();
-    assert!(h.gov.try_cast_vote(&h.alice, &id, &3).is_err());
+    assert_eq!(
+        h.gov.try_cast_vote(&h.alice, &id, &3),
+        Err(Ok(Error::InvalidSupport))
+    );
 }
 
 #[test]
@@ -267,19 +282,25 @@ fn propose_requires_threshold_and_unique_id() {
     let (t, f, a) = h.quorum_action(500);
     let desc = BytesN::from_array(&h.env, &[7; 32]);
     let poor = Address::generate(&h.env);
-    assert!(h.gov.try_propose(&poor, &t, &f, &a, &desc).is_err());
+    assert_eq!(
+        h.gov.try_propose(&poor, &t, &f, &a, &desc),
+        Err(Ok(Error::BelowProposalThreshold))
+    );
     h.gov.propose(&h.proposer, &t, &f, &a, &desc);
-    assert!(h.gov.try_propose(&h.proposer, &t, &f, &a, &desc).is_err());
-    assert!(h
-        .gov
-        .try_propose(
+    assert_eq!(
+        h.gov.try_propose(&h.proposer, &t, &f, &a, &desc),
+        Err(Ok(Error::ProposalExists))
+    );
+    assert_eq!(
+        h.gov.try_propose(
             &h.proposer,
             &vec![&h.env],
             &vec![&h.env],
             &vec![&h.env],
             &desc
-        )
-        .is_err());
+        ),
+        Err(Ok(Error::InvalidProposal))
+    );
 }
 
 #[test]
@@ -287,12 +308,18 @@ fn proposer_cancels_while_pending_only() {
     let h = setup();
     let id = h.propose_quorum(500);
     h.to_active();
-    assert!(h.gov.try_cancel(&h.proposer, &id).is_err());
+    assert_eq!(
+        h.gov.try_cancel(&h.proposer, &id),
+        Err(Ok(Error::Unauthorized))
+    );
 
     let id2 = h.propose_quorum(600);
     h.gov.cancel(&h.proposer, &id2);
     assert_eq!(h.gov.state(&id2), ProposalState::Canceled);
-    assert!(h.gov.try_cast_vote(&h.alice, &id2, &1).is_err());
+    assert_eq!(
+        h.gov.try_cast_vote(&h.alice, &id2, &1),
+        Err(Ok(Error::InvalidState))
+    );
 }
 
 #[test]
@@ -301,7 +328,10 @@ fn anyone_cancels_when_proposer_drops_below_threshold() {
     let id = h.passed();
     h.gov.queue(&id);
     let stranger = Address::generate(&h.env);
-    assert!(h.gov.try_cancel(&stranger, &id).is_err());
+    assert_eq!(
+        h.gov.try_cancel(&stranger, &id),
+        Err(Ok(Error::Unauthorized))
+    );
 
     h.votes.adjust(&h.proposer, &-1);
     h.roll(1);
@@ -336,16 +366,48 @@ fn guardian_can_veto_queued_proposal() {
 fn params_only_via_governance_and_within_bounds() {
     let h = setup();
     h.env.set_auths(&[]);
-    assert!(h.gov.try_set_voting_period(&1_000).is_err());
+    assert!(matches!(h.gov.try_set_voting_period(&1_000), Err(Err(_))));
     h.env.mock_all_auths();
-    assert!(h.gov.try_set_voting_period(&1).is_err());
-    assert!(h
-        .gov
-        .try_set_voting_delay(&(crate::MAX_VOTING_DELAY + 1))
-        .is_err());
-    assert!(h.gov.try_set_quorum_bps(&50).is_err());
-    assert!(h.gov.try_set_quorum_bps(&10_001).is_err());
-    assert!(h.gov.try_set_proposal_threshold(&-1).is_err());
+    assert_eq!(h.gov.try_set_voting_period(&1), Err(Ok(Error::OutOfBounds)));
+    assert_eq!(
+        h.gov.try_set_voting_delay(&(crate::MAX_VOTING_DELAY + 1)),
+        Err(Ok(Error::OutOfBounds))
+    );
+    assert_eq!(h.gov.try_set_quorum_bps(&50), Err(Ok(Error::OutOfBounds)));
+    assert_eq!(
+        h.gov.try_set_quorum_bps(&10_001),
+        Err(Ok(Error::OutOfBounds))
+    );
+    assert_eq!(
+        h.gov.try_set_proposal_threshold(&-1),
+        Err(Ok(Error::OutOfBounds))
+    );
     h.gov.set_voting_period(&1_000);
     assert_eq!(h.gov.voting_period(), 1_000);
+}
+
+#[test]
+fn reinitialize_and_unknown_proposals_are_typed_errors() {
+    let h = setup();
+    assert_eq!(
+        h.gov.try_initialize(
+            &h.votes.address,
+            &h.tl.address,
+            &DELAY_LEDGERS,
+            &PERIOD_LEDGERS,
+            &QUORUM_BPS,
+            &THRESHOLD,
+        ),
+        Err(Ok(Error::AlreadyInitialized))
+    );
+    let unknown = BytesN::from_array(&h.env, &[1; 32]);
+    assert_eq!(h.gov.try_state(&unknown), Err(Ok(Error::ProposalNotFound)));
+}
+
+#[test]
+fn uninitialized_governor_reports_not_initialized() {
+    let env = Env::default();
+    let gov = GovernorClient::new(&env, &env.register_contract(None, Governor));
+    assert_eq!(gov.try_voting_delay(), Err(Ok(Error::NotInitialized)));
+    assert_eq!(gov.try_get_timelock(), Err(Ok(Error::NotInitialized)));
 }

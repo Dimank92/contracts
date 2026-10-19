@@ -107,12 +107,57 @@ The repo is one Cargo workspace (root `Cargo.toml`: shared
 rustup target add wasm32-unknown-unknown
 cargo xtask build          # every contract's wasm, dependencies first
 cargo xtask test           # builds the wasm tests need, then cargo test
-cargo xtask ci             # fmt --check, clippy, wasm checks, tests — same as CI
+cargo xtask ci             # fmt --check, lints, registries, clippy, wasm checks, tests — same as CI
+cargo xtask bindings       # regenerate the TypeScript package in bindings/ (needs stellar-cli)
 ```
 
 Add `-p <crate>` (e.g. `-p options_market`) to scope any command. Release
 wasm lands in `target/wasm32-unknown-unknown/release/`. `cargo xtask help`
-lists the rest (`clippy`, `fmt`, `graph`, `check-wasm`, `check-imports`).
+lists the rest (`clippy`, `fmt`, `graph`, `check-wasm`, `check-imports`,
+`check-panics`, `errors`, `events`).
+
+Without `-p`, xtask skips the crates listed under
+`[workspace.metadata.zenith] incomplete` in the root `Cargo.toml`. Their
+sources are missing on `main` (see "Known gaps").
+
+Install binaryen (`wasm-opt`) as well. Rust ≥ 1.82's prebuilt `core`
+for `wasm32-unknown-unknown` encodes `call_indirect` with the
+reference-types extension, which the Soroban 21 host refuses to load.
+`cargo xtask build` re-encodes every wasm it builds as MVP wasm (plus
+sign-ext and mutable globals) with `wasm-opt`. This is a re-encode
+only, with no optimization passes. Without binaryen the wasm still
+builds but can't be deployed or loaded in tests, and
+`cargo xtask test` refuses to run multisig's `upgrade-wasm` tests.
+
+### Contract conventions
+
+- **Errors** ([docs/errors.md](docs/errors.md)): every entrypoint returns
+  `Result<_, Error>`, so failures surface as typed contract errors.
+  `try_*` clients get `Err(Ok(Error::X))`. No untyped `unwrap()` or
+  panic is reachable from contract code. `cargo xtask check-panics`
+  enforces both rules in CI. lp_token's SEP-41 functions are the one
+  exception: they keep their standard signatures and fail with
+  `panic_with_error!`, which is still a typed error. The registry is
+  generated from each crate's `src/error.rs`, whose variants document a
+  meaning and a typical cause. CI runs `cargo xtask errors --check`.
+- **Events** ([docs/events.md](docs/events.md),
+  [reference](docs/events-reference.md), [events.json](events.json)):
+  schema v2 topics are `(name, 2u32, keys...)`, and data is a named
+  struct carrying enough state for an indexer to work without reads.
+  Every contract's `test_events.rs` checks each event against
+  events.json and decodes its data.
+- **Upgrades** ([docs/upgrades.md](docs/upgrades.md)): wasm hashes go
+  through an allowlist with a delay, and a new wasm stays closed until
+  `post_upgrade_check()` passes.
+- **Metadata and bindings:** every wasm embeds `contractmeta!` entries
+  (`name`, `binver`, `source_repo`, `commit`). They come from the
+  crate's `Cargo.toml` and the build environment, via
+  [common/build_meta.rs](common/build_meta.rs). Inspect them with
+  `stellar contract info meta --wasm <file>`. The `@zenith/contracts`
+  npm package in [bindings/](bindings/) holds typed clients generated
+  from the contracts' specs, plus network config and an event decoder.
+  CI fails if it drifts from the contracts, and pushing a `v*` tag
+  publishes it.
 
 Why an xtask: options_market calls price_oracle, vault and params through
 `contractimport!` against their *compiled wasm* (a source dependency
@@ -287,7 +332,8 @@ including how to author a step: [`docs/migrations.md`](docs/migrations.md).
 | `schema_version()` / `migration_state()` | Stored layout version and `(target, cursor)` while a migration is in flight. |
 | `upgrade(new_wasm_hash)` | options_market, price_oracle, vault: admin swaps the wasm, keeping address and storage. |
 | `upgrade_via_multisig(action_id, new_wasm_hash)` | price_oracle, vault: authorized only by the multisig pinned with `set_upgrade_multisig`, and only for `action_id == upgrade_action_id(new_wasm_hash)`, so approvals bind to one wasm on one contract. `Critical` class. |
-| multisig `approve_upgrade` / `revoke_upgrade` / `upgrade` | The multisig upgrades itself only after **every** signer approves the exact hash, plus a 3-day `UPGRADE_DELAY`. Its signer set is immutable by design, and an upgrade could change it. |
+| multisig `approve_upgrade` / `revoke_upgrade` / `upgrade` | The multisig upgrades itself only after **every** signer approves the exact hash. The last approval allowlists the hash, installable after the 3-day `UPGRADE_DELAY`. Its signer set changes only through the delayed rotation flow, and an upgrade could bypass that. |
+| `post_upgrade_check()` / `get_upgrade_status()` | multisig: permissionless self-test on newly installed code. Until it passes, state-changing entrypoints fail with `UpgradeCheckPending` (108). See [docs/upgrades.md](docs/upgrades.md). |
 
 While the stored version lags the code (right after an upgrade) or a
 paginated migration is in flight, state-changing entrypoints fail with
@@ -1041,6 +1087,18 @@ start, limit)` (paginated, `limit` capped at 50). Events:
 `milestone_released`, `funds_reclaimed`.
 
 ## Known gaps
+
+- **Several crates' sources are incomplete on `main`.** The `lib.rs` of
+  options_market, price_oracle, vault and timelock was emptied or
+  truncated by earlier merges (#148, #149, #152, #158). test_adversaries
+  and integration_tests depend on them. These crates are listed under
+  `[workspace.metadata.zenith] incomplete`, and `cargo xtask` skips them
+  unless one is named with `-p`. The `options_market` reference sections
+  below describe the contract as it was designed. Until those sources
+  are restored, the error registry, event spec and TypeScript bindings
+  cover the eight complete contracts only. The dormant upgrade code in
+  their `migrations.rs` still uses the pre-allowlist API (see
+  [docs/upgrades.md](docs/upgrades.md)).
 
 - **Cross-position accounting on cancellation is now opt-in via `vault`,
   not the default.** `claim_refund` still pays every position directly

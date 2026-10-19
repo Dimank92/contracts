@@ -3,7 +3,7 @@
 extern crate std;
 
 use crate::types::ActionStatus;
-use crate::{Multisig, MultisigClient, MAX_PAGE_LIMIT, MAX_PENDING_PER_SIGNER};
+use crate::{Error, Multisig, MultisigClient, MAX_PAGE_LIMIT, MAX_PENDING_PER_SIGNER};
 use soroban_sdk::{
     contract, contractimpl, symbol_short,
     testutils::{Address as _, Events as _, Ledger as _},
@@ -58,37 +58,42 @@ fn initialize_sets_signers_and_threshold() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #1)")] // AlreadyInitialized
 fn initialize_twice_panics() {
     let h = setup();
-    h.client
-        .initialize(&vec![&h.env, h.signers[0].clone()], &1, &0);
+    assert_eq!(
+        h.client
+            .try_initialize(&vec![&h.env, h.signers[0].clone()], &1, &0),
+        Err(Ok(Error::AlreadyInitialized))
+    );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #2)")] // InvalidThreshold
 fn initialize_rejects_a_zero_threshold() {
     let env = Env::default();
     env.mock_all_auths();
     let signers = vec![&env, Address::generate(&env)];
     let contract_id = env.register_contract(None, Multisig);
     let client = MultisigClient::new(&env, &contract_id);
-    client.initialize(&signers, &0, &0);
+    assert_eq!(
+        client.try_initialize(&signers, &0, &0),
+        Err(Ok(Error::InvalidThreshold))
+    );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #2)")] // InvalidThreshold
 fn initialize_rejects_a_threshold_above_the_signer_count() {
     let env = Env::default();
     env.mock_all_auths();
     let signers = vec![&env, Address::generate(&env), Address::generate(&env)];
     let contract_id = env.register_contract(None, Multisig);
     let client = MultisigClient::new(&env, &contract_id);
-    client.initialize(&signers, &3, &0);
+    assert_eq!(
+        client.try_initialize(&signers, &3, &0),
+        Err(Ok(Error::InvalidThreshold))
+    );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #3)")] // DuplicateSigner
 fn initialize_rejects_a_duplicate_signer() {
     let env = Env::default();
     env.mock_all_auths();
@@ -96,7 +101,10 @@ fn initialize_rejects_a_duplicate_signer() {
     let signers = vec![&env, signer.clone(), signer];
     let contract_id = env.register_contract(None, Multisig);
     let client = MultisigClient::new(&env, &contract_id);
-    client.initialize(&signers, &1, &0);
+    assert_eq!(
+        client.try_initialize(&signers, &1, &0),
+        Err(Ok(Error::DuplicateSigner))
+    );
 }
 
 // ─── approve / revoke / is_approved ────────────────────────────────────────
@@ -136,19 +144,23 @@ fn different_action_ids_track_approvals_independently() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #4)")] // NotASigner
 fn approve_rejects_a_non_signer() {
     let h = setup();
     let stranger = Address::generate(&h.env);
-    h.client.approve(&stranger, &aid(&h.env, 42));
+    assert_eq!(
+        h.client.try_approve(&stranger, &aid(&h.env, 42)),
+        Err(Ok(Error::NotASigner))
+    );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #5)")] // AlreadyApproved
 fn approve_rejects_the_same_signer_voting_twice() {
     let h = setup();
     h.client.approve(&h.signers[0], &aid(&h.env, 42));
-    h.client.approve(&h.signers[0], &aid(&h.env, 42));
+    assert_eq!(
+        h.client.try_approve(&h.signers[0], &aid(&h.env, 42)),
+        Err(Ok(Error::AlreadyApproved))
+    );
 }
 
 #[test]
@@ -177,10 +189,12 @@ fn a_revoked_signer_can_approve_again() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #6)")] // NotYetApproved
 fn revoke_rejects_a_signer_who_never_approved() {
     let h = setup();
-    h.client.revoke(&h.signers[0], &aid(&h.env, 42));
+    assert_eq!(
+        h.client.try_revoke(&h.signers[0], &aid(&h.env, 42)),
+        Err(Ok(Error::NotYetApproved))
+    );
 }
 
 // ─── approval expiry ────────────────────────────────────────────────────────
@@ -279,7 +293,6 @@ fn a_signer_can_reapprove_after_their_own_approval_expires() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #6)")] // NotYetApproved
 fn revoke_rejects_an_already_expired_approval() {
     let h = setup_with_ttl(3600);
     h.client.approve(&h.signers[0], &aid(&h.env, 42));
@@ -287,7 +300,10 @@ fn revoke_rejects_an_already_expired_approval() {
     h.env
         .ledger()
         .set_timestamp(h.env.ledger().timestamp() + 3601);
-    h.client.revoke(&h.signers[0], &aid(&h.env, 42));
+    assert_eq!(
+        h.client.try_revoke(&h.signers[0], &aid(&h.env, 42)),
+        Err(Ok(Error::NotYetApproved))
+    );
 }
 
 #[test]
@@ -342,11 +358,13 @@ fn reset_does_not_affect_other_action_ids() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #6)")] // NotYetApproved
 fn reset_rejects_an_action_below_threshold() {
     let h = setup();
     h.client.approve(&h.signers[0], &aid(&h.env, 42)); // only 1 of 3, threshold is 2
-    h.client.reset(&aid(&h.env, 42));
+    assert_eq!(
+        h.client.try_reset(&aid(&h.env, 42)),
+        Err(Ok(Error::NotYetApproved))
+    );
 }
 
 // ─── events ──────────────────────────────────────────────────────────────────
@@ -362,19 +380,21 @@ fn approve_emits_an_approved_event() {
 }
 
 #[test]
-fn approved_event_topics_carry_the_signer_and_action_id() {
-    // approve()'s entire payload lives in its topics — data is just ()
-    // — so unlike most other events here, checking contract_id alone
-    // proves nothing about WHICH signer or action_id was actually
-    // recorded. Decodes topics[1] (signer) and topics[2] (action_id)
-    // directly.
+fn approved_event_topics_carry_the_action_id_and_signer() {
+    // Schema v2: (name, version, action_id, signer). Checking
+    // contract_id alone proves nothing about WHICH signer or action_id
+    // was recorded, so decode both.
     let h = setup();
     h.client.approve(&h.signers[0], &aid(&h.env, 42));
 
     let events = h.env.events().all();
     let (_, topics, _data) = events.last().unwrap();
-    let signer = Address::try_from_val(&h.env, &topics.get(1).unwrap()).unwrap();
+    assert_eq!(
+        u32::try_from_val(&h.env, &topics.get(1).unwrap()).unwrap(),
+        2
+    );
     let action_id = BytesN::<32>::try_from_val(&h.env, &topics.get(2).unwrap()).unwrap();
+    let signer = Address::try_from_val(&h.env, &topics.get(3).unwrap()).unwrap();
     assert_eq!(signer, h.signers[0]);
     assert_eq!(action_id, aid(&h.env, 42));
 }
@@ -398,8 +418,8 @@ fn revoked_event_topics_carry_the_signer_and_action_id() {
 
     let events = h.env.events().all();
     let (_, topics, _data) = events.last().unwrap();
-    let signer = Address::try_from_val(&h.env, &topics.get(1).unwrap()).unwrap();
     let action_id = BytesN::<32>::try_from_val(&h.env, &topics.get(2).unwrap()).unwrap();
+    let signer = Address::try_from_val(&h.env, &topics.get(3).unwrap()).unwrap();
     assert_eq!(signer, h.signers[1]);
     assert_eq!(action_id, aid(&h.env, 7));
 }
@@ -414,12 +434,14 @@ fn reset_emits_a_reset_event_with_the_action_id_and_description_hash() {
     let events = h.env.events().all();
     let (_, topics, data) = events.last().unwrap();
     assert_eq!(
-        BytesN::<32>::try_from_val(&h.env, &topics.get(1).unwrap()).unwrap(),
+        BytesN::<32>::try_from_val(&h.env, &topics.get(2).unwrap()).unwrap(),
         aid(&h.env, 42)
     );
     assert_eq!(
-        BytesN::<32>::try_from_val(&h.env, &data).unwrap(),
-        BytesN::from_array(&h.env, &[0; 32])
+        crate::ActionFinishedEvent::try_from_val(&h.env, &data).unwrap(),
+        crate::ActionFinishedEvent {
+            description_hash: BytesN::from_array(&h.env, &[0; 32])
+        }
     );
 }
 
@@ -456,8 +478,7 @@ fn initialize_does_not_require_any_signers_authorization() {
 }
 
 #[test]
-#[should_panic] // no auth was mocked at all — require_auth() has nothing to accept
-fn approve_without_any_authorization_panics() {
+fn approve_without_any_authorization_fails() {
     // Unlike initialize(), approve() DOES require the signer's own
     // signature — this confirms that check is load-bearing, not a
     // no-op, by never arming mock_all_auths() in the first place.
@@ -480,7 +501,11 @@ fn approve_without_any_authorization_panics() {
         &0,
     );
 
-    client.approve(&signers[0], &aid(&env, 42));
+    // No auth mocked: the host rejects the signer's require_auth().
+    assert!(matches!(
+        client.try_approve(&signers[0], &aid(&env, 42)),
+        Err(Err(_))
+    ));
 }
 
 fn aid(env: &Env, n: u8) -> BytesN<32> {
@@ -516,25 +541,30 @@ fn register_action_stores_the_description_hash_and_approvals_carry_it() {
     assert_eq!(meta.description_hash, desc);
     let events = h.env.events().all();
     let (_, _, data) = events.last().unwrap();
-    assert_eq!(BytesN::<32>::try_from_val(&h.env, &data).unwrap(), desc);
+    let approved = crate::ApprovedEvent::try_from_val(&h.env, &data).unwrap();
+    assert_eq!(approved.description_hash, desc);
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #12)")] // ActionAlreadyRegistered
 fn register_action_rejects_a_pending_id() {
     let h = setup();
     h.client.approve(&h.signers[0], &aid(&h.env, 1));
-    h.client
-        .register_action(&h.signers[1], &aid(&h.env, 1), &aid(&h.env, 2));
+    assert_eq!(
+        h.client
+            .try_register_action(&h.signers[1], &aid(&h.env, 1), &aid(&h.env, 2)),
+        Err(Ok(Error::ActionAlreadyRegistered))
+    );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #4)")] // NotASigner
 fn register_action_rejects_a_non_signer() {
     let h = setup();
     let stranger = Address::generate(&h.env);
-    h.client
-        .register_action(&stranger, &aid(&h.env, 1), &aid(&h.env, 2));
+    assert_eq!(
+        h.client
+            .try_register_action(&stranger, &aid(&h.env, 1), &aid(&h.env, 2)),
+        Err(Ok(Error::NotASigner))
+    );
 }
 
 #[test]
@@ -586,19 +616,25 @@ fn pending_actions_paginate_across_boundaries() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #17)")] // InvalidPageLimit
 fn pending_actions_rejects_an_oversized_limit() {
     let h = setup();
-    h.client.get_pending_actions(&0, &(MAX_PAGE_LIMIT + 1));
+    assert_eq!(
+        h.client.try_get_pending_actions(&0, &(MAX_PAGE_LIMIT + 1)),
+        Err(Ok(Error::InvalidPageLimit))
+    );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #14)")] // TooManyPendingActions
 fn a_signer_cannot_register_more_than_the_per_signer_cap() {
     let h = setup();
-    for n in 0..=MAX_PENDING_PER_SIGNER {
+    for n in 0..MAX_PENDING_PER_SIGNER {
         h.client.approve(&h.signers[0], &aid(&h.env, n as u8));
     }
+    assert_eq!(
+        h.client
+            .try_approve(&h.signers[0], &aid(&h.env, MAX_PENDING_PER_SIGNER as u8)),
+        Err(Ok(Error::TooManyPendingActions))
+    );
 }
 
 #[test]
@@ -617,23 +653,27 @@ fn stale_actions_can_be_expired_out_of_the_index() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #18)")] // NotExpired
 fn expire_rejects_an_action_with_a_fresh_approval() {
     let h = setup_with_ttl(100);
     h.env.ledger().with_mut(|l| l.timestamp = 1_000);
     h.client.approve(&h.signers[0], &aid(&h.env, 1));
     h.env.ledger().with_mut(|l| l.timestamp = 1_101);
     h.client.approve(&h.signers[1], &aid(&h.env, 1));
-    h.client.expire(&aid(&h.env, 1));
+    assert_eq!(
+        h.client.try_expire(&aid(&h.env, 1)),
+        Err(Ok(Error::NotExpired))
+    );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #18)")] // NotExpired
 fn expire_is_unavailable_without_an_approval_ttl() {
     let h = setup();
     h.client.approve(&h.signers[0], &aid(&h.env, 1));
     h.client.revoke(&h.signers[0], &aid(&h.env, 1));
-    h.client.expire(&aid(&h.env, 1));
+    assert_eq!(
+        h.client.try_expire(&aid(&h.env, 1)),
+        Err(Ok(Error::NotExpired))
+    );
 }
 
 // ─── executor ───────────────────────────────────────────────────────────────
@@ -729,7 +769,6 @@ fn identical_proposals_get_distinct_ids() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #13)")] // ActionNotPending
 fn executed_proposals_cannot_be_replayed() {
     let h = setup();
     let target = setup_target(&h);
@@ -742,11 +781,13 @@ fn executed_proposals_cannot_be_replayed() {
     h.client.approve(&h.signers[0], &id);
     h.client.approve(&h.signers[1], &id);
     h.client.execute(&id);
-    h.client.execute(&id);
+    assert!(matches!(
+        h.client.try_execute(&id),
+        Err(Ok(Error::ActionNotPending))
+    ));
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #13)")] // ActionNotPending
 fn executed_proposals_cannot_be_re_approved() {
     let h = setup();
     let target = setup_target(&h);
@@ -759,11 +800,13 @@ fn executed_proposals_cannot_be_re_approved() {
     h.client.approve(&h.signers[0], &id);
     h.client.approve(&h.signers[1], &id);
     h.client.execute(&id);
-    h.client.approve(&h.signers[0], &id);
+    assert_eq!(
+        h.client.try_approve(&h.signers[0], &id),
+        Err(Ok(Error::ActionNotPending))
+    );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #6)")] // NotYetApproved
 fn execute_requires_threshold() {
     let h = setup();
     let target = setup_target(&h);
@@ -774,7 +817,10 @@ fn execute_requires_threshold() {
         &set_args(&h.env, 7),
     );
     h.client.approve(&h.signers[0], &id);
-    h.client.execute(&id);
+    assert!(matches!(
+        h.client.try_execute(&id),
+        Err(Ok(Error::NotYetApproved))
+    ));
 }
 
 #[test]
@@ -800,7 +846,6 @@ fn a_failing_target_reverts_execute_entirely() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #16)")] // ProposalTooLarge
 fn propose_rejects_oversized_argument_lists() {
     let h = setup();
     let target = setup_target(&h);
@@ -808,16 +853,18 @@ fn propose_rejects_oversized_argument_lists() {
     for i in 0..=crate::MAX_PROPOSAL_ARGS {
         args.push_back(i.into_val(&h.env));
     }
-    h.client.propose(
-        &h.signers[0],
-        &target.address,
-        &Symbol::new(&h.env, "set"),
-        &args,
+    assert_eq!(
+        h.client.try_propose(
+            &h.signers[0],
+            &target.address,
+            &Symbol::new(&h.env, "set"),
+            &args
+        ),
+        Err(Ok(Error::ProposalTooLarge))
     );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #13)")] // ActionNotPending
 fn proposals_cannot_be_reset_out_from_under_execute() {
     let h = setup();
     let target = setup_target(&h);
@@ -829,7 +876,7 @@ fn proposals_cannot_be_reset_out_from_under_execute() {
     );
     h.client.approve(&h.signers[0], &id);
     h.client.approve(&h.signers[1], &id);
-    h.client.reset(&id);
+    assert_eq!(h.client.try_reset(&id), Err(Ok(Error::ActionNotPending)));
 }
 
 // ─── TTL policy (issue #98) and archival restore (issue #99) ────────────────
@@ -981,6 +1028,23 @@ fn setup_weighted<'a>(
     (env, client, addrs)
 }
 
+/// `setup_weighted`'s initialize, returning its typed error.
+fn try_setup_weighted(weights: &[u32], threshold: u32) -> Result<(), Error> {
+    let env = Env::default();
+    env.mock_all_auths();
+    let mut signers = Vec::new(&env);
+    for w in weights {
+        signers.push_back((Address::generate(&env), *w));
+    }
+    let total: u32 = weights.iter().sum();
+    let client = MultisigClient::new(&env, &env.register_contract(None, Multisig));
+    match client.try_initialize_weighted(&signers, &threshold, &0, &total, &100) {
+        Ok(_) => Ok(()),
+        Err(Ok(e)) => Err(e),
+        Err(Err(e)) => panic!("initialize_weighted failed in the host: {e:?}"),
+    }
+}
+
 fn has_event(env: &Env, name: &str) -> bool {
     let name = Symbol::new(env, name);
     env.events().all().iter().any(|(_, topics, _)| {
@@ -1039,13 +1103,11 @@ fn a_signer_heavy_enough_to_act_alone_emits_a_warning() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #19)")] // InvalidWeight
 fn weighted_initialize_rejects_zero_weight() {
-    setup_weighted(&[1, 0], 1);
+    assert_eq!(try_setup_weighted(&[1, 0], 1), Err(Error::InvalidWeight));
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #20)")] // WeightOverflow
 fn weighted_initialize_rejects_total_weight_overflow() {
     let env = Env::default();
     let client = MultisigClient::new(&env, &env.register_contract(None, Multisig));
@@ -1054,17 +1116,18 @@ fn weighted_initialize_rejects_total_weight_overflow() {
         (Address::generate(&env), u32::MAX),
         (Address::generate(&env), 1u32),
     ];
-    client.initialize_weighted(&signers, &1, &0, &2, &0);
+    assert_eq!(
+        client.try_initialize_weighted(&signers, &1, &0, &2, &0),
+        Err(Ok(Error::WeightOverflow))
+    );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #2)")] // InvalidThreshold
 fn weighted_initialize_rejects_threshold_above_total_weight() {
-    setup_weighted(&[2, 1], 4);
+    assert_eq!(try_setup_weighted(&[2, 1], 4), Err(Error::InvalidThreshold));
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #2)")] // InvalidThreshold
 fn weighted_initialize_rejects_rotation_threshold_not_above_threshold() {
     let env = Env::default();
     let client = MultisigClient::new(&env, &env.register_contract(None, Multisig));
@@ -1074,16 +1137,21 @@ fn weighted_initialize_rejects_rotation_threshold_not_above_threshold() {
         (Address::generate(&env), 1u32),
         (Address::generate(&env), 1u32),
     ];
-    client.initialize_weighted(&signers, &2, &0, &2, &0);
+    assert_eq!(
+        client.try_initialize_weighted(&signers, &2, &0, &2, &0),
+        Err(Ok(Error::InvalidThreshold))
+    );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #3)")] // DuplicateSigner
 fn weighted_initialize_rejects_duplicates() {
     let env = Env::default();
     let client = MultisigClient::new(&env, &env.register_contract(None, Multisig));
     let a = Address::generate(&env);
-    client.initialize_weighted(&vec![&env, (a.clone(), 1u32), (a, 2u32)], &1, &0, &3, &0);
+    assert_eq!(
+        client.try_initialize_weighted(&vec![&env, (a.clone(), 1u32), (a, 2u32)], &1, &0, &3, &0),
+        Err(Ok(Error::DuplicateSigner))
+    );
 }
 
 // ── Signer rotation ──────────────────────────────────────────────────────────
@@ -1178,7 +1246,6 @@ fn rotation_can_change_a_signers_weight() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #6)")] // NotYetApproved
 fn rotation_needs_the_rotation_threshold_not_the_normal_one() {
     let h = setup();
     let id = h.client.propose_signer_change(
@@ -1191,11 +1258,13 @@ fn rotation_needs_the_rotation_threshold_not_the_normal_one() {
     h.client.approve(&h.signers[0], &id);
     h.client.approve(&h.signers[1], &id);
     assert!(h.client.is_approved(&id)); // normal threshold met...
-    h.client.queue_signer_change(&id); // ...rotation threshold not.
+    assert_eq!(
+        h.client.try_queue_signer_change(&id), // ...rotation threshold not.
+        Err(Ok(Error::NotYetApproved))
+    );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #24)")] // RotationDelayActive
 fn rotation_cannot_execute_one_second_before_the_delay_ends() {
     let h = setup();
     let id = h.client.propose_signer_change(
@@ -1208,7 +1277,10 @@ fn rotation_cannot_execute_one_second_before_the_delay_ends() {
     approve_all(&h, &id);
     let ready_at = h.client.queue_signer_change(&id);
     h.env.ledger().with_mut(|l| l.timestamp = ready_at - 1);
-    h.client.execute_signer_change(&id);
+    assert_eq!(
+        h.client.try_execute_signer_change(&id),
+        Err(Ok(Error::RotationDelayActive))
+    );
 }
 
 #[test]
@@ -1229,7 +1301,6 @@ fn rotation_executes_exactly_at_the_delay_boundary() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #25)")] // SignerChangeNotQueued
 fn rotation_cannot_execute_without_being_queued() {
     let h = setup();
     let id = h.client.propose_signer_change(
@@ -1240,11 +1311,13 @@ fn rotation_cannot_execute_without_being_queued() {
         &3,
     );
     approve_all(&h, &id);
-    h.client.execute_signer_change(&id);
+    assert_eq!(
+        h.client.try_execute_signer_change(&id),
+        Err(Ok(Error::SignerChangeNotQueued))
+    );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #6)")] // NotYetApproved
 fn rotation_rechecks_approval_weight_at_execution() {
     let h = setup();
     let id = h.client.propose_signer_change(
@@ -1258,11 +1331,13 @@ fn rotation_rechecks_approval_weight_at_execution() {
     h.client.queue_signer_change(&id);
     h.client.revoke(&h.signers[1], &id);
     pass_delay(&h.env);
-    h.client.execute_signer_change(&id);
+    assert_eq!(
+        h.client.try_execute_signer_change(&id),
+        Err(Ok(Error::NotYetApproved))
+    );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #13)")] // ActionNotPending
 fn any_single_signer_can_veto_during_the_delay() {
     let h = setup();
     let id = h.client.propose_signer_change(
@@ -1277,11 +1352,13 @@ fn any_single_signer_can_veto_during_the_delay() {
     h.client.veto_signer_change(&h.signers[2], &id);
     assert!(has_event(&h.env, "signer_change_vetoed"));
     pass_delay(&h.env);
-    h.client.execute_signer_change(&id);
+    assert_eq!(
+        h.client.try_execute_signer_change(&id),
+        Err(Ok(Error::ActionNotPending))
+    );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #4)")] // NotASigner
 fn non_signers_cannot_veto() {
     let h = setup();
     let id = h.client.propose_signer_change(
@@ -1291,11 +1368,14 @@ fn non_signers_cannot_veto() {
         &1,
         &3,
     );
-    h.client.veto_signer_change(&Address::generate(&h.env), &id);
+    assert_eq!(
+        h.client
+            .try_veto_signer_change(&Address::generate(&h.env), &id),
+        Err(Ok(Error::NotASigner))
+    );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #23)")] // StaleSignerChange
 fn a_rotation_from_a_previous_epoch_cannot_execute() {
     let h = setup();
     let first = h.client.propose_signer_change(
@@ -1318,37 +1398,43 @@ fn a_rotation_from_a_previous_epoch_cannot_execute() {
     h.client.queue_signer_change(&second);
     pass_delay(&h.env);
     h.client.execute_signer_change(&first);
-    h.client.execute_signer_change(&second);
+    assert_eq!(
+        h.client.try_execute_signer_change(&second),
+        Err(Ok(Error::StaleSignerChange))
+    );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #4)")] // NotASigner
 fn rotation_rejects_removing_a_non_signer() {
     let h = setup();
-    h.client.propose_signer_change(
-        &h.signers[0],
-        &none_added(&h.env),
-        &vec![&h.env, Address::generate(&h.env)],
-        &2,
-        &3,
+    assert_eq!(
+        h.client.try_propose_signer_change(
+            &h.signers[0],
+            &none_added(&h.env),
+            &vec![&h.env, Address::generate(&h.env)],
+            &2,
+            &3
+        ),
+        Err(Ok(Error::NotASigner))
     );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #3)")] // DuplicateSigner
 fn rotation_rejects_adding_an_existing_signer() {
     let h = setup();
-    h.client.propose_signer_change(
-        &h.signers[0],
-        &add(&h.env, &h.signers[1], 1),
-        &Vec::new(&h.env),
-        &2,
-        &4,
+    assert_eq!(
+        h.client.try_propose_signer_change(
+            &h.signers[0],
+            &add(&h.env, &h.signers[1], 1),
+            &Vec::new(&h.env),
+            &2,
+            &4
+        ),
+        Err(Ok(Error::DuplicateSigner))
     );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #21)")] // InvalidSignerChange
 fn rotation_rejects_more_than_one_addition() {
     let h = setup();
     let mut two = add(&h.env, &Address::generate(&h.env), 1);
@@ -1356,65 +1442,75 @@ fn rotation_rejects_more_than_one_addition() {
         address: Address::generate(&h.env),
         weight: 1,
     });
-    h.client
-        .propose_signer_change(&h.signers[0], &two, &Vec::new(&h.env), &2, &3);
+    assert_eq!(
+        h.client
+            .try_propose_signer_change(&h.signers[0], &two, &Vec::new(&h.env), &2, &3),
+        Err(Ok(Error::InvalidSignerChange))
+    );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #19)")] // InvalidWeight
 fn rotation_rejects_a_zero_weight_signer() {
     let h = setup();
-    h.client.propose_signer_change(
-        &h.signers[0],
-        &add(&h.env, &Address::generate(&h.env), 0),
-        &Vec::new(&h.env),
-        &2,
-        &3,
+    assert_eq!(
+        h.client.try_propose_signer_change(
+            &h.signers[0],
+            &add(&h.env, &Address::generate(&h.env), 0),
+            &Vec::new(&h.env),
+            &2,
+            &3
+        ),
+        Err(Ok(Error::InvalidWeight))
     );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #2)")] // InvalidThreshold
 fn rotation_rejects_a_threshold_left_unreachable_by_a_removal() {
     let h = setup();
-    h.client.propose_signer_change(
-        &h.signers[0],
-        &none_added(&h.env),
-        &vec![&h.env, h.signers[2].clone()],
-        &3,
-        &3,
+    assert_eq!(
+        h.client.try_propose_signer_change(
+            &h.signers[0],
+            &none_added(&h.env),
+            &vec![&h.env, h.signers[2].clone()],
+            &3,
+            &3
+        ),
+        Err(Ok(Error::InvalidThreshold))
     );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #2)")] // InvalidThreshold
 fn rotation_rejects_a_zero_threshold() {
     let h = setup();
-    h.client.propose_signer_change(
-        &h.signers[0],
-        &none_added(&h.env),
-        &Vec::new(&h.env),
-        &0,
-        &3,
+    assert_eq!(
+        h.client.try_propose_signer_change(
+            &h.signers[0],
+            &none_added(&h.env),
+            &Vec::new(&h.env),
+            &0,
+            &3
+        ),
+        Err(Ok(Error::InvalidThreshold))
     );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #2)")] // InvalidThreshold
 fn rotation_revalidates_the_rotation_threshold() {
     let h = setup();
     // Rotation threshold equal to the threshold without being unanimous.
-    h.client.propose_signer_change(
-        &h.signers[0],
-        &none_added(&h.env),
-        &Vec::new(&h.env),
-        &2,
-        &2,
+    assert_eq!(
+        h.client.try_propose_signer_change(
+            &h.signers[0],
+            &none_added(&h.env),
+            &Vec::new(&h.env),
+            &2,
+            &2
+        ),
+        Err(Ok(Error::InvalidThreshold))
     );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #13)")] // ActionNotPending
 fn signer_changes_cannot_be_reset_through_the_generic_path() {
     let h = setup();
     let id = h.client.propose_signer_change(
@@ -1425,7 +1521,7 @@ fn signer_changes_cannot_be_reset_through_the_generic_path() {
         &3,
     );
     approve_all(&h, &id);
-    h.client.reset(&id);
+    assert_eq!(h.client.try_reset(&id), Err(Ok(Error::ActionNotPending)));
 }
 
 /// Benchmark (run with `--nocapture`): CPU cost of `is_approved` with 16
@@ -1487,10 +1583,16 @@ fn veto_blocks_approval_permanently() {
         h.client.get_action(&id).unwrap().status,
         ActionStatus::Vetoed
     );
-    assert!(h.client.try_approve(&h.signers[2], &id).is_err());
+    assert_eq!(
+        h.client.try_approve(&h.signers[2], &id),
+        Err(Ok(Error::ActionNotPending))
+    );
     assert!(!h.client.is_approved(&id));
     // A second veto, or one on a finished action, is rejected.
-    assert!(h.client.try_veto(&vetoer, &id).is_err());
+    assert_eq!(
+        h.client.try_veto(&vetoer, &id),
+        Err(Ok(Error::ActionNotPending))
+    );
 }
 
 #[test]
@@ -1499,13 +1601,22 @@ fn veto_rejects_non_vetoer_and_executed_actions() {
     let vetoer = Address::generate(&h.env);
     let id = aid(&h.env, 1);
     h.client.approve(&h.signers[0], &id);
-    assert!(h.client.try_veto(&vetoer, &id).is_err()); // none configured
+    assert_eq!(h.client.try_veto(&vetoer, &id), Err(Ok(Error::NotVetoer))); // none configured
     h.client.set_vetoer(&vetoer);
-    assert!(h.client.try_set_vetoer(&vetoer).is_err()); // immutable
-    assert!(h.client.try_veto(&h.signers[0], &id).is_err());
+    assert_eq!(
+        h.client.try_set_vetoer(&vetoer),
+        Err(Ok(Error::VetoerAlreadySet))
+    ); // immutable
+    assert_eq!(
+        h.client.try_veto(&h.signers[0], &id),
+        Err(Ok(Error::NotVetoer))
+    );
     h.client.approve(&h.signers[1], &id);
     h.client.reset(&id);
-    assert!(h.client.try_veto(&vetoer, &id).is_err());
+    assert_eq!(
+        h.client.try_veto(&vetoer, &id),
+        Err(Ok(Error::ActionNotPending))
+    );
 }
 
 #[test]
@@ -1515,19 +1626,19 @@ fn execute_by_deadline_boundary() {
     let id = aid(&h.env, 1);
     h.client.approve(&h.signers[0], &id);
     h.client.approve(&h.signers[1], &id);
-    assert!(h
-        .client
-        .try_set_execute_by(&h.signers[1], &id, &200)
-        .is_err()); // not proposer
-    assert!(h
-        .client
-        .try_set_execute_by(&h.signers[0], &id, &100)
-        .is_err()); // not future
+    assert_eq!(
+        h.client.try_set_execute_by(&h.signers[1], &id, &200),
+        Err(Ok(Error::NotProposer))
+    ); // not proposer
+    assert_eq!(
+        h.client.try_set_execute_by(&h.signers[0], &id, &100),
+        Err(Ok(Error::InvalidDeadline))
+    ); // not future
     h.client.set_execute_by(&h.signers[0], &id, &200);
-    assert!(h
-        .client
-        .try_set_execute_by(&h.signers[0], &id, &300)
-        .is_err()); // once
+    assert_eq!(
+        h.client.try_set_execute_by(&h.signers[0], &id, &300),
+        Err(Ok(Error::DeadlineAlreadySet))
+    ); // once
     set_time(&h.env, 200);
     assert!(h.client.is_approved(&id));
     set_time(&h.env, 201);
@@ -1577,7 +1688,7 @@ fn prune_is_bounded() {
     for i in 0..=crate::MAX_PRUNE as u8 {
         ids.push_back(aid(&h.env, i));
     }
-    assert!(h.client.try_prune(&ids).is_err());
+    assert_eq!(h.client.try_prune(&ids), Err(Ok(Error::InvalidPageLimit)));
 }
 
 #[test]
@@ -1607,5 +1718,8 @@ fn more_than_32_signers_rejected() {
         s.push_back(Address::generate(&env));
     }
     let client = MultisigClient::new(&env, &env.register_contract(None, Multisig));
-    assert!(client.try_initialize(&s, &2, &0).is_err());
+    assert_eq!(
+        client.try_initialize(&s, &2, &0),
+        Err(Ok(Error::TooManySigners))
+    );
 }

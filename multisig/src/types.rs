@@ -111,3 +111,16 @@ pub struct ActionApprovals {
     pub bitmap: u32,
     pub timestamps: Vec<u64>,
 }
+
+/// The post-upgrade guard (docs/upgrades.md), as `get_upgrade_status`
+/// returns it: present from install until `post_upgrade_check` passes.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeStatus {
+    pub wasm_hash: BytesN<32>,
+    pub installed_at: u64,
+    /// The last `post_upgrade_check` failed; the contract stays closed.
+    pub failed: bool,
+    /// Error code of the failed check (see docs/errors.md), else zero.
+    pub reason: u32,
+}

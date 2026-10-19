@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use crate::{Streams, StreamsClient};
+use crate::{Error, Streams, StreamsClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger as _},
     token, Address, Env,
@@ -93,7 +93,10 @@ fn nothing_withdrawable_before_cliff() {
     let id = h.create(1_000, 1_000, 1_500, 2_000);
     h.warp(1_499);
     assert_eq!(h.client.balance_of(&id), (0, 1_000));
-    assert!(h.client.try_withdraw(&id, &1).is_err());
+    assert_eq!(
+        h.client.try_withdraw(&id, &1),
+        Err(Ok(Error::InsufficientBalance))
+    );
     h.warp(1_500);
     assert_eq!(h.client.balance_of(&id), (500, 500));
 }
@@ -112,24 +115,28 @@ fn rejects_invalid_schedules_and_amounts() {
     let t = &h.token.address;
     let (f, r) = (&h.funder, &h.recipient);
     // zero-duration
-    assert!(h
-        .client
-        .try_create_stream(f, r, t, &1_000, &1_000, &1_000, &1_000)
-        .is_err());
+    assert_eq!(
+        h.client
+            .try_create_stream(f, r, t, &1_000, &1_000, &1_000, &1_000),
+        Err(Ok(Error::InvalidSchedule))
+    );
     // cliff before start / after end
-    assert!(h
-        .client
-        .try_create_stream(f, r, t, &1_000, &1_000, &999, &2_000)
-        .is_err());
-    assert!(h
-        .client
-        .try_create_stream(f, r, t, &1_000, &1_000, &2_001, &2_000)
-        .is_err());
+    assert_eq!(
+        h.client
+            .try_create_stream(f, r, t, &1_000, &1_000, &999, &2_000),
+        Err(Ok(Error::InvalidSchedule))
+    );
+    assert_eq!(
+        h.client
+            .try_create_stream(f, r, t, &1_000, &1_000, &2_001, &2_000),
+        Err(Ok(Error::InvalidSchedule))
+    );
     // non-positive total
-    assert!(h
-        .client
-        .try_create_stream(f, r, t, &0, &1_000, &1_000, &2_000)
-        .is_err());
+    assert_eq!(
+        h.client
+            .try_create_stream(f, r, t, &0, &1_000, &1_000, &2_000),
+        Err(Ok(Error::InvalidAmount))
+    );
 }
 
 #[test]
@@ -147,7 +154,10 @@ fn cancel_splits_accrued_and_remainder() {
     // frozen: time passing accrues nothing more
     h.warp(3_000);
     assert_eq!(h.client.balance_of(&id), (0, 0));
-    assert!(h.client.try_cancel(&h.funder, &id).is_err());
+    assert_eq!(
+        h.client.try_cancel(&h.funder, &id),
+        Err(Ok(Error::StreamCanceled))
+    );
 }
 
 #[test]
@@ -166,8 +176,14 @@ fn only_funder_or_governance_can_cancel() {
     let h = setup();
     let id = h.create(1_000, 1_000, 1_000, 2_000);
     let stranger = Address::generate(&h.env);
-    assert!(h.client.try_cancel(&stranger, &id).is_err());
-    assert!(h.client.try_cancel(&h.recipient, &id).is_err());
+    assert_eq!(
+        h.client.try_cancel(&stranger, &id),
+        Err(Ok(Error::Unauthorized))
+    );
+    assert_eq!(
+        h.client.try_cancel(&h.recipient, &id),
+        Err(Ok(Error::Unauthorized))
+    );
 }
 
 #[test]
@@ -217,7 +233,10 @@ fn prop_withdrawn_never_exceeds_deposit() {
                 paid += amt;
             }
             assert!(paid <= total);
-            assert!(h.client.try_withdraw(&id, &(avail + 1)).is_err());
+            assert_eq!(
+                h.client.try_withdraw(&id, &(avail + 1)),
+                Err(Ok(Error::InsufficientBalance))
+            );
         }
         if next(2) == 0 {
             h.client.cancel(&h.funder, &id);
@@ -235,4 +254,30 @@ fn prop_withdrawn_never_exceeds_deposit() {
         assert_eq!(to_recipient + to_funder, total);
         assert_eq!(h.token.balance(&h.client.address), 0);
     }
+}
+
+#[test]
+fn initialize_twice_and_unknown_streams_are_typed_errors() {
+    let h = setup();
+    assert_eq!(
+        h.client.try_initialize(&h.governance),
+        Err(Ok(Error::AlreadyInitialized))
+    );
+    assert_eq!(h.client.try_balance_of(&99), Err(Ok(Error::StreamNotFound)));
+    assert_eq!(
+        h.client.try_withdraw(&99, &1),
+        Err(Ok(Error::StreamNotFound))
+    );
+}
+
+#[test]
+fn uninitialized_contract_reports_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = StreamsClient::new(&env, &env.register_contract(None, Streams));
+    assert_eq!(client.try_get_governance(), Err(Ok(Error::NotInitialized)));
+    assert_eq!(
+        client.try_get_stream_count(),
+        Err(Ok(Error::NotInitialized))
+    );
 }

@@ -4,10 +4,10 @@
 
 extern crate std;
 
-use crate::{LpToken, LpTokenClient};
+use crate::{Error, LpToken, LpTokenClient};
 use soroban_sdk::{
     symbol_short,
-    testutils::{Address as _, AuthorizedFunction, AuthorizedInvocation, Events as _, Ledger as _},
+    testutils::{Address as _, AuthorizedFunction, AuthorizedInvocation, Ledger as _},
     Address, Env, IntoVal, String, Symbol, TryFromVal,
 };
 
@@ -25,8 +25,14 @@ fn setup<'a>() -> (Env, LpTokenClient<'a>, Address) {
     (env, client, pool)
 }
 
-fn last_event_topic(env: &Env) -> Symbol {
-    let (_, topics, _) = env.events().all().last().unwrap();
+/// SEP-41 functions keep their non-`Result` signatures, so a failed
+/// `try_*` call reports the host-level error for the contract code.
+fn sep41_err(e: Error) -> soroban_sdk::Error {
+    e.into()
+}
+
+fn last_event_topic(env: &Env, token: &Address) -> Symbol {
+    let (topics, _) = event_spec::last_event(env, token);
     Symbol::try_from_val(env, &topics.get(0).unwrap()).unwrap()
 }
 
@@ -59,11 +65,13 @@ fn mint_requires_the_pool_and_emits_mint() {
         )]
     );
     assert_eq!(token.balance(&user), 1000);
-    assert_eq!(last_event_topic(&env), symbol_short!("mint"));
+    assert_eq!(
+        last_event_topic(&env, &token.address),
+        symbol_short!("mint")
+    );
 }
 
 #[test]
-#[should_panic]
 fn mint_without_pool_auth_fails() {
     let env = Env::default();
     let pool = Address::generate(&env);
@@ -76,7 +84,27 @@ fn mint_without_pool_auth_fails() {
         &String::from_str(&env, "s"),
     );
     env.set_auths(&[]);
-    token.mint(&Address::generate(&env), &1);
+    // No pool signature: the host rejects the auth check.
+    assert!(matches!(
+        token.try_mint(&Address::generate(&env), &1),
+        Err(Err(_))
+    ));
+}
+
+#[test]
+fn uninitialized_token_reports_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let token = LpTokenClient::new(&env, &env.register_contract(None, LpToken));
+    assert_eq!(token.try_pool(), Err(Ok(Error::NotInitialized)));
+    assert_eq!(
+        token.try_mint(&Address::generate(&env), &1),
+        Err(Ok(Error::NotInitialized))
+    );
+    assert_eq!(
+        token.try_decimals(),
+        Err(Ok(sep41_err(Error::NotInitialized)))
+    );
 }
 
 #[test]
@@ -88,7 +116,10 @@ fn transfer_approve_transfer_from_burn() {
     token.mint(&a, &1000);
 
     token.approve(&a, &c, &500, &200);
-    assert_eq!(last_event_topic(&env), symbol_short!("approve"));
+    assert_eq!(
+        last_event_topic(&env, &token.address),
+        symbol_short!("approve")
+    );
     assert_eq!(
         env.auths()[0].1.function,
         AuthorizedFunction::Contract((
@@ -100,7 +131,10 @@ fn transfer_approve_transfer_from_burn() {
     assert_eq!(token.allowance(&a, &c), 500);
 
     token.transfer(&a, &b, &600);
-    assert_eq!(last_event_topic(&env), symbol_short!("transfer"));
+    assert_eq!(
+        last_event_topic(&env, &token.address),
+        symbol_short!("transfer")
+    );
     assert_eq!(env.auths()[0].0, a);
     assert_eq!(token.balance(&a), 400);
     assert_eq!(token.balance(&b), 600);
@@ -112,7 +146,10 @@ fn transfer_approve_transfer_from_burn() {
     assert_eq!(token.allowance(&a, &c), 100);
 
     token.burn(&b, &300);
-    assert_eq!(last_event_topic(&env), symbol_short!("burn"));
+    assert_eq!(
+        last_event_topic(&env, &token.address),
+        symbol_short!("burn")
+    );
     assert_eq!(token.balance(&b), 700);
 
     token.approve(&b, &c, &200, &200);
@@ -147,16 +184,17 @@ fn a_zero_allowance_may_carry_a_past_expiration() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #6)")] // InvalidExpiration
 fn a_nonzero_allowance_cannot_be_already_expired() {
     let (env, token, _) = setup();
     let a = Address::generate(&env);
     env.ledger().with_mut(|l| l.sequence_number = 100);
-    token.approve(&a, &Address::generate(&env), &1, &99);
+    assert_eq!(
+        token.try_approve(&a, &Address::generate(&env), &1, &99),
+        Err(Ok(sep41_err(Error::InvalidExpiration)))
+    );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #5)")] // InsufficientAllowance
 fn transfer_from_an_expired_allowance_fails() {
     let (env, token, _) = setup();
     let a = Address::generate(&env);
@@ -165,70 +203,85 @@ fn transfer_from_an_expired_allowance_fails() {
     let now = env.ledger().sequence();
     token.approve(&a, &c, &50, &(now + 1));
     env.ledger().with_mut(|l| l.sequence_number = now + 2);
-    token.transfer_from(&c, &a, &c, &10);
+    assert_eq!(
+        token.try_transfer_from(&c, &a, &c, &10),
+        Err(Ok(sep41_err(Error::InsufficientAllowance)))
+    );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #4)")] // InsufficientBalance
 fn transfer_over_balance_fails() {
     let (env, token, _) = setup();
     let a = Address::generate(&env);
     token.mint(&a, &100);
-    token.transfer(&a, &Address::generate(&env), &101);
+    assert_eq!(
+        token.try_transfer(&a, &Address::generate(&env), &101),
+        Err(Ok(sep41_err(Error::InsufficientBalance)))
+    );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #5)")] // InsufficientAllowance
 fn transfer_from_over_allowance_fails() {
     let (env, token, _) = setup();
     let a = Address::generate(&env);
     let c = Address::generate(&env);
     token.mint(&a, &100);
     token.approve(&a, &c, &10, &1000);
-    token.transfer_from(&c, &a, &c, &11);
+    assert_eq!(
+        token.try_transfer_from(&c, &a, &c, &11),
+        Err(Ok(sep41_err(Error::InsufficientAllowance)))
+    );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #5)")] // InsufficientAllowance
 fn burn_from_over_allowance_fails() {
     let (env, token, _) = setup();
     let a = Address::generate(&env);
     let c = Address::generate(&env);
     token.mint(&a, &100);
-    token.burn_from(&c, &a, &1);
-}
-
-#[test]
-#[should_panic(expected = "Error(Contract, #3)")] // NegativeAmount
-fn negative_amounts_are_rejected() {
-    let (env, token, _) = setup();
-    let a = Address::generate(&env);
-    token.transfer(&a, &Address::generate(&env), &-1);
-}
-
-#[test]
-#[should_panic(expected = "Error(Contract, #1)")] // AlreadyInitialized
-fn initialize_twice_fails() {
-    let (env, token, pool) = setup();
-    token.initialize(
-        &pool,
-        &7,
-        &String::from_str(&env, "n"),
-        &String::from_str(&env, "s"),
+    assert_eq!(
+        token.try_burn_from(&c, &a, &1),
+        Err(Ok(sep41_err(Error::InsufficientAllowance)))
     );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #7)")] // InvalidDecimals
+fn negative_amounts_are_rejected() {
+    let (env, token, _) = setup();
+    let a = Address::generate(&env);
+    assert_eq!(
+        token.try_transfer(&a, &Address::generate(&env), &-1),
+        Err(Ok(sep41_err(Error::NegativeAmount)))
+    );
+}
+
+#[test]
+fn initialize_twice_fails() {
+    let (env, token, pool) = setup();
+    assert_eq!(
+        token.try_initialize(
+            &pool,
+            &7,
+            &String::from_str(&env, "n"),
+            &String::from_str(&env, "s"),
+        ),
+        Err(Ok(Error::AlreadyInitialized))
+    );
+}
+
+#[test]
 fn decimals_must_fit_in_a_u8() {
     let env = Env::default();
     env.mock_all_auths();
     let token = LpTokenClient::new(&env, &env.register_contract(None, LpToken));
-    token.initialize(
-        &Address::generate(&env),
-        &256,
-        &String::from_str(&env, "n"),
-        &String::from_str(&env, "s"),
+    assert_eq!(
+        token.try_initialize(
+            &Address::generate(&env),
+            &256,
+            &String::from_str(&env, "n"),
+            &String::from_str(&env, "s"),
+        ),
+        Err(Ok(Error::InvalidDecimals))
     );
 }
 

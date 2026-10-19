@@ -1,6 +1,7 @@
-/// floor(a × b / c) for non-negative operands. Panics on overflow or c == 0.
-pub fn mul_div_floor(a: i128, b: i128, c: i128) -> i128 {
-    a.checked_mul(b).unwrap().checked_div(c).unwrap()
+/// floor(a × b / c) for non-negative operands. `None` on overflow or
+/// c == 0.
+pub fn mul_div_floor(a: i128, b: i128, c: i128) -> Option<i128> {
+    a.checked_mul(b)?.checked_div(c)
 }
 
 /// Property-based tests; see README "Property tests".
@@ -10,7 +11,6 @@ mod proptests {
 
     use super::*;
     use proptest::prelude::*;
-    use std::panic::{catch_unwind, AssertUnwindSafe};
 
     const CASES: u32 = 10_000;
 
@@ -28,7 +28,7 @@ mod proptests {
 
         #[test]
         fn is_the_exact_floor(a in operand(), b in operand(), c in divisor()) {
-            let q = mul_div_floor(a, b, c);
+            let q = mul_div_floor(a, b, c).unwrap();
             prop_assert!(q * c <= a * b && a * b < (q + 1) * c);
         }
 
@@ -46,10 +46,10 @@ mod proptests {
             c2 in divisor(),
         ) {
             let (lo, hi) = if a1 <= a2 { (a1, a2) } else { (a2, a1) };
-            prop_assert!(mul_div_floor(lo, b, c1) <= mul_div_floor(hi, b, c1));
+            prop_assert!(mul_div_floor(lo, b, c1).unwrap() <= mul_div_floor(hi, b, c1).unwrap());
             // Non-increasing in the divisor.
             let (lo, hi) = if c1 <= c2 { (c1, c2) } else { (c2, c1) };
-            prop_assert!(mul_div_floor(a1, b, lo) >= mul_div_floor(a1, b, hi));
+            prop_assert!(mul_div_floor(a1, b, lo).unwrap() >= mul_div_floor(a1, b, hi).unwrap());
         }
 
         /// b <= c means the result never exceeds a (a pro-rata share of a).
@@ -58,11 +58,11 @@ mod proptests {
             a in operand(),
             (b, c) in divisor().prop_flat_map(|c| (0..=c, Just(c))),
         ) {
-            let q = mul_div_floor(a, b, c);
+            let q = mul_div_floor(a, b, c).unwrap();
             prop_assert!(0 <= q && q <= a);
         }
 
-        /// Whole non-negative domain: the correct value, or a panic exactly
+        /// Whole non-negative domain: the correct value, or `None` exactly
         /// where the product overflows or c == 0, as documented.
         #[test]
         fn fails_exactly_on_overflow_or_zero_divisor(
@@ -71,8 +71,7 @@ mod proptests {
             c in 0i128..=i128::MAX,
         ) {
             let expected = a.checked_mul(b).and_then(|p| p.checked_div(c));
-            let actual = catch_unwind(AssertUnwindSafe(|| mul_div_floor(a, b, c))).ok();
-            prop_assert_eq!(actual, expected);
+            prop_assert_eq!(mul_div_floor(a, b, c), expected);
         }
     }
 }

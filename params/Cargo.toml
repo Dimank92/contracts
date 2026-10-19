@@ -3,6 +3,9 @@ name = "zenith-params"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+repository.workspace = true
+# Embeds name/version/repo/commit as contractmeta (#125).
+build = "../common/build_meta.rs"
 
 [lib]
 # rlib alongside cdylib so options_market can register a real registry in
@@ -11,9 +14,12 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 soroban-sdk = { workspace = true }
+zenith-common = { workspace = true }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
+# Checks emitted events against events.json (#126).
+event-spec = { path = "../tools/event-spec" }
 
 [features]
 testutils = ["soroban-sdk/testutils"]

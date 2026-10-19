@@ -38,7 +38,8 @@ for arg in "$@"; do
   esac
 done
 if [ ${#crates[@]} -eq 0 ]; then
-  crates=(options_market price_oracle vault multisig streams staking timelock governor params grants_escrow)
+  # The complete contracts (README "Known gaps" lists the others).
+  crates=(governor grants_escrow lp_pool lp_token multisig params staking streams)
 fi
 
 optimize() {
@@ -74,7 +75,8 @@ status=0
 
 for c in "${crates[@]}"; do
   pkg=$(awk -F'"' '/^name *=/ { print $2; exit }' "$root/$c/Cargo.toml" 2>/dev/null || true)
-  wasm="$root/$c/target/wasm32-unknown-unknown/release/${pkg//-/_}.wasm"
+  # The workspace's shared target/ (`cargo xtask build`).
+  wasm="$root/target/wasm32-unknown-unknown/release/${pkg//-/_}.wasm"
   if [ -z "$pkg" ] || [ ! -f "$wasm" ]; then
     table+=$'\n'"| \`$c\` | not built | | | | |"
     continue

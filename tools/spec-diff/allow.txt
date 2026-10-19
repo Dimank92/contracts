@@ -1,4 +1,14 @@
-# Functions whose signature a PR intentionally changes, as "<crate> <fn>".
-# spec-diff fails on any other removed or changed ABI entry.
-multisig initialize
-vault initialize
+# Functions whose signature a PR intentionally changes, as "<crate> <fn>"
+# ("<crate> *" allows every function in that crate to change; removals
+# still fail). spec-diff fails on any other removed or changed ABI entry.
+#
+# #124: every entrypoint now returns Result<_, Error>, which changes the
+# spec's return type of every function in every complete contract.
+zenith-governor *
+zenith-grants-escrow *
+zenith-lp-pool *
+zenith-lp-token *
+zenith-multisig *
+zenith-params *
+zenith-staking *
+zenith-streams *

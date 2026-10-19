@@ -1,0 +1,2062 @@
+{
+  "$comment": "Machine-readable event spec, schema v2. Validated by every contract's test_events.rs through tools/event-spec; consumed by the bindings package. See docs/events.md.",
+  "schema_version": 2,
+  "conventions": {
+    "topics": "(Symbol name, u32 schema_version, primary key...). `topics` below lists only the primary keys after the first two.",
+    "data": "A #[contracttype] struct, encoded as an ScMap keyed by field name. `data` names a struct in the contract's `types` (or in `shared.types`).",
+    "types": "address, symbol, bool, u32, u64, i128, bytes32, bytes, string, val (any), vec<T>, map<K,V>, option<T>, or a name in `types`."
+  },
+  "shared": {
+    "description": "Framework events from zenith-common, emitted by every contract that uses the migration or upgrade framework (see each contract's shared_events).",
+    "types": {
+      "SchemaMigrated": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "from",
+            "type": "u32"
+          },
+          {
+            "name": "to",
+            "type": "u32"
+          }
+        ]
+      },
+      "MigrationProgress": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "step",
+            "type": "u32"
+          },
+          {
+            "name": "target",
+            "type": "u32"
+          },
+          {
+            "name": "cursor",
+            "type": "u32"
+          }
+        ]
+      },
+      "UpgradeMultisigPinned": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "multisig",
+            "type": "address"
+          }
+        ]
+      },
+      "UpgradeProposed": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "wasm_hash",
+            "type": "bytes32"
+          },
+          {
+            "name": "not_before",
+            "type": "u64"
+          },
+          {
+            "name": "emergency",
+            "type": "bool"
+          }
+        ]
+      },
+      "UpgradeCancelled": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "wasm_hash",
+            "type": "bytes32"
+          }
+        ]
+      },
+      "Upgraded": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "wasm_hash",
+            "type": "bytes32"
+          },
+          {
+            "name": "schema_version",
+            "type": "u32"
+          }
+        ]
+      },
+      "UpgradeChecked": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "wasm_hash",
+            "type": "bytes32"
+          },
+          {
+            "name": "schema_version",
+            "type": "u32"
+          }
+        ]
+      },
+      "UpgradeCheckFailed": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "wasm_hash",
+            "type": "bytes32"
+          },
+          {
+            "name": "reason",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    "events": [
+      {
+        "name": "schema_migrated",
+        "topics": [],
+        "data": "SchemaMigrated",
+        "state": "A migration step finished: the stored schema version is now `to`."
+      },
+      {
+        "name": "migration_progress",
+        "topics": [],
+        "data": "MigrationProgress",
+        "state": "A paginated step stopped at `cursor`: the migration is in progress (state-changing entrypoints are closed) until `migrate_batch` finishes it."
+      },
+      {
+        "name": "upgrade_multisig_pinned",
+        "topics": [],
+        "data": "UpgradeMultisigPinned",
+        "state": "The multisig trusted by `upgrade_via_multisig` / `migrate_via_multisig` is now `multisig`."
+      },
+      {
+        "name": "upgrade_proposed",
+        "topics": [
+          {
+            "name": "wasm_hash",
+            "type": "bytes32"
+          }
+        ],
+        "data": "UpgradeProposed",
+        "state": "`wasm_hash` is allowlisted and installable from `not_before`."
+      },
+      {
+        "name": "upgrade_cancelled",
+        "topics": [
+          {
+            "name": "wasm_hash",
+            "type": "bytes32"
+          }
+        ],
+        "data": "UpgradeCancelled",
+        "state": "`wasm_hash` was removed from the allowlist without being installed."
+      },
+      {
+        "name": "upgraded",
+        "topics": [
+          {
+            "name": "wasm_hash",
+            "type": "bytes32"
+          }
+        ],
+        "data": "Upgraded",
+        "state": "The contract now runs `wasm_hash` (its allowlist entry is consumed). The post-upgrade guard is up: user-facing entrypoints are closed until `upgrade_checked`."
+      },
+      {
+        "name": "upgrade_checked",
+        "topics": [
+          {
+            "name": "wasm_hash",
+            "type": "bytes32"
+          }
+        ],
+        "data": "UpgradeChecked",
+        "state": "The post-upgrade self-check passed on `wasm_hash`: the guard is down and entrypoints are open."
+      },
+      {
+        "name": "upgrade_check_failed",
+        "topics": [
+          {
+            "name": "wasm_hash",
+            "type": "bytes32"
+          }
+        ],
+        "data": "UpgradeCheckFailed",
+        "state": "The post-upgrade self-check failed with error `reason`: the guard stays up (the contract is effectively paused) until a later check passes or another wasm is installed."
+      }
+    ]
+  },
+  "contracts": {
+    "governor": {
+      "crate": "zenith-governor",
+      "shared_events": [
+        "schema_migrated",
+        "migration_progress"
+      ],
+      "types": {
+        "InitializedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "token",
+              "type": "address"
+            },
+            {
+              "name": "timelock",
+              "type": "address"
+            },
+            {
+              "name": "voting_delay",
+              "type": "u32"
+            },
+            {
+              "name": "voting_period",
+              "type": "u32"
+            },
+            {
+              "name": "quorum_bps",
+              "type": "u32"
+            },
+            {
+              "name": "proposal_threshold",
+              "type": "i128"
+            },
+            {
+              "name": "schema_version",
+              "type": "u32"
+            }
+          ]
+        },
+        "ProposalCreatedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "proposer",
+              "type": "address"
+            },
+            {
+              "name": "targets",
+              "type": "vec<address>"
+            },
+            {
+              "name": "fns",
+              "type": "vec<symbol>"
+            },
+            {
+              "name": "args",
+              "type": "vec<vec<val>>"
+            },
+            {
+              "name": "description_hash",
+              "type": "bytes32"
+            },
+            {
+              "name": "snapshot",
+              "type": "u32"
+            },
+            {
+              "name": "deadline",
+              "type": "u32"
+            }
+          ]
+        },
+        "VoteCastEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "support",
+              "type": "u32"
+            },
+            {
+              "name": "weight",
+              "type": "i128"
+            },
+            {
+              "name": "for_votes",
+              "type": "i128"
+            },
+            {
+              "name": "against_votes",
+              "type": "i128"
+            },
+            {
+              "name": "abstain_votes",
+              "type": "i128"
+            }
+          ]
+        },
+        "ProposalQueuedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "eta",
+              "type": "u64"
+            },
+            {
+              "name": "quorum",
+              "type": "i128"
+            }
+          ]
+        },
+        "ProposalCanceledEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "caller",
+              "type": "address"
+            },
+            {
+              "name": "was_queued",
+              "type": "bool"
+            }
+          ]
+        },
+        "ParamSetEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "value",
+              "type": "i128"
+            }
+          ]
+        }
+      },
+      "events": [
+        {
+          "name": "initialized",
+          "topics": [],
+          "data": "InitializedEvent",
+          "state": "The governor is live with these parameters; `timelock` executes passed proposals. Each parameter is also announced by a `param_set`."
+        },
+        {
+          "name": "proposal_created",
+          "topics": [
+            {
+              "name": "id",
+              "type": "bytes32"
+            }
+          ],
+          "data": "ProposalCreatedEvent",
+          "state": "Creates proposal `id` (state `Pending`) with these actions. Voting opens on the ledger after `snapshot` (`Active`) and closes after `deadline`; at that point it is `Succeeded` if for + abstain >= quorum(snapshot) and for > against, else `Defeated`. These transitions follow from ledger progression and have no event."
+        },
+        {
+          "name": "vote_cast",
+          "topics": [
+            {
+              "name": "id",
+              "type": "bytes32"
+            },
+            {
+              "name": "voter",
+              "type": "address"
+            }
+          ],
+          "data": "VoteCastEvent",
+          "state": "`voter` voted `support` (0 Against, 1 For, 2 Abstain) with `weight` (their power at the snapshot). The proposal's tallies are now `for_votes` / `against_votes` / `abstain_votes`."
+        },
+        {
+          "name": "proposal_queued",
+          "topics": [
+            {
+              "name": "id",
+              "type": "bytes32"
+            }
+          ],
+          "data": "ProposalQueuedEvent",
+          "state": "Proposal `id` moves from `Succeeded` to `Queued`: the timelock can execute it from `eta` until its grace period ends (then `Expired`). `Executed` is the timelock's own event."
+        },
+        {
+          "name": "proposal_canceled",
+          "topics": [
+            {
+              "name": "id",
+              "type": "bytes32"
+            }
+          ],
+          "data": "ProposalCanceledEvent",
+          "state": "Proposal `id` moves to `Canceled`. If `was_queued`, its timelock operation was cancelled too."
+        },
+        {
+          "name": "param_set",
+          "topics": [
+            {
+              "name": "name",
+              "type": "symbol"
+            }
+          ],
+          "data": "ParamSetEvent",
+          "state": "Governance parameter `name` (`voting_delay`, `voting_period`, `quorum_bps` or `proposal_threshold`) is now `value`."
+        }
+      ]
+    },
+    "grants_escrow": {
+      "crate": "zenith-grants-escrow",
+      "shared_events": [
+        "schema_migrated",
+        "migration_progress"
+      ],
+      "types": {
+        "GrantCreatedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "funder",
+              "type": "address"
+            },
+            {
+              "name": "grantee",
+              "type": "address"
+            },
+            {
+              "name": "token",
+              "type": "address"
+            },
+            {
+              "name": "total",
+              "type": "i128"
+            },
+            {
+              "name": "reviewers",
+              "type": "vec<address>"
+            },
+            {
+              "name": "quorum",
+              "type": "u32"
+            },
+            {
+              "name": "amounts",
+              "type": "vec<i128>"
+            },
+            {
+              "name": "deadlines",
+              "type": "vec<u64>"
+            },
+            {
+              "name": "created_at",
+              "type": "u64"
+            }
+          ]
+        },
+        "MilestoneSubmittedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "evidence_hash",
+              "type": "bytes32"
+            },
+            {
+              "name": "submitted_at",
+              "type": "u64"
+            }
+          ]
+        },
+        "MilestoneApprovedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "reviewer",
+              "type": "address"
+            },
+            {
+              "name": "approvals",
+              "type": "u32"
+            },
+            {
+              "name": "quorum",
+              "type": "u32"
+            }
+          ]
+        },
+        "MilestoneReleasedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "grantee",
+              "type": "address"
+            },
+            {
+              "name": "amount",
+              "type": "i128"
+            }
+          ]
+        },
+        "FundsReclaimedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "funder",
+              "type": "address"
+            },
+            {
+              "name": "amount",
+              "type": "i128"
+            },
+            {
+              "name": "milestones",
+              "type": "vec<u32>"
+            }
+          ]
+        }
+      },
+      "events": [
+        {
+          "name": "grant_created",
+          "topics": [
+            {
+              "name": "grant_id",
+              "type": "u64"
+            }
+          ],
+          "data": "GrantCreatedEvent",
+          "state": "Creates grant `grant_id`, funded with `total` of `token` pulled from `funder`. Milestone `i` is `Pending` with amount `amounts[i]`, deadline `deadlines[i]` and no approvals."
+        },
+        {
+          "name": "milestone_submitted",
+          "topics": [
+            {
+              "name": "grant_id",
+              "type": "u64"
+            },
+            {
+              "name": "idx",
+              "type": "u32"
+            }
+          ],
+          "data": "MilestoneSubmittedEvent",
+          "state": "Milestone `idx` moves from `Pending` to `Submitted` with `evidence_hash`."
+        },
+        {
+          "name": "milestone_approved",
+          "topics": [
+            {
+              "name": "grant_id",
+              "type": "u64"
+            },
+            {
+              "name": "idx",
+              "type": "u32"
+            }
+          ],
+          "data": "MilestoneApprovedEvent",
+          "state": "`reviewer` approved milestone `idx`; it now has `approvals` of `quorum`. Reaching quorum is followed by `milestone_released` in the same call."
+        },
+        {
+          "name": "milestone_released",
+          "topics": [
+            {
+              "name": "grant_id",
+              "type": "u64"
+            },
+            {
+              "name": "idx",
+              "type": "u32"
+            }
+          ],
+          "data": "MilestoneReleasedEvent",
+          "state": "Milestone `idx` moves to `Released`: `amount` was paid to `grantee`."
+        },
+        {
+          "name": "funds_reclaimed",
+          "topics": [
+            {
+              "name": "grant_id",
+              "type": "u64"
+            }
+          ],
+          "data": "FundsReclaimedEvent",
+          "state": "Every milestone index in `milestones` moves to `Reclaimed`; their sum, `amount`, was returned to `funder`."
+        }
+      ]
+    },
+    "lp_pool": {
+      "crate": "zenith-lp-pool",
+      "types": {
+        "InitializedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "admin",
+              "type": "address"
+            },
+            {
+              "name": "keeper",
+              "type": "address"
+            },
+            {
+              "name": "asset",
+              "type": "address"
+            },
+            {
+              "name": "market",
+              "type": "address"
+            },
+            {
+              "name": "max_utilization_bps",
+              "type": "u32"
+            }
+          ]
+        },
+        "KeeperSetEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "keeper",
+              "type": "address"
+            }
+          ]
+        },
+        "MaxUtilizationSetEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "max_utilization_bps",
+              "type": "u32"
+            }
+          ]
+        },
+        "SeriesCapSetEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "max_collateral",
+              "type": "i128"
+            }
+          ]
+        },
+        "LiabilitiesMarkedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "expected_liabilities",
+              "type": "i128"
+            }
+          ]
+        },
+        "DepositQueuedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "amount",
+              "type": "i128"
+            },
+            {
+              "name": "ticket",
+              "type": "i128"
+            },
+            {
+              "name": "pending_deposits",
+              "type": "i128"
+            }
+          ]
+        },
+        "WithdrawQueuedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "shares",
+              "type": "i128"
+            },
+            {
+              "name": "ticket",
+              "type": "i128"
+            },
+            {
+              "name": "share_balance",
+              "type": "i128"
+            },
+            {
+              "name": "pending_withdraw_shares",
+              "type": "i128"
+            }
+          ]
+        },
+        "ClaimedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "shares",
+              "type": "i128"
+            },
+            {
+              "name": "assets",
+              "type": "i128"
+            },
+            {
+              "name": "share_balance",
+              "type": "i128"
+            }
+          ]
+        },
+        "OptionWrittenEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "collateral",
+              "type": "i128"
+            },
+            {
+              "name": "premium",
+              "type": "i128"
+            },
+            {
+              "name": "idle",
+              "type": "i128"
+            },
+            {
+              "name": "locked",
+              "type": "i128"
+            }
+          ]
+        },
+        "CollateralReclaimedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "series_id",
+              "type": "u64"
+            },
+            {
+              "name": "collateral",
+              "type": "i128"
+            },
+            {
+              "name": "returned",
+              "type": "i128"
+            },
+            {
+              "name": "idle",
+              "type": "i128"
+            },
+            {
+              "name": "locked",
+              "type": "i128"
+            }
+          ]
+        },
+        "EpochProcessedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "total_assets",
+              "type": "i128"
+            },
+            {
+              "name": "total_shares",
+              "type": "i128"
+            },
+            {
+              "name": "deposit_assets",
+              "type": "i128"
+            },
+            {
+              "name": "deposit_shares",
+              "type": "i128"
+            },
+            {
+              "name": "withdraw_shares",
+              "type": "i128"
+            },
+            {
+              "name": "withdraw_assets",
+              "type": "i128"
+            },
+            {
+              "name": "idle",
+              "type": "i128"
+            },
+            {
+              "name": "total_shares_after",
+              "type": "i128"
+            }
+          ]
+        }
+      },
+      "events": [
+        {
+          "name": "initialized",
+          "topics": [],
+          "data": "InitializedEvent",
+          "state": "The pool is live at epoch 0 with no assets: `admin` governs, `keeper` writes options into `market` with `asset` collateral, up to `max_utilization_bps`."
+        },
+        {
+          "name": "keeper_set",
+          "topics": [],
+          "data": "KeeperSetEvent",
+          "state": "The keeper is now `keeper`."
+        },
+        {
+          "name": "max_utilization_set",
+          "topics": [],
+          "data": "MaxUtilizationSetEvent",
+          "state": "The pool-wide utilization cap is now `max_utilization_bps`."
+        },
+        {
+          "name": "series_cap_set",
+          "topics": [
+            {
+              "name": "series_id",
+              "type": "u64"
+            }
+          ],
+          "data": "SeriesCapSetEvent",
+          "state": "Series `series_id` may hold up to `max_collateral` of the pool's collateral; zero de-lists it."
+        },
+        {
+          "name": "liabilities_marked",
+          "topics": [],
+          "data": "LiabilitiesMarkedEvent",
+          "state": "The keeper's mark of open-position liabilities (informational, for `share_price`) is now `expected_liabilities`. Reset to zero, without an event, when the last position is reclaimed."
+        },
+        {
+          "name": "deposit_queued",
+          "topics": [
+            {
+              "name": "user",
+              "type": "address"
+            },
+            {
+              "name": "epoch",
+              "type": "u32"
+            }
+          ],
+          "data": "DepositQueuedEvent",
+          "state": "`user` queued `amount` for conversion when `epoch` is processed; their ticket for that epoch is now `ticket` and the epoch's pending deposits `pending_deposits`."
+        },
+        {
+          "name": "withdraw_queued",
+          "topics": [
+            {
+              "name": "user",
+              "type": "address"
+            },
+            {
+              "name": "epoch",
+              "type": "u32"
+            }
+          ],
+          "data": "WithdrawQueuedEvent",
+          "state": "`shares` left `user`'s balance (now `share_balance`) and are queued for redemption at `epoch`'s price; their ticket is now `ticket`, the epoch's pending shares `pending_withdraw_shares`."
+        },
+        {
+          "name": "claimed",
+          "topics": [
+            {
+              "name": "user",
+              "type": "address"
+            }
+          ],
+          "data": "ClaimedEvent",
+          "state": "`user`'s tickets from processed epochs settled: `shares` credited (balance now `share_balance`) and `assets` paid out. Settled tickets are removed."
+        },
+        {
+          "name": "option_written",
+          "topics": [
+            {
+              "name": "series_id",
+              "type": "u64"
+            },
+            {
+              "name": "position_id",
+              "type": "u64"
+            }
+          ],
+          "data": "OptionWrittenEvent",
+          "state": "The pool wrote position `position_id` in `series_id`, locking `collateral` and receiving `premium`. Pool `idle` and `locked` are now as given."
+        },
+        {
+          "name": "collateral_reclaimed",
+          "topics": [
+            {
+              "name": "position_id",
+              "type": "u64"
+            }
+          ],
+          "data": "CollateralReclaimedEvent",
+          "state": "Position `position_id` settled: `returned` of its `collateral` came back. It leaves the open-position list; pool `idle` and `locked` are now as given."
+        },
+        {
+          "name": "epoch_processed",
+          "topics": [
+            {
+              "name": "epoch",
+              "type": "u32"
+            }
+          ],
+          "data": "EpochProcessedEvent",
+          "state": "Epoch `epoch` closed at `total_assets` / `total_shares`: its queued deposits and withdrawals converted at that price (the conversion is also stored as `EpochResult(epoch)`), and epoch `epoch + 1` opened. Pool `idle` and total shares are now `idle` / `total_shares_after`."
+        }
+      ]
+    },
+    "lp_token": {
+      "crate": "zenith-lp-token",
+      "standard": "SEP-41. The approve/transfer/mint/burn events keep the standard SEP-41 layout (no schema-version topic) so wallets and indexers recognize them.",
+      "types": {
+        "InitializedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "pool",
+              "type": "address"
+            },
+            {
+              "name": "decimals",
+              "type": "u32"
+            },
+            {
+              "name": "name",
+              "type": "string"
+            },
+            {
+              "name": "symbol",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "events": [
+        {
+          "name": "initialized",
+          "topics": [],
+          "data": "InitializedEvent",
+          "state": "The share token is live: only `pool` may mint; balances start at zero."
+        },
+        {
+          "name": "approve",
+          "topics": [
+            {
+              "name": "from",
+              "type": "address"
+            },
+            {
+              "name": "spender",
+              "type": "address"
+            }
+          ],
+          "data": "tuple<i128,u32>",
+          "state": "`spender` may move up to `amount` (data.0) of `from`'s balance until ledger `expiration_ledger` (data.1), replacing any earlier allowance. SEP-41.",
+          "versioned": false
+        },
+        {
+          "name": "transfer",
+          "topics": [
+            {
+              "name": "from",
+              "type": "address"
+            },
+            {
+              "name": "to",
+              "type": "address"
+            }
+          ],
+          "data": "i128",
+          "state": "`amount` moves from `from` to `to` (also emitted by `transfer_from`, which additionally reduces the spender's allowance). SEP-41.",
+          "versioned": false
+        },
+        {
+          "name": "mint",
+          "topics": [
+            {
+              "name": "admin",
+              "type": "address"
+            },
+            {
+              "name": "to",
+              "type": "address"
+            }
+          ],
+          "data": "i128",
+          "state": "`amount` new shares are created for `to` by the pool (`admin`). SEP-41.",
+          "versioned": false
+        },
+        {
+          "name": "burn",
+          "topics": [
+            {
+              "name": "from",
+              "type": "address"
+            }
+          ],
+          "data": "i128",
+          "state": "`amount` of `from`'s shares are destroyed (also emitted by `burn_from`). SEP-41.",
+          "versioned": false
+        }
+      ]
+    },
+    "multisig": {
+      "crate": "zenith-multisig",
+      "shared_events": [
+        "schema_migrated",
+        "migration_progress",
+        "upgrade_proposed",
+        "upgrade_cancelled",
+        "upgraded",
+        "upgrade_checked",
+        "upgrade_check_failed"
+      ],
+      "types": {
+        "SignerWeight": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "address",
+              "type": "address"
+            },
+            {
+              "name": "weight",
+              "type": "u32"
+            }
+          ]
+        },
+        "SignerChange": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "add",
+              "type": "vec<SignerWeight>"
+            },
+            {
+              "name": "remove",
+              "type": "vec<address>"
+            },
+            {
+              "name": "new_threshold",
+              "type": "u32"
+            },
+            {
+              "name": "new_rotation_threshold",
+              "type": "u32"
+            },
+            {
+              "name": "epoch",
+              "type": "u32"
+            },
+            {
+              "name": "nonce",
+              "type": "u64"
+            }
+          ]
+        },
+        "InitializedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "signers",
+              "type": "map<address,u32>"
+            },
+            {
+              "name": "threshold",
+              "type": "u32"
+            },
+            {
+              "name": "approval_ttl",
+              "type": "u64"
+            },
+            {
+              "name": "rotation_threshold",
+              "type": "u32"
+            },
+            {
+              "name": "rotation_delay",
+              "type": "u64"
+            },
+            {
+              "name": "schema_version",
+              "type": "u32"
+            }
+          ]
+        },
+        "RegisteredEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "proposer",
+              "type": "address"
+            },
+            {
+              "name": "description_hash",
+              "type": "bytes32"
+            },
+            {
+              "name": "created_at",
+              "type": "u64"
+            }
+          ]
+        },
+        "ProposalCreatedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "target",
+              "type": "address"
+            },
+            {
+              "name": "function",
+              "type": "symbol"
+            },
+            {
+              "name": "args",
+              "type": "vec<val>"
+            },
+            {
+              "name": "nonce",
+              "type": "u64"
+            }
+          ]
+        },
+        "ApprovedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "description_hash",
+              "type": "bytes32"
+            },
+            {
+              "name": "approved_at",
+              "type": "u64"
+            },
+            {
+              "name": "approval_count",
+              "type": "u32"
+            },
+            {
+              "name": "approval_weight",
+              "type": "u32"
+            },
+            {
+              "name": "epoch",
+              "type": "u32"
+            }
+          ]
+        },
+        "RevokedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "description_hash",
+              "type": "bytes32"
+            },
+            {
+              "name": "approval_count",
+              "type": "u32"
+            },
+            {
+              "name": "approval_weight",
+              "type": "u32"
+            }
+          ]
+        },
+        "ActionFinishedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "description_hash",
+              "type": "bytes32"
+            }
+          ]
+        },
+        "ActionExpiredEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "description_hash",
+              "type": "bytes32"
+            },
+            {
+              "name": "execute_by",
+              "type": "u64"
+            }
+          ]
+        },
+        "VetoedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "vetoer",
+              "type": "address"
+            },
+            {
+              "name": "description_hash",
+              "type": "bytes32"
+            }
+          ]
+        },
+        "VetoerSetEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "vetoer",
+              "type": "address"
+            }
+          ]
+        },
+        "ExecuteBySetEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "execute_by",
+              "type": "u64"
+            }
+          ]
+        },
+        "SingleKeyQuorumEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "weight",
+              "type": "u32"
+            },
+            {
+              "name": "threshold",
+              "type": "u32"
+            }
+          ]
+        },
+        "SignerChangeProposedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "proposer",
+              "type": "address"
+            },
+            {
+              "name": "change",
+              "type": "SignerChange"
+            }
+          ]
+        },
+        "SignerChangeQueuedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "ready_at",
+              "type": "u64"
+            }
+          ]
+        },
+        "SignerChangeVetoedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "signer",
+              "type": "address"
+            }
+          ]
+        },
+        "SignersRotatedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "epoch",
+              "type": "u32"
+            },
+            {
+              "name": "signers",
+              "type": "map<address,u32>"
+            },
+            {
+              "name": "threshold",
+              "type": "u32"
+            },
+            {
+              "name": "rotation_threshold",
+              "type": "u32"
+            }
+          ]
+        },
+        "UpgradeApprovedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "signer",
+              "type": "address"
+            },
+            {
+              "name": "approvals",
+              "type": "u32"
+            },
+            {
+              "name": "signer_count",
+              "type": "u32"
+            }
+          ]
+        },
+        "UpgradeRevokedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "signer",
+              "type": "address"
+            },
+            {
+              "name": "approvals",
+              "type": "u32"
+            }
+          ]
+        }
+      },
+      "events": [
+        {
+          "name": "initialized",
+          "topics": [],
+          "data": "InitializedEvent",
+          "state": "The multisig is live with these signers and weights, signer-set epoch 0 and no actions."
+        },
+        {
+          "name": "registered",
+          "topics": [
+            {
+              "name": "action_id",
+              "type": "bytes32"
+            }
+          ],
+          "data": "RegisteredEvent",
+          "state": "Action `action_id` enters the registry as `Pending` (and the pending index) with `description_hash`. Emitted by `register_action`, the first `approve` of an unknown id, `propose` and `propose_signer_change`."
+        },
+        {
+          "name": "proposal_created",
+          "topics": [
+            {
+              "name": "proposal_id",
+              "type": "bytes32"
+            }
+          ],
+          "data": "ProposalCreatedEvent",
+          "state": "Executor proposal `proposal_id` will call `target.function(args)` as the multisig once approved. Its `registered` event carries `description_hash == proposal_id`."
+        },
+        {
+          "name": "approved",
+          "topics": [
+            {
+              "name": "action_id",
+              "type": "bytes32"
+            },
+            {
+              "name": "signer",
+              "type": "address"
+            }
+          ],
+          "data": "ApprovedEvent",
+          "state": "`signer`'s approval of `action_id` is recorded (or refreshed) at `approved_at` in signer-set `epoch`. Fresh approvals now total `approval_count` / `approval_weight`; the action is approved while the weight is at least the threshold, the approvals are fresh and any `execute_by` hasn't passed."
+        },
+        {
+          "name": "revoked",
+          "topics": [
+            {
+              "name": "action_id",
+              "type": "bytes32"
+            },
+            {
+              "name": "signer",
+              "type": "address"
+            }
+          ],
+          "data": "RevokedEvent",
+          "state": "`signer` withdrew their approval of `action_id`; fresh approvals now total `approval_count` / `approval_weight`."
+        },
+        {
+          "name": "reset",
+          "topics": [
+            {
+              "name": "action_id",
+              "type": "bytes32"
+            }
+          ],
+          "data": "ActionFinishedEvent",
+          "state": "Action `action_id` moves to `Reset` (also for a vetoed signer change): approvals cleared, removed from the pending index."
+        },
+        {
+          "name": "expired",
+          "topics": [
+            {
+              "name": "action_id",
+              "type": "bytes32"
+            }
+          ],
+          "data": "ActionFinishedEvent",
+          "state": "Action `action_id` moves to `Expired` because every approval went stale under the approval TTL: approvals cleared, removed from the pending index."
+        },
+        {
+          "name": "action_expired",
+          "topics": [
+            {
+              "name": "action_id",
+              "type": "bytes32"
+            }
+          ],
+          "data": "ActionExpiredEvent",
+          "state": "Action `action_id` moves to `Expired` because its `execute_by` deadline passed: approvals cleared, removed from the pending index."
+        },
+        {
+          "name": "executed",
+          "topics": [
+            {
+              "name": "action_id",
+              "type": "bytes32"
+            }
+          ],
+          "data": "ActionFinishedEvent",
+          "state": "Action `action_id` moves to `Executed` (an executor proposal ran, or a signer change applied): approvals cleared, removed from the pending index. It can never be approved again."
+        },
+        {
+          "name": "vetoed",
+          "topics": [
+            {
+              "name": "action_id",
+              "type": "bytes32"
+            }
+          ],
+          "data": "VetoedEvent",
+          "state": "The vetoer moved action `action_id` to `Vetoed`: approvals cleared, removed from the pending index, never approvable again."
+        },
+        {
+          "name": "vetoer_set",
+          "topics": [],
+          "data": "VetoerSetEvent",
+          "state": "The one-time vetoer is now `vetoer` (immutable from here on)."
+        },
+        {
+          "name": "execute_by_set",
+          "topics": [
+            {
+              "name": "action_id",
+              "type": "bytes32"
+            }
+          ],
+          "data": "ExecuteBySetEvent",
+          "state": "Action `action_id` stops counting as approved after `execute_by` (inclusive)."
+        },
+        {
+          "name": "single_key_quorum",
+          "topics": [
+            {
+              "name": "signer",
+              "type": "address"
+            }
+          ],
+          "data": "SingleKeyQuorumEvent",
+          "state": "Warning, no state change: `signer`'s `weight` alone meets the approval `threshold` (emitted on initialize and on every rotation)."
+        },
+        {
+          "name": "signer_change_proposed",
+          "topics": [
+            {
+              "name": "change_id",
+              "type": "bytes32"
+            }
+          ],
+          "data": "SignerChangeProposedEvent",
+          "state": "Signer change `change_id` (`change`) is proposed in signer-set epoch `change.epoch`; it needs the rotation threshold, then `queue_signer_change` and the rotation delay."
+        },
+        {
+          "name": "signer_change_queued",
+          "topics": [
+            {
+              "name": "change_id",
+              "type": "bytes32"
+            }
+          ],
+          "data": "SignerChangeQueuedEvent",
+          "state": "Signer change `change_id` reached the rotation threshold; it becomes executable at `ready_at`."
+        },
+        {
+          "name": "signer_change_vetoed",
+          "topics": [
+            {
+              "name": "change_id",
+              "type": "bytes32"
+            }
+          ],
+          "data": "SignerChangeVetoedEvent",
+          "state": "`signer` killed signer change `change_id`: it moves to `Reset`, its approvals are cleared and it leaves the pending index."
+        },
+        {
+          "name": "signers_rotated",
+          "topics": [
+            {
+              "name": "change_id",
+              "type": "bytes32"
+            }
+          ],
+          "data": "SignersRotatedEvent",
+          "state": "Signer change `change_id` applied: the signer set, threshold and rotation threshold are now as given, and the signer-set epoch is `epoch`, which voids every outstanding approval."
+        },
+        {
+          "name": "upgrade_approved",
+          "topics": [
+            {
+              "name": "wasm_hash",
+              "type": "bytes32"
+            }
+          ],
+          "data": "UpgradeApprovedEvent",
+          "state": "`signer` consents to upgrading the multisig to `wasm_hash`; `approvals` of `signer_count` signers have. At unanimity the hash is allowlisted (`upgrade_proposed`)."
+        },
+        {
+          "name": "upgrade_revoked",
+          "topics": [
+            {
+              "name": "wasm_hash",
+              "type": "bytes32"
+            }
+          ],
+          "data": "UpgradeRevokedEvent",
+          "state": "`signer` withdrew consent to `wasm_hash` (now `approvals`); if it was allowlisted it no longer is (`upgrade_cancelled`)."
+        }
+      ]
+    },
+    "params": {
+      "crate": "zenith-params",
+      "shared_events": [
+        "schema_migrated",
+        "migration_progress"
+      ],
+      "types": {
+        "InitializedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "timelock",
+              "type": "address"
+            },
+            {
+              "name": "schema_version",
+              "type": "u32"
+            }
+          ]
+        },
+        "ParamDefinedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "value",
+              "type": "i128"
+            },
+            {
+              "name": "min",
+              "type": "i128"
+            },
+            {
+              "name": "max",
+              "type": "i128"
+            },
+            {
+              "name": "updated_at",
+              "type": "u64"
+            },
+            {
+              "name": "version",
+              "type": "u64"
+            }
+          ]
+        },
+        "ParamUpdatedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "old_value",
+              "type": "i128"
+            },
+            {
+              "name": "new_value",
+              "type": "i128"
+            },
+            {
+              "name": "updated_at",
+              "type": "u64"
+            },
+            {
+              "name": "version",
+              "type": "u64"
+            }
+          ]
+        },
+        "BoundsProposedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "min",
+              "type": "i128"
+            },
+            {
+              "name": "max",
+              "type": "i128"
+            },
+            {
+              "name": "eta",
+              "type": "u64"
+            }
+          ]
+        },
+        "BoundsUpdatedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "min",
+              "type": "i128"
+            },
+            {
+              "name": "max",
+              "type": "i128"
+            },
+            {
+              "name": "updated_at",
+              "type": "u64"
+            },
+            {
+              "name": "version",
+              "type": "u64"
+            }
+          ]
+        },
+        "BoundsCancelledEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "min",
+              "type": "i128"
+            },
+            {
+              "name": "max",
+              "type": "i128"
+            },
+            {
+              "name": "eta",
+              "type": "u64"
+            }
+          ]
+        }
+      },
+      "events": [
+        {
+          "name": "initialized",
+          "topics": [],
+          "data": "InitializedEvent",
+          "state": "The registry is live: `timelock` controls it, the registry version is 0 and the schema is `schema_version`."
+        },
+        {
+          "name": "param_defined",
+          "topics": [
+            {
+              "name": "key",
+              "type": "symbol"
+            }
+          ],
+          "data": "ParamDefinedEvent",
+          "state": "Creates parameter `key` with `value` inside `[min, max]`. The registry version becomes `version`."
+        },
+        {
+          "name": "param_updated",
+          "topics": [
+            {
+              "name": "key",
+              "type": "symbol"
+            }
+          ],
+          "data": "ParamUpdatedEvent",
+          "state": "Parameter `key`'s value changes from `old_value` to `new_value` (bounds unchanged). The registry version becomes `version`."
+        },
+        {
+          "name": "bounds_proposed",
+          "topics": [
+            {
+              "name": "key",
+              "type": "symbol"
+            }
+          ],
+          "data": "BoundsProposedEvent",
+          "state": "Queues new bounds `[min, max]` for `key`, executable from `eta`. Replaces any pending proposal for `key`."
+        },
+        {
+          "name": "bounds_updated",
+          "topics": [
+            {
+              "name": "key",
+              "type": "symbol"
+            }
+          ],
+          "data": "BoundsUpdatedEvent",
+          "state": "Parameter `key`'s bounds become `[min, max]` and its pending proposal is cleared. The registry version becomes `version`."
+        },
+        {
+          "name": "bounds_cancelled",
+          "topics": [
+            {
+              "name": "key",
+              "type": "symbol"
+            }
+          ],
+          "data": "BoundsCancelledEvent",
+          "state": "Parameter `key`'s pending bounds proposal (`[min, max]`, due `eta`) is dropped."
+        }
+      ]
+    },
+    "staking": {
+      "crate": "zenith-staking",
+      "shared_events": [
+        "schema_migrated",
+        "migration_progress"
+      ],
+      "types": {
+        "InitializedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "stake_token",
+              "type": "address"
+            },
+            {
+              "name": "splitter",
+              "type": "address"
+            },
+            {
+              "name": "cooldown",
+              "type": "u64"
+            },
+            {
+              "name": "schema_version",
+              "type": "u32"
+            }
+          ]
+        },
+        "StakedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "amount",
+              "type": "i128"
+            },
+            {
+              "name": "stake",
+              "type": "i128"
+            },
+            {
+              "name": "total_staked",
+              "type": "i128"
+            }
+          ]
+        },
+        "UnstakeRequestedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "amount",
+              "type": "i128"
+            },
+            {
+              "name": "stake",
+              "type": "i128"
+            },
+            {
+              "name": "pending",
+              "type": "i128"
+            },
+            {
+              "name": "unlock_at",
+              "type": "u64"
+            },
+            {
+              "name": "total_staked",
+              "type": "i128"
+            }
+          ]
+        },
+        "WithdrawnEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "amount",
+              "type": "i128"
+            }
+          ]
+        },
+        "RewardNotifiedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "amount",
+              "type": "i128"
+            },
+            {
+              "name": "reward_per_token",
+              "type": "i128"
+            },
+            {
+              "name": "undistributed",
+              "type": "i128"
+            },
+            {
+              "name": "total_staked",
+              "type": "i128"
+            }
+          ]
+        },
+        "CarryoverDistributedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "amount",
+              "type": "i128"
+            },
+            {
+              "name": "reward_per_token",
+              "type": "i128"
+            },
+            {
+              "name": "total_staked",
+              "type": "i128"
+            }
+          ]
+        },
+        "RewardClaimedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "amount",
+              "type": "i128"
+            }
+          ]
+        }
+      },
+      "events": [
+        {
+          "name": "initialized",
+          "topics": [],
+          "data": "InitializedEvent",
+          "state": "Staking is live: `stake_token` is staked, only `splitter` may notify rewards, unstakes wait `cooldown` seconds."
+        },
+        {
+          "name": "staked",
+          "topics": [
+            {
+              "name": "user",
+              "type": "address"
+            }
+          ],
+          "data": "StakedEvent",
+          "state": "`user` staked `amount`; their earning stake is now `stake` and the total `total_staked`. Accrual up to the current accumulator was settled first."
+        },
+        {
+          "name": "unstake_requested",
+          "topics": [
+            {
+              "name": "user",
+              "type": "address"
+            }
+          ],
+          "data": "UnstakeRequestedEvent",
+          "state": "`amount` of `user`'s stake stops earning; their earning stake is now `stake`, their pending unstake `pending`, withdrawable from `unlock_at` (restarted)."
+        },
+        {
+          "name": "withdrawn",
+          "topics": [
+            {
+              "name": "user",
+              "type": "address"
+            }
+          ],
+          "data": "WithdrawnEvent",
+          "state": "`user`'s whole pending unstake, `amount`, was paid out and cleared."
+        },
+        {
+          "name": "reward_notified",
+          "topics": [
+            {
+              "name": "token",
+              "type": "address"
+            }
+          ],
+          "data": "RewardNotifiedEvent",
+          "state": "`amount` of `token` arrived. `RewardPerToken(token)` is now `reward_per_token`; `undistributed` is carried over if nothing was staked. A staker's accrual is `stake \u00d7 \u0394reward_per_token / 1e18`."
+        },
+        {
+          "name": "carryover_distributed",
+          "topics": [
+            {
+              "name": "token",
+              "type": "address"
+            }
+          ],
+          "data": "CarryoverDistributedEvent",
+          "state": "Carried-over `token` rewards (`amount`) went to the first stake after an empty pool: `RewardPerToken(token)` is now `reward_per_token` and the carry is zero."
+        },
+        {
+          "name": "reward_claimed",
+          "topics": [
+            {
+              "name": "user",
+              "type": "address"
+            },
+            {
+              "name": "token",
+              "type": "address"
+            }
+          ],
+          "data": "RewardClaimedEvent",
+          "state": "`amount` of `token` accrued to `user` was paid out; their owed balance in `token` is zero."
+        }
+      ]
+    },
+    "streams": {
+      "crate": "zenith-streams",
+      "shared_events": [
+        "schema_migrated",
+        "migration_progress"
+      ],
+      "types": {
+        "InitializedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "governance",
+              "type": "address"
+            },
+            {
+              "name": "schema_version",
+              "type": "u32"
+            }
+          ]
+        },
+        "StreamCreatedEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "funder",
+              "type": "address"
+            },
+            {
+              "name": "recipient",
+              "type": "address"
+            },
+            {
+              "name": "token",
+              "type": "address"
+            },
+            {
+              "name": "total",
+              "type": "i128"
+            },
+            {
+              "name": "start",
+              "type": "u64"
+            },
+            {
+              "name": "cliff",
+              "type": "u64"
+            },
+            {
+              "name": "end",
+              "type": "u64"
+            }
+          ]
+        },
+        "WithdrawnEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "recipient",
+              "type": "address"
+            },
+            {
+              "name": "amount",
+              "type": "i128"
+            },
+            {
+              "name": "withdrawn",
+              "type": "i128"
+            }
+          ]
+        },
+        "StreamCanceledEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "caller",
+              "type": "address"
+            },
+            {
+              "name": "to_recipient",
+              "type": "i128"
+            },
+            {
+              "name": "to_funder",
+              "type": "i128"
+            },
+            {
+              "name": "streamed",
+              "type": "i128"
+            }
+          ]
+        },
+        "StreamTransferredEvent": {
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "from",
+              "type": "address"
+            },
+            {
+              "name": "to",
+              "type": "address"
+            }
+          ]
+        }
+      },
+      "events": [
+        {
+          "name": "initialized",
+          "topics": [],
+          "data": "InitializedEvent",
+          "state": "Streams is live: `governance` may cancel any stream and run migrations."
+        },
+        {
+          "name": "stream_created",
+          "topics": [
+            {
+              "name": "stream_id",
+              "type": "u64"
+            }
+          ],
+          "data": "StreamCreatedEvent",
+          "state": "Creates stream `stream_id`, funded with `total` of `token` pulled from `funder`, streaming linearly to `recipient` from `start` to `end` with nothing withdrawable before `cliff`. Nothing is withdrawn yet."
+        },
+        {
+          "name": "withdrawn",
+          "topics": [
+            {
+              "name": "stream_id",
+              "type": "u64"
+            }
+          ],
+          "data": "WithdrawnEvent",
+          "state": "`recipient` withdrew `amount`; the stream's cumulative withdrawn amount is now `withdrawn`."
+        },
+        {
+          "name": "stream_canceled",
+          "topics": [
+            {
+              "name": "stream_id",
+              "type": "u64"
+            }
+          ],
+          "data": "StreamCanceledEvent",
+          "state": "`caller` cancelled the stream: `to_recipient` went to the recipient and `to_funder` back to the funder. The stream is frozen with total and withdrawn both equal to `streamed`."
+        },
+        {
+          "name": "stream_transferred",
+          "topics": [
+            {
+              "name": "stream_id",
+              "type": "u64"
+            }
+          ],
+          "data": "StreamTransferredEvent",
+          "state": "The stream's recipient changes from `from` to `to`, accrued balance included."
+        }
+      ]
+    }
+  }
+}

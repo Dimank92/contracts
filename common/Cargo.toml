@@ -14,3 +14,5 @@ soroban-sdk = { workspace = true }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
+# Checks the framework's events against events.json (#126).
+event-spec = { path = "../tools/event-spec" }

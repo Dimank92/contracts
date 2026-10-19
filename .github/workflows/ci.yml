@@ -11,84 +11,53 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Embedded in every wasm as the `commit` contractmeta (common/build_meta.rs).
+  ZENITH_GIT_COMMIT: ${{ github.sha }}
+  STELLAR_CLI_VERSION: 28.1.0
 
-# Every job goes through `cargo xtask` (xtask/src/main.rs). Contracts that
-# contractimport! other contracts' wasm declare them in
-# `[package.metadata.zenith] wasm-deps`, and xtask builds that wasm in
-# dependency order into the shared target/ — so there are no per-crate
-# build chains here. `cargo xtask ci` runs all of it locally.
+# Every job goes through `cargo xtask` (xtask/src/main.rs, `cargo xtask
+# help`). Contracts that contractimport! other contracts' wasm declare them
+# in `[package.metadata.zenith] wasm-deps`, and xtask builds that wasm in
+# dependency order into the shared target/, so there are no per-crate
+# build chains here. Crates listed under `[workspace.metadata.zenith]
+# incomplete` (sources missing on main, see README "Known gaps") are
+# skipped. `cargo xtask ci` runs lint + build + test locally.
 #
-# options_market cross-contract-calls price_oracle, multisig, vault, AND
-# params (its parameter registry) via
-# soroban-sdk's contractimport! against their compiled wasm (not a normal
-# source dependency, to avoid linking their own contract functions into
-# options_market's wasm and colliding on shared names like
-# pause/transfer_admin). That means all four wasm files have to exist
-# before options_market can even be *compiled*, native target included —
-# every job below installs wasm32-unknown-unknown and builds price_oracle's,
-# multisig's, vault's, and params' wasm first when it's about to touch
-# options_market.
-#
-# price_oracle and vault each also now cross-call multisig the same way
-# (for pause_via_multisig/unpause_via_multisig/transfer_admin_via_multisig),
-# so both need multisig's wasm built first too — that's also why the
-# multisig build step above runs before the vault build step, not just
-# before options_market's.
-#
-        crate: [options_market, price_oracle, vault, multisig, streams, staking, timelock, governor, lp_token, lp_pool, integration_tests]
+# binaryen is installed wherever wasm is built: `cargo xtask build`
+# re-encodes the wasm as MVP so the Soroban 21 host can load it (README,
+# "Building and testing").
+
 jobs:
-  fmt:
+  lint:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        crate: [options_market, price_oracle, vault, multisig, common, streams, staking, timelock, governor, params, grants_escrow, lp_token, lp_pool, integration_tests, tools/spec-diff, tools/resource-sna
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo xtask fmt --check
-
-  clippy:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        crate: [options_market, price_oracle, vault, multisig, common, streams, staking, timelock, governor, params, grants_escrow, lp_token, lp_pool, integration_tests, tools/spec-diff, tools/resource-snapshot]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
+          components: rustfmt, clippy
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+      - run: cargo xtask fmt --check
       - run: cargo xtask check-imports
+      # No unwrap/expect/panic in contract code; every entrypoint returns
+      # Result (#124).
+      - run: cargo xtask check-panics
+      # docs/errors.md and docs/events-reference.md match the sources.
+      - run: cargo xtask errors --check
+      - run: cargo xtask events --check
       - run: cargo xtask clippy
 
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        crate: [options_market, price_oracle, vault, multisig, common, streams, staking, timelock, governor, params, grants_escrow, lp_token, lp_pool, integration_tests, tools/resource-snapshot]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - run: cargo fmt --check
-        working-directory: ${{ matrix.crate }}
-
-  wasm:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        crate: [options_market, price_oracle, vault, multisig, streams, staking, timelock, governor, params, grants_escrow, lp_token, lp_pool, integration_tests]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y binaryen
+      # Includes each crate's extra-test run, e.g. multisig's upgrade-wasm
+      # tests against its own built wasm.
       - run: cargo xtask test
 
   wasm:
@@ -99,24 +68,7 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - run: cargo xtask build
-      # Fails if soroban-sdk/testutils
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo xtask test
-
-  wasm:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y binaryen
       - run: cargo xtask build
       # Fails if soroban-sdk/testutils (or the host) leaked into any
       # release wasm through workspace feature unification.
@@ -125,6 +77,36 @@ jobs:
         with:
           name: wasm
           path: target/wasm32-unknown-unknown/release/*.wasm
+
+  # The @zenith/contracts TypeScript package (#125): generated clients must
+  # match the contracts' current spec, and the package must type-check.
+  bindings:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y binaryen
+      - name: Install stellar-cli
+        run: |
+          curl -sSfL -o /tmp/stellar.tgz \
+            "https://github.com/stellar/stellar-cli/releases/download/v${STELLAR_CLI_VERSION}/stellar-cli-${STELLAR_CLI_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          mkdir -p "$HOME/.local/bin" && tar xzf /tmp/stellar.tgz -C "$HOME/.local/bin" stellar
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: cargo xtask bindings --check
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: bindings/package-lock.json
+      - run: npm ci
+        working-directory: bindings
+      - run: npm run typecheck
+        working-directory: bindings
+      - run: npm test
+        working-directory: bindings
 
   # Public-ABI guard: every existing function, type and error in each
   # contract's spec must survive unchanged (additions are fine) unless
@@ -141,34 +123,26 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y binaryen
       - run: tools/spec-diff/check.sh origin/${{ github.base_ref }}
 
   budgets:
     runs-on: ubuntu-latest
     env:
-      # Build order: options_market needs multisig, price_oracle, vault and
-      # params wasm first (see the note at the top of this file).
-      CONTRACTS: multisig price_oracle vault params options_market streams staking governor grants_escrow
+      CONTRACTS: governor grants_escrow lp_pool lp_token multisig params staking streams
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - name: Install wasm-opt (binaryen)
         run: sudo apt-get update && sudo apt-get install -y binaryen
-      - name: Build every contract wasm
-        run: |
-          for c in $CONTRACTS; do
-            (cd "$c" && cargo build --target wasm32-unknown-unknown --release)
-          done
+      - run: cargo xtask build
       # Prints raw and optimized size per contract to the job summary and
-      # fails above budget. --in-place swaps each release wasm for its
-      # optimized build so the steps below test what would be deployed.
+      # fails above budget.
       - name: Optimize and enforce wasm size budgets
-        run: scripts/wasm-size/check.sh --in-place $CONTRACTS
+        run: scripts/wasm-size/check.sh $CONTRACTS
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -179,16 +153,3 @@ jobs:
         if: always()
         run: cargo test
         working-directory: tools/resource-snapshot
-      # Registers the optimized options_market wasm (resource-wasm feature)
-      # and fails if any metric regresses more than its tolerance (5% by
-      # default) against options_market/snapshots/resources/.
-      - name: Resource snapshots (optimized wasm)
-        if: always()
-        run: cargo test --features resource-wasm resource_snapshots
-        working-directory: options_market
-      - name: Resource summary table
-        if: always()
-        run: >
-          python3 scripts/resource-diff/resource_diff.py
-          ${{ github.event_name == 'pull_request' && format('--base-ref origin/{0}', github.base_ref) || '' }}
-          options_market
