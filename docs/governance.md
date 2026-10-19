@@ -11,7 +11,7 @@ path from today's single admin to this end state is in
 | Contract   | Role |
 |------------|------|
 | `governor` | Proposals, voting, quorum. Queues passed proposals into the timelock. |
-| `timelock` | Admin of every protocol contract. Delays each call by `min_delay`; anyone may execute a ready operation. |
+| `timelock` | Admin of every protocol contract. Delays each call by `min_delay`; anyone may execute a ready operation. Holds a proposer, an executor and a canceller role, and no admin of its own. |
 | ZEN token  | Checkpointed voting token exposing `get_past_votes(account, ledger)` and `get_past_total_supply(ledger)`. The governor calls it through the `Votes` interface in `governor/src/interfaces.rs`. |
 
 ## Proposal lifecycle
@@ -41,8 +41,12 @@ propose ──► Pending ──(voting_delay)──► Active ──(voting_per
    `for > against`. A tie is a defeat. Quorum is
    `quorum_bps × past_total_supply(snapshot) / 10 000`.
 5. **Queue** — anyone calls `queue(id)`; the governor schedules the batch in
-   the timelock under the same id with the timelock's `min_delay`.
-6. **Execute** — after the delay, anyone calls `timelock.execute(id)`. The
+   the timelock under the proposal's own id as the salt, with the timelock's
+   `min_delay`. The timelock derives the operation id from the batch, the
+   predecessor and the salt, so the governor derives the same id back whenever
+   it needs to ask about the operation.
+6. **Execute** — after the delay, anyone calls
+   `timelock.execute(executor, targets, fns, args, predecessor, salt)`. The
    governor reports **Executed** once the timelock marks it done, or
    **Expired** if `grace_period` passes first.
 
@@ -52,7 +56,7 @@ propose ──► Pending ──(voting_delay)──► Active ──(voting_per
 - **Anyone** may cancel a Pending/Active/Succeeded/Queued proposal if the
   proposer's current voting power has dropped below `proposal_threshold`.
   Cancelling a queued proposal also removes it from the timelock.
-- Until lock-in, the timelock **guardian** can cancel any queued operation.
+- The timelock's **canceller** can cancel any queued operation.
 
 ## Parameters
 
@@ -67,7 +71,10 @@ arrives from the timelock). Ledgers assume ~5 s.
 | `proposal_threshold` | `set_proposal_threshold`  | ≥ 0 |
 
 Timelock settings are changed by a proposal whose target is the timelock
-itself with `set_delay(u64)`, `set_prop(Address)` or `lock_in()`.
+itself: `update_delay(u64)`, `grant_role(Role, Address)`,
+`revoke_role(Role, Address)` or `set_open_executor(bool)`. There is no instant
+path — every change to the timelock waits out the delay like any other
+operation.
 
 ## Attack resistance
 
@@ -77,7 +84,7 @@ itself with `set_delay(u64)`, `set_prop(Address)` or `lock_in()`.
 | Double voting | One vote per address per proposal (`has_voted`). Moving tokens after the snapshot does not create new power. |
 | Proposal spam | `proposal_threshold`, and anyone can cancel a proposal whose proposer has sold below it. |
 | Quorum manipulation | Quorum uses total supply at the snapshot, not at vote time. |
-| Malicious proposal passes | `min_delay` gives users time to exit; before lock-in the guardian can cancel. |
+| Malicious proposal passes | `min_delay` gives users time to exit; before lock-in a canceller can cancel it. |
 
 ## Why the timelock executes, not the governor
 
@@ -85,3 +92,4 @@ Soroban forbids a contract from being re-entered. If the governor called the
 timelock and the timelock called back into the governor (for example, to change
 `quorum_bps`), the call would fail. The timelock's `execute` is therefore
 open to anyone, and the governor never sits in the execution call stack.
+
