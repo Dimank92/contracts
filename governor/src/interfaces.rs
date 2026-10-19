@@ -13,19 +13,35 @@ pub trait Votes {
 }
 
 /// Subset of the Zenith timelock used by the governor.
+///
+/// The timelock derives an operation's id from the batch it carries, the
+/// predecessor it waits on and a salt, so the governor cannot name an
+/// operation directly: it queues the proposal under the proposal's own id as
+/// the salt and derives the operation id from the same inputs.
 #[allow(dead_code)]
 #[contractclient(name = "TimelockClient")]
 pub trait Timelock {
     fn schedule(
         env: Env,
-        op_id: BytesN<32>,
+        proposer: Address,
         targets: Vec<Address>,
         fns: Vec<Symbol>,
         args: Vec<Vec<Val>>,
+        predecessor: Option<BytesN<32>>,
+        salt: BytesN<32>,
         delay: u64,
-    ) -> u64;
-    fn is_done(env: Env, op_id: BytesN<32>) -> bool;
-    fn cancel(env: Env, caller: Address, op_id: BytesN<32>);
+    ) -> BytesN<32>;
+    fn hash_operation(
+        env: Env,
+        targets: Vec<Address>,
+        fns: Vec<Symbol>,
+        args: Vec<Vec<Val>>,
+        predecessor: Option<BytesN<32>>,
+        salt: BytesN<32>,
+    ) -> BytesN<32>;
+    fn is_operation_done(env: Env, id: BytesN<32>) -> bool;
+    fn cancel(env: Env, canceller: Address, id: BytesN<32>);
     fn get_min_delay(env: Env) -> u64;
     fn get_grace_period(env: Env) -> u64;
+    fn get_timestamp(env: Env, id: BytesN<32>) -> u64;
 }

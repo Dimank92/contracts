@@ -5,15 +5,17 @@
 source "$(dirname "$0")/common.sh"
 require MULTISIG_ACCOUNT PHASE
 
-ID=$(op_id "rollback-stage2-$MARKET_ID")
+SALT=$(salt "rollback-stage2-$MARKET_ID")
 ARG="[{\"address\":\"$MULTISIG_ACCOUNT\"}]"
 case "$PHASE" in
   schedule)
-    tl_schedule "$MULTISIG_ACCOUNT" "$ID" \
-      "[\"$MARKET_ID\",\"$ORACLE_ID\"]" '["transfer_admin","transfer_admin"]' "[$ARG,$ARG]"
+    tl_schedule "$MULTISIG_ACCOUNT" \
+      "[\"$MARKET_ID\",\"$ORACLE_ID\"]" '["transfer_admin","transfer_admin"]' "[$ARG,$ARG]" "$SALT"
     ;;
   execute)
-    tl_execute "$MULTISIG_ACCOUNT" "$ID"
+    tl_execute "$MULTISIG_ACCOUNT" \
+      "[\"$MARKET_ID\",\"$ORACLE_ID\"]" '["transfer_admin","transfer_admin"]' "[$ARG,$ARG]" "$SALT"
     show_admins
     ;;
 esac
+

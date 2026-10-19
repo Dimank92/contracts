@@ -958,34 +958,42 @@ seconds before it can run. Modelled on OpenZeppelin's TimelockController.
 
 | Function | Description |
 |---|---|
-| `initialize(min_delay, proposers, executors, cancellers)` | One-time setup. Empty `executors` means anyone may execute a ready operation. There is no admin afterwards. |
-| `schedule(proposer, calls, predecessor, salt, delay) -> id` | Proposer-only. `calls` is a `Vec<Call { target, function, args }>`; `delay >= min_delay`. The id is `sha256(xdr((calls, predecessor, salt)))` (see `hash_operation`). Rejects an id that's already pending or done. |
-| `execute(executor, calls, predecessor, salt)` | Executor-only (unless open). Requires the operation ready and `predecessor` (if any) done. Runs every call in order via `invoke_contract`; any revert reverts the whole batch. |
-| `cancel(canceller, id)` | Canceller-only. Removes a pending operation. |
+| `initialize(min_delay, grace_period, proposers, executors, cancellers)` | One-time setup. Empty `executors` means anyone may execute a ready operation. There is no admin afterwards. `min_delay` may not be below the documented floor, and `grace_period` is how long a ready operation stays executable. |
+| `schedule(proposer, targets, fns, args, predecessor, salt, delay) -> id` | Proposer-only. The batch is three parallel vectors — the target, the function and the arguments of each call. `delay >= min_delay`. The id is derived from the batch, the predecessor and the salt (see `hash_operation`). Rejects an id that's already pending or done. |
+| `execute(executor, targets, fns, args, predecessor, salt)` | Executor-only (unless open). Requires the operation ready, not expired, and `predecessor` (if any) done. Runs every call in order via `invoke_contract`; any revert reverts the whole batch. |
+| `cancel(canceller, id)` | Canceller-only. Removes a pending operation, so anything waiting on it as a predecessor is stranded for good. |
 
-**Self-administration.** Soroban forbids re-entry, so a `Call` whose
-`target` is the timelock itself is dispatched internally by `execute`:
+**Three roles, no admin.** `Proposer` may schedule, `Executor` may execute,
+`Canceller` may cancel. There is no fourth role and no owner: the timelock's
+own configuration is changed the same way everything else is, by scheduling an
+operation that targets the timelock itself.
+
+**Self-administration.** Soroban forbids re-entry, so a call whose target is
+the timelock itself is dispatched internally by `execute`:
 `update_delay(u64)`, `grant_role(Role, Address)`, `revoke_role(Role, Address)`,
-`set_open_executor(bool)`. These changes are therefore only reachable
-through a delayed operation.
+`set_open_executor(bool)` and `migrate(u32, u32)`. These changes are therefore
+only reachable through a delayed operation.
 
 **Views:** `get_timestamp(id)` (0 unknown, 1 done, else ready-at),
 `is_operation`, `is_operation_pending`, `is_operation_ready`,
-`is_operation_done`, `get_min_delay`, `has_role(role, account)`,
-`is_open_executor`, `hash_operation`.
+`is_operation_done`, `get_operation`, `get_min_delay`, `get_grace_period`,
+`has_role(role, account)`, `is_open_executor`, `hash_operation`, plus the
+migration framework's `schema_version`, `migration_state` and
+`migrate_batch`.
 
 **Events:** `scheduled`, `executed`, `cancelled`, `min_delay_changed`, `role_changed`.
 
 **Errors:** 1 `AlreadyInitialized`, 2 `Unauthorized`, 3 `InsufficientDelay`,
 4 `AlreadyScheduled`, 5 `NotReady`, 6 `PredecessorNotDone`, 7 `NotPending`,
-8 `UnknownSelfCall`, 9 `EmptyOperation`.
+8 `UnknownSelfCall`, 9 `EmptyOperation`, 10 `Expired`; 100–104 are the
+schema-migration errors every Zenith contract shares.
 
 ### Operations guide
 
 1. Deploy the timelock, then `transfer_admin(timelock)` on each contract.
-2. A proposer schedules the change, e.g. `calls = [Call { target: options_market, function: "set_fee_rate", args: [25u32] }]`, with a unique `salt`, and announces the id.
+2. A proposer schedules the change, e.g. `targets = [options_market]`, `fns = ["set_fee_rate"]`, `args = [[25u32]]`, with a unique `salt`, and announces the id `schedule` returns.
 3. During the delay users can exit; a canceller can `cancel(id)`.
-4. Once `is_operation_ready(id)`, an executor calls `execute` with the exact same `calls`/`predecessor`/`salt`.
+4. Once `is_operation_ready(id)`, an executor calls `execute` with the exact same `targets`/`fns`/`args`/`predecessor`/`salt`.
 5. Use `predecessor` to force ordering (e.g. a migration after an `upgrade`).
 
 ## `params` reference
@@ -1112,3 +1120,4 @@ start, limit)` (paginated, `limit` capped at 50). Events:
   fall outside this pattern entirely — none of them are admin-gated to
   begin with, so there's no single-signature check for a `_via_multisig`
   variant to replace.
+

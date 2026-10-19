@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Stage 3 → 4: a governor proposal calling the timelock's lock_in, which
-# permanently removes the guardian. IRREVERSIBLE.
+# Stage 3 → 4: a governor proposal revoking the multisig's timelock roles,
+# which permanently removes the rollback paths. IRREVERSIBLE.
 # PHASE=propose → vote (VOTER, SUPPORT=1) → queue → execute.
 source "$(dirname "$0")/common.sh"
 require PHASE
 
-DESC=$(op_id "Lock in governance handover")
-TARGETS="[\"$TIMELOCK_ID\"]"
-FNS='["lock_in"]'
-ARGS='[[]]'
+DESC=$(salt "Lock in governance handover")
+TARGETS="[\"$TIMELOCK_ID\",\"$TIMELOCK_ID\"]"
+FNS='["revoke_role","revoke_role"]'
+ARGS="[[$(role proposer),\"$MULTISIG_ACCOUNT\"],[$(role canceller),\"$MULTISIG_ACCOUNT\"]]"
 case "$PHASE" in
   propose)
     require PROPOSER
@@ -26,7 +26,8 @@ case "$PHASE" in
     ;;
   execute)
     require PROPOSAL_ID EXECUTOR
-    tl_execute "$EXECUTOR" "$PROPOSAL_ID"
-    echo "locked in: $(view "$TIMELOCK_ID" is_locked_in)"
+    tl_execute "$EXECUTOR" "$TARGETS" "$FNS" "$ARGS" "$PROPOSAL_ID"
+    echo "locked in: $(view "$TIMELOCK_ID" has_role --role "$(role proposer)" --account "$MULTISIG_ACCOUNT") (expect false)"
     ;;
 esac
+

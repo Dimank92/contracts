@@ -103,7 +103,7 @@ fn state_of(env: &Env, id: &BytesN<32>, p: &Proposal) -> ProposalState {
     if p.canceled {
         return ProposalState::Canceled;
     }
-    if p.eta != 0 && timelock(env).is_done(id) {
+    if p.eta != 0 && timelock(env).is_operation_done(&timelock_op_id(env, p, id)) {
         return ProposalState::Executed;
     }
     let seq = env.ledger().sequence();
@@ -125,6 +125,16 @@ fn state_of(env: &Env, id: &BytesN<32>, p: &Proposal) -> ProposalState {
         return ProposalState::Expired;
     }
     ProposalState::Queued
+}
+
+/// The timelock operation a queued proposal maps to.
+///
+/// The timelock derives an operation's id from the batch it carries, the
+/// predecessor it waits on and a salt. The governor queues a proposal under
+/// the proposal's own id as the salt, so the operation id is derived from
+/// the same inputs and can be recomputed from the proposal at any time.
+fn timelock_op_id(env: &Env, p: &Proposal, id: &BytesN<32>) -> BytesN<32> {
+    timelock(env).hash_operation(&p.targets, &p.fns, &p.args, &None, id)
 }
 
 fn cast(env: &Env, voter: Address, id: BytesN<32>, support: u32) -> i128 {
@@ -261,6 +271,9 @@ impl Governor {
     }
 
     /// Hands a succeeded proposal to the timelock with its minimum delay.
+    ///
+    /// The proposal's own id is the salt, so the timelock's operation id is
+    /// derived from the proposal and can be recomputed from it later.
     pub fn queue(env: Env, id: BytesN<32>) -> u64 {
         migrations::require_current(&env);
         let mut p = load(&env, &id);
@@ -268,11 +281,20 @@ impl Governor {
             panic_with_error!(&env, Error::InvalidState);
         }
         let tl = timelock(&env);
-        let eta = tl.schedule(&id, &p.targets, &p.fns, &p.args, &tl.get_min_delay());
-        p.eta = eta;
+        let delay = tl.get_min_delay();
+        let op = tl.schedule(
+            &env.current_contract_address(),
+            &p.targets,
+            &p.fns,
+            &p.args,
+            &None,
+            &id,
+            &delay,
+        );
+        p.eta = tl.get_timestamp(&op);
         save(&env, &id, &p);
-        events::proposal_queued(&env, id, eta);
-        eta
+        events::proposal_queued(&env, id, p.eta);
+        p.eta
     }
 
     /// The proposer may cancel while Pending. Anyone may cancel a
@@ -300,7 +322,8 @@ impl Governor {
         p.canceled = true;
         save(&env, &id, &p);
         if state == ProposalState::Queued {
-            timelock(&env).cancel(&env.current_contract_address(), &id);
+            let op = timelock_op_id(&env, &p, &id);
+            timelock(&env).cancel(&env.current_contract_address(), &op);
         }
         events::proposal_canceled(&env, id);
     }
@@ -445,3 +468,4 @@ impl Governor {
         events::param_set(env, "proposal_threshold", value);
     }
 }
+
