@@ -3,7 +3,7 @@
 use crate::{Role, Timelock, TimelockClient};
 use soroban_sdk::{
     contract, contractimpl,
-    testutils::{Address as _, Ledger as _},
+    testutils::{Address as _, Ledger as _, MockAuth, MockAuthInvoke},
     vec, Address, BytesN, Env, IntoVal, Symbol, Val, Vec,
 };
 
@@ -373,28 +373,28 @@ fn cancelling_a_predecessor_strands_its_dependant() {
 fn self_calls_reconfigure_the_timelock() {
     let h = setup();
     let e = &h.env;
-    let new_proposer = Address::generate(&e);
+    let new_proposer = Address::generate(e);
 
-    let delay_op = h.schedule_self(1, "update_delay", vec![&e, (2 * DELAY).into_val(&e)]);
+    let delay_op = h.schedule_self(1, "update_delay", vec![e, (2 * DELAY).into_val(e)]);
     let grant_op = h.schedule_self(
         2,
         "grant_role",
         vec![
-            &e,
-            Role::Proposer.into_val(&e),
-            new_proposer.clone().into_val(&e),
+            e,
+            Role::Proposer.into_val(e),
+            new_proposer.clone().into_val(e),
         ],
     );
     let revoke_op = h.schedule_self(
         3,
         "revoke_role",
         vec![
-            &e,
-            Role::Proposer.into_val(&e),
-            h.proposer.clone().into_val(&e),
+            e,
+            Role::Proposer.into_val(e),
+            h.proposer.clone().into_val(e),
         ],
     );
-    let open_op = h.schedule_self(4, "set_open_executor", vec![&e, true.into_val(&e)]);
+    let open_op = h.schedule_self(4, "set_open_executor", vec![e, true.into_val(e)]);
 
     h.warp(DELAY);
 
@@ -421,7 +421,7 @@ fn self_calls_reconfigure_the_timelock() {
 fn a_self_call_the_timelock_does_not_implement_is_refused() {
     let h = setup();
     let e = &h.env;
-    let op = h.schedule_self(1, "not_a_function", vec![&e]);
+    let op = h.schedule_self(1, "not_a_function", vec![e]);
     h.warp(DELAY);
     assert!(h.client.try_execute(&h.executor, &op).is_err());
 }
