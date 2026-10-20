@@ -42,4 +42,10 @@ pub enum Error {
     MigrationPending = 32,
     InvalidActiveSeriesCap = 33,
     InvalidPageLimit = 34,
+    // Migration errors (codes 100-104, same names across all Zenith contracts).
+    SchemaVersionMismatch = 100,
+    InvalidMigrationTarget = 101,
+    MigrationInProgress = 102,
+    NoMigrationInProgress = 103,
+    InvalidMigrationBatch = 104,
 }
