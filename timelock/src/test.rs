@@ -625,13 +625,8 @@ fn the_stored_operation_is_the_spec_it_was_scheduled_with() {
     assert_eq!(op.ready_at, DELAY);
     // The spec the id was derived from is the same one that was stored.
     assert_eq!(
-        h.client.hash_operation(
-            &op.targets,
-            &op.fns,
-            &op.args,
-            &None,
-            &op.salt,
-        ),
+        h.client
+            .hash_operation(&op.targets, &op.fns, &op.args, &None, &op.salt,),
         id
     );
 }
