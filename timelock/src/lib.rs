@@ -99,6 +99,19 @@ fn set_role(env: &Env, role: Role, account: &Address, granted: bool) {
     events::role_changed(env, role, account.clone(), granted);
 }
 
+/// The zero id, which stands for "no predecessor" in the stored form.
+fn no_predecessor(env: &Env) -> BytesN<32> {
+    BytesN::from_array(env, &[0u8; 32])
+}
+
+/// The stored form of a predecessor: the id, or the zero id for none.
+fn predecessor_id(env: &Env, predecessor: Option<BytesN<32>>) -> BytesN<32> {
+    match predecessor {
+        Some(id) => id,
+        None => no_predecessor(env),
+    }
+}
+
 fn load(env: &Env, id: &BytesN<32>) -> Option<Operation> {
     env.storage()
         .persistent()
@@ -248,7 +261,7 @@ impl Timelock {
                 targets,
                 fns,
                 args,
-                predecessor,
+                predecessor: predecessor_id(&env, predecessor),
                 salt,
                 ready_at,
                 done: false,
@@ -305,7 +318,8 @@ impl Timelock {
         // The predecessor must have executed. A cancelled predecessor is
         // gone from storage, so it reads as "not done" here: the dependant
         // stays unexecutable rather than running out of order.
-        if let Some(pred) = op.predecessor.clone() {
+        let pred = op.predecessor.clone();
+        if pred != no_predecessor(&env) {
             let done = load(&env, &pred).is_some_and(|p| p.done);
             if !done {
                 panic_with_error!(&env, Error::PredecessorNotDone);
@@ -428,7 +442,7 @@ impl Timelock {
             targets,
             fns,
             args,
-            predecessor,
+            predecessor: predecessor_id(&env, predecessor),
             salt,
         };
         env.crypto().sha256(&spec.clone().to_xdr(&env)).into()

@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use crate::{OperationSpec, Role, Timelock, TimelockClient};
+use crate::{Role, Timelock, TimelockClient};
 use soroban_sdk::{
     contract, contractimpl,
     testutils::{Address as _, Ledger as _, MockAuth, MockAuthInvoke},
@@ -624,20 +624,13 @@ fn the_stored_operation_is_the_spec_it_was_scheduled_with() {
     assert!(!op.done);
     assert_eq!(op.ready_at, DELAY);
     // The spec the id was derived from is the same one that was stored.
-    let spec = OperationSpec {
-        targets: op.targets.clone(),
-        fns: op.fns.clone(),
-        args: op.args.clone(),
-        predecessor: op.predecessor.clone(),
-        salt: op.salt.clone(),
-    };
     assert_eq!(
         h.client.hash_operation(
-            &spec.targets,
-            &spec.fns,
-            &spec.args,
-            &spec.predecessor,
-            &spec.salt,
+            &op.targets,
+            &op.fns,
+            &op.args,
+            &None,
+            &op.salt,
         ),
         id
     );

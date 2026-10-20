@@ -27,8 +27,13 @@ pub struct Operation {
     pub targets: Vec<Address>,
     pub fns: Vec<Symbol>,
     pub args: Vec<Vec<Val>>,
-    /// The operation that must have executed before this one may execute.
-    pub predecessor: Option<BytesN<32>>,
+    /// The operation that must have executed before this one may execute,
+    /// or the zero id when there is none.
+    ///
+    /// `Option<BytesN<32>>` cannot be a `#[contracttype]` field — the SDK's
+    /// XDR conversion has no `From<Option<..>>` for it — so the stored form
+    /// is the id itself, with the zero id standing for "no predecessor".
+    pub predecessor: BytesN<32>,
     /// The nonce that makes this operation's id unique.
     pub salt: BytesN<32>,
     /// Ledger timestamp from which the operation may be executed.
@@ -51,7 +56,8 @@ pub struct OperationSpec {
     pub targets: Vec<Address>,
     pub fns: Vec<Symbol>,
     pub args: Vec<Vec<Val>>,
-    pub predecessor: Option<BytesN<32>>,
+    /// The predecessor they wait on, or the zero id when there is none.
+    pub predecessor: BytesN<32>,
     pub salt: BytesN<32>,
 }
 
