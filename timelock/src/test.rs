@@ -486,7 +486,7 @@ fn the_timelock_is_the_admin_of_the_contract_it_acts_on() {
     // Only the executor's own authorization is supplied. The target's admin
     // is the timelock, and the timelock is its direct invoker, so the
     // target's own admin check passes without a second signature.
-    h.env.set_auths(&[MockAuth {
+    h.env.mock_auths(&[MockAuth {
         address: &h.executor,
         invoke: &MockAuthInvoke {
             contract: &h.client.address,
