@@ -35,12 +35,14 @@ env:
 # multisig build step above runs before the vault build step, not just
 # before options_market's.
 #
+        crate: [options_market, price_oracle, vault, multisig, streams, staking, timelock, governor, lp_token, lp_pool, integration_tests]
 jobs:
   fmt:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        crate: [options_market, price_oracle, vault, multisig, common, streams, staking, timelock, governor, params, grants_escrow, lp_token, lp_pool, integration_tests, tools/spec-diff, tools/resource-snapshot]
+        crate: [options_market, price_oracle, vault, multisig, common, streams, staking, timelock, governor, params, grants_escrow, lp_token, lp_pool, integration_tests, tools/spec-diff, tools/resource-sna
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -52,6 +54,7 @@ jobs:
   clippy:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         crate: [options_market, price_oracle, vault, multisig, common, streams, staking, timelock, governor, params, grants_escrow, lp_token, lp_pool, integration_tests, tools/spec-diff, tools/resource-snapshot]
     steps:
@@ -67,6 +70,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         crate: [options_market, price_oracle, vault, multisig, common, streams, staking, timelock, governor, params, grants_escrow, lp_token, lp_pool, integration_tests, tools/resource-snapshot]
     steps:
@@ -80,6 +84,7 @@ jobs:
   wasm:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         crate: [options_market, price_oracle, vault, multisig, streams, staking, timelock, governor, params, grants_escrow, lp_token, lp_pool, integration_tests]
     steps:
@@ -90,7 +95,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo xtask test
 
-  build:
+  wasm:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -99,9 +104,16 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - run: cargo xtask build
+      # Fails if soroban-sdk/testutils
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
       - run: cargo xtask test
 
-  check-wasm:
+  wasm:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -184,4 +196,3 @@ jobs:
           python3 scripts/resource-diff/resource_diff.py
           ${{ github.event_name == 'pull_request' && format('--base-ref origin/{0}', github.base_ref) || '' }}
           options_market
-
