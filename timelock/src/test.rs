@@ -263,11 +263,11 @@ fn an_operation_expires_after_its_grace_period() {
 #[test]
 fn an_operation_cannot_execute_twice() {
     let h = setup();
-    h.schedule_set_value(1, 42);
+    let id = h.schedule_set_value(1, 42);
     h.warp(DELAY);
-    h.client.execute(&h.executor, &h.salt(1));
-    assert!(h.client.is_operation_done(&h.salt(1)));
-    assert!(h.client.try_execute(&h.executor, &h.salt(1)).is_err());
+    h.client.execute(&h.executor, &id);
+    assert!(h.client.is_operation_done(&id));
+    assert!(h.client.try_execute(&h.executor, &id).is_err());
 }
 
 #[test]
@@ -291,10 +291,10 @@ fn executing_after_a_cancel_is_refused() {
 #[test]
 fn cancelling_an_already_executed_operation_is_refused() {
     let h = setup();
-    h.schedule_set_value(1, 42);
+    let id = h.schedule_set_value(1, 42);
     h.warp(DELAY);
-    h.client.execute(&h.executor, &h.salt(1));
-    assert!(h.client.try_cancel(&h.canceller, &h.salt(1)).is_err());
+    h.client.execute(&h.executor, &id);
+    assert!(h.client.try_cancel(&h.canceller, &id).is_err());
 }
 
 #[test]
@@ -481,7 +481,7 @@ fn the_stored_operation_is_the_spec_it_was_scheduled_with() {
 #[test]
 fn the_timelock_is_the_admin_of_the_contract_it_acts_on() {
     let h = setup();
-    h.schedule_set_value(1, 42);
+    let id = h.schedule_set_value(1, 42);
     h.warp(DELAY);
     // Only the executor's own authorization is supplied. The target's admin
     // is the timelock, and the timelock is its direct invoker, so the
@@ -494,11 +494,11 @@ fn the_timelock_is_the_admin_of_the_contract_it_acts_on() {
             args: vec![
                 &h.env,
                 h.executor.clone().into_val(&h.env),
-                h.salt(1).into_val(&h.env),
+                id.clone().into_val(&h.env),
             ],
             sub_invokes: &[],
         },
     }]);
-    h.client.execute(&h.executor, &h.salt(1));
+    h.client.execute(&h.executor, &id);
     assert_eq!(h.target.value(), 42);
 }
