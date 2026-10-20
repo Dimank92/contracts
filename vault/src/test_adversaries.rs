@@ -335,4 +335,3 @@ fn safe_inbound_transfer_with_revert_token_panics() {
     let _ =
         TokenTransferGuard::safe_inbound_transfer(&env, &token_id, &sender, &recipient, 1_000_000);
 }
-

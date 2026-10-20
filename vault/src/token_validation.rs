@@ -42,4 +42,3 @@ impl TokenTransferGuard {
         Ok(received)
     }
 }
-

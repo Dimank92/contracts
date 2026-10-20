@@ -333,4 +333,3 @@ impl NegativePriceOracle {
         Some((-1, 0))
     }
 }
-

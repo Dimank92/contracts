@@ -328,4 +328,3 @@ pub fn action_id_from_u64(env: &Env, discriminant: u64) -> BytesN<32> {
     bytes[..8].copy_from_slice(&discriminant.to_le_bytes());
     BytesN::from_array(env, &bytes)
 }
-

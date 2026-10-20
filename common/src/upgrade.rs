@@ -93,4 +93,3 @@ pub fn upgrade<K, E>(
     env.events()
         .publish((Symbol::new(env, "upgraded"),), new_wasm_hash);
 }
-

@@ -18,6 +18,8 @@ codegen-units = 1
 
 [dependencies]
 soroban-sdk = { version = "21.0.0" }
+# The storage-schema migration framework every Zenith contract uses.
+zenith-common = { path = "../common" }
 
 [dev-dependencies]
 soroban-sdk = { version = "21.0.0", features = ["testutils"] }

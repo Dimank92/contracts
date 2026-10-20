@@ -231,4 +231,3 @@ where
 fn load_state(env: &Env) -> Option<MigrationState> {
     env.storage().instance().get(&MigrationKey::MigrationState)
 }
-
