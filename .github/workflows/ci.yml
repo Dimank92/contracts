@@ -18,8 +18,7 @@ env:
 # dependency order into the shared target/ — so there are no per-crate
 # build chains here. `cargo xtask ci` runs all of it locally.
 #
-# options_market cross-contract-calls price_oracle, multisig, vault, AND
-# params (its parameter registry) via
+# options_market cross-calls price_oracle, multisig, vault, and params via
 # soroban-sdk's contractimport! against their compiled wasm (not a normal
 # source dependency, to avoid linking their own contract functions into
 # options_market's wasm and colliding on shared names like
@@ -29,19 +28,14 @@ env:
 # multisig's, vault's, and params' wasm first when it's about to touch
 # options_market.
 #
-# price_oracle and vault each also now cross-call multisig the same way
+# price_oracle and vault each also cross-call multisig the same way
 # (for pause_via_multisig/unpause_via_multisig/transfer_admin_via_multisig),
-# so both need multisig's wasm built first too — that's also why the
-# multisig build step above runs before the vault build step, not just
-# before options_market's.
-#
-        crate: [options_market, price_oracle, vault, multisig, streams, staking, timelock, governor, lp_token, lp_pool, integration_tests]
+# so both need multisig's wasm built first — that's why the multisig build
+# step runs before the vault build step, not just before options_market's.
+
 jobs:
   fmt:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        crate: [options_market, price_oracle, vault, multisig, common, streams, staking, timelock, governor, params, grants_escrow, lp_token, lp_pool, integration_tests, tools/spec-diff, tools/resource-sna
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -52,9 +46,6 @@ jobs:
 
   clippy:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        crate: [options_market, price_oracle, vault, multisig, common, streams, staking, timelock, governor, params, grants_escrow, lp_token, lp_pool, integration_tests, tools/spec-diff, tools/resource-snapshot]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -67,40 +58,6 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        crate: [options_market, price_oracle, vault, multisig, common, streams, staking, timelock, governor, params, grants_escrow, lp_token, lp_pool, integration_tests, tools/resource-snapshot]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - run: cargo fmt --check
-        working-directory: ${{ matrix.crate }}
-
-  wasm:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        crate: [options_market, price_oracle, vault, multisig, streams, staking, timelock, governor, params, grants_escrow, lp_token, lp_pool, integration_tests]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo xtask test
-
-  wasm:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo xtask build
-      # Fails if soroban-sdk/testutils
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -192,3 +149,72 @@ jobs:
           python3 scripts/resource-diff/resource_diff.py
           ${{ github.event_name == 'pull_request' && format('--base-ref origin/{0}', github.base_ref) || '' }}
           options_market
+
+  # ── Security jobs ─────────────────────────────────────────────────────────
+
+  # Scans all dependencies against the RustSec advisory database.
+  # Fails the build on any unpatched vulnerability.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Run cargo-audit
+        run: cargo audit
+
+  # Checks dependency licenses against the allow-list in deny.toml and
+  # flags duplicate crate versions. Config lives in /deny.toml.
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+      - name: Run cargo-deny check
+        run: cargo deny check
+
+  # CoinFabrik Scout: Soroban-aware static analysis for smart-contract
+  # vulnerability patterns. Runs informational only (continue-on-error)
+  # until a baseline is established and known findings are addressed.
+  scout:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: nightly
+          components: rust-src, rustc-dev, llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Scout
+        run: cargo install cargo-scout-audit --locked
+      - name: Run Scout on options_market
+        run: cargo scout-audit
+        working-directory: options_market
+        continue-on-error: true  # informational only until baseline is established
+      - name: Run Scout on price_oracle
+        run: cargo scout-audit
+        working-directory: price_oracle
+        continue-on-error: true
+      - name: Run Scout on vault
+        run: cargo scout-audit
+        working-directory: vault
+        continue-on-error: true
+      - name: Run Scout on multisig
+        run: cargo scout-audit
+        working-directory: multisig
+        continue-on-error: true
+
+  # Project-specific grep-based lint checks (unwrap in entrypoints,
+  # require_auth presence, trust-boundary annotations).
+  # Script lives at scripts/lint/check.sh.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run project-specific lint checks
+        run: scripts/lint/check.sh
