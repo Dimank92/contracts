@@ -116,10 +116,8 @@ pub fn series_escrowed_to_vault(env: &Env, series_id: u64, amount: i128) {
 }
 
 pub fn vault_updated(env: &Env, old_vault: Option<Address>, new_vault: Address) {
-    env.events().publish(
-        (Symbol::new(env, "vault_updated"),),
-        (old_vault, new_vault),
-    );
+    env.events()
+        .publish((Symbol::new(env, "vault_updated"),), (old_vault, new_vault));
 }
 pub fn option_auto_exercised(
     env: &Env,

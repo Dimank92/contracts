@@ -1221,7 +1221,8 @@ fn escrow_series_to_vault_rejects_unauthorized_vault() {
     let series_id = make_series(&h, OptionType::Call, 700_000_000, 40_000_000);
     let buyer = Address::generate(&h.env);
     mint(&h, &buyer, 1_000 * USDC_DECIMALS);
-    h.client.buy_option(&buyer, &series_id, &USDC_DECIMALS, &(50 * USDC_DECIMALS));
+    h.client
+        .buy_option(&buyer, &series_id, &USDC_DECIMALS, &(50 * USDC_DECIMALS));
     h.client.cancel_series(&series_id);
 
     // Passing fake_vault must fail with UnauthorizedVault
@@ -1236,11 +1237,16 @@ fn rotating_vault_after_escrow_still_pays_refund_from_original_vault() {
     let series_id = make_series(&h, OptionType::Call, 700_000_000, 40_000_000);
     let buyer = Address::generate(&h.env);
     mint(&h, &buyer, 1_000 * USDC_DECIMALS);
-    let pos_id = h.client.buy_option(&buyer, &series_id, &USDC_DECIMALS, &(50 * USDC_DECIMALS));
+    let pos_id = h
+        .client
+        .buy_option(&buyer, &series_id, &USDC_DECIMALS, &(50 * USDC_DECIMALS));
     h.client.cancel_series(&series_id);
 
     h.client.escrow_series_to_vault(&original_vault, &series_id);
-    assert_eq!(h.client.get_series_vault(&series_id), Some(original_vault.clone()));
+    assert_eq!(
+        h.client.get_series_vault(&series_id),
+        Some(original_vault.clone())
+    );
 
     // Rotate pinned vault to a new vault
     let new_vault = setup_vault(&h);
@@ -1248,7 +1254,8 @@ fn rotating_vault_after_escrow_still_pays_refund_from_original_vault() {
 
     // Claim refund still succeeds against the original vault recorded in SeriesVault
     let before = balance(&h, &buyer);
-    h.client.claim_refund_from_vault(&original_vault, &buyer, &pos_id);
+    h.client
+        .claim_refund_from_vault(&original_vault, &buyer, &pos_id);
     assert_eq!(balance(&h, &buyer) - before, 39_800_000);
     assert!(h.client.get_position(&pos_id).unwrap().is_settled);
 }

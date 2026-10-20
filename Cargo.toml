@@ -28,7 +28,9 @@ publish = false
 
 [workspace.dependencies]
 soroban-sdk = { version = "21.7.7" }
-ed25519-dalek = "2"
+# Pinned: ed25519-dalek 3 moved to rand_core 0.9, which soroban-env-host's
+# rand_chacha (rand_core 0.6) cannot satisfy, so the host fails to compile.
+ed25519-dalek = "=2.2.0"
 
 # Internal crates. Contracts that call each other on-chain use
 # `contractimport!` against the compiled wasm (see
