@@ -32,8 +32,8 @@
 //! that was going to run second never runs at all.
 
 use soroban_sdk::{
-    contract, contractimpl, panic_with_error, xdr::ToXdr, Address, BytesN, Env, Symbol,
-    TryFromVal, Val, Vec,
+    contract, contractimpl, panic_with_error, xdr::ToXdr, Address, BytesN, Env, Symbol, TryFromVal,
+    Val, Vec,
 };
 
 #[cfg(test)]
@@ -46,7 +46,7 @@ mod types;
 
 use error::Error;
 pub use migrations::CURRENT_SCHEMA_VERSION;
-use types::DataKey;
+use types::{DataKey, OperationSpec};
 pub use types::{Operation, Role};
 
 /// The shortest delay the timelock will ever accept, in seconds.
@@ -122,7 +122,9 @@ fn set_role(env: &Env, role: Role, account: &Address, granted: bool) {
 }
 
 fn load(env: &Env, id: &BytesN<32>) -> Option<Operation> {
-    env.storage().persistent().get(&DataKey::Operation(id.clone()))
+    env.storage()
+        .persistent()
+        .get(&DataKey::Operation(id.clone()))
 }
 
 /// The `i`th argument of a self-call, decoded.

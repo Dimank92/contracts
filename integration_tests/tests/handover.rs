@@ -360,7 +360,14 @@ impl World<'_> {
         let calls: Calls = (
             vec![e, self.tl.address.clone()],
             vec![e, Symbol::new(e, "grant_role")],
-            vec![e, vec![e, Role::Proposer.into_val(e), self.gov.address.clone().into_val(e)]],
+            vec![
+                e,
+                vec![
+                    e,
+                    Role::Proposer.into_val(e),
+                    self.gov.address.clone().into_val(e),
+                ],
+            ],
         );
         let id = self.ms_schedule(calls, &salt);
         self.execute_after_delay(&id);
@@ -374,10 +381,23 @@ impl World<'_> {
         let e = &self.env;
         self.govern((
             vec![e, self.tl.address.clone(), self.tl.address.clone()],
-            vec![e, Symbol::new(e, "revoke_role"), Symbol::new(e, "revoke_role")],
-            vec![e, 
-                vec![e, Role::Proposer.into_val(e), self.ms_account.clone().into_val(e)],
-                vec![e, Role::Canceller.into_val(e), self.ms_account.clone().into_val(e)],
+            vec![
+                e,
+                Symbol::new(e, "revoke_role"),
+                Symbol::new(e, "revoke_role"),
+            ],
+            vec![
+                e,
+                vec![
+                    e,
+                    Role::Proposer.into_val(e),
+                    self.ms_account.clone().into_val(e),
+                ],
+                vec![
+                    e,
+                    Role::Canceller.into_val(e),
+                    self.ms_account.clone().into_val(e),
+                ],
             ],
         ));
     }

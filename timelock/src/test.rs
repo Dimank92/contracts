@@ -398,10 +398,7 @@ fn self_calls_reconfigure_the_timelock() {
 
     h.warp(DELAY);
 
-    h.client.execute(
-        &h.executor,
-        &delay_op,
-    );
+    h.client.execute(&h.executor, &delay_op);
     assert_eq!(h.client.get_min_delay(), 2 * DELAY);
 
     h.client.execute(&h.executor, &grant_op);
@@ -434,28 +431,27 @@ fn a_self_call_the_timelock_does_not_implement_is_refused() {
 #[test]
 fn the_operation_id_commits_to_the_batch_the_predecessor_and_the_salt() {
     let h = setup();
-    let id = h.client.hash_operation(
-        &h.targets(),
-        &h.fns(),
-        &h.args(42),
-        &None,
-        &h.salt(1),
-    );
+    let id = h
+        .client
+        .hash_operation(&h.targets(), &h.fns(), &h.args(42), &None, &h.salt(1));
     assert_eq!(id, h.schedule_set_value(1, 42));
 
     // A different payload, predecessor or salt gives a different id.
-    let other = h.client.hash_operation(
+    let other = h
+        .client
+        .hash_operation(&h.targets(), &h.fns(), &h.args(43), &None, &h.salt(1));
+    assert_ne!(id, other);
+    let salted = h
+        .client
+        .hash_operation(&h.targets(), &h.fns(), &h.args(42), &None, &h.salt(2));
+    assert_ne!(id, salted);
+    let preceded = h.client.hash_operation(
         &h.targets(),
         &h.fns(),
-        &h.args(43),
-        &None,
+        &h.args(42),
+        &Some(h.salt(3)),
         &h.salt(1),
     );
-    assert_ne!(id, other);
-    let salted = h.client.hash_operation(&h.targets(), &h.fns(), &h.args(42), &None, &h.salt(2));
-    assert_ne!(id, salted);
-    let preceded =
-        h.client.hash_operation(&h.targets(), &h.fns(), &h.args(42), &Some(h.salt(3)), &h.salt(1));
     assert_ne!(id, preceded);
 }
 
@@ -474,13 +470,8 @@ fn the_stored_operation_is_the_spec_it_was_scheduled_with() {
     assert_eq!(op.ready_at, DELAY);
     // The spec the id was derived from is the same one that was stored.
     assert_eq!(
-        h.client.hash_operation(
-            &op.targets,
-            &op.fns,
-            &op.args,
-            &None,
-            &op.salt,
-        ),
+        h.client
+            .hash_operation(&op.targets, &op.fns, &op.args, &None, &op.salt,),
         id
     );
 }
