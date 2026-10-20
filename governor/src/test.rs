@@ -194,10 +194,11 @@ fn full_lifecycle_through_timelock() {
     assert_eq!(eta, h.env.ledger().timestamp() + TL_DELAY);
     assert_eq!(h.gov.state(&id), ProposalState::Queued);
     let (t, f, a) = h.quorum_action(500);
-    assert!(h.tl.try_execute(&h.alice, &t, &f, &a, &None, &id).is_err()); // delay not elapsed
+    let op = h.tl.hash_operation(&t, &f, &a, &None, &id);
+    assert!(h.tl.try_execute(&h.alice, &op).is_err()); // delay not elapsed
 
     h.warp(TL_DELAY);
-    h.tl.execute(&h.alice, &t, &f, &a, &None, &id);
+    h.tl.execute(&h.alice, &op);
     assert_eq!(h.gov.state(&id), ProposalState::Executed);
     assert_eq!(h.gov.quorum_bps(), 500);
 }
@@ -325,8 +326,7 @@ fn anyone_cancels_when_proposer_drops_below_threshold() {
     let op = h.tl_op_id(&id, 500);
     assert!(h.tl.get_operation(&op).is_none());
     h.warp(TL_DELAY);
-    let (t, f, a) = h.quorum_action(500);
-    assert!(h.tl.try_execute(&h.alice, &t, &f, &a, &None, &id).is_err());
+    assert!(h.tl.try_execute(&h.alice, &op).is_err());
 }
 
 #[test]
@@ -336,8 +336,8 @@ fn queued_proposal_expires() {
     h.gov.queue(&id);
     h.warp(TL_DELAY + TL_GRACE + 1);
     assert_eq!(h.gov.state(&id), ProposalState::Expired);
-    let (t, f, a) = h.quorum_action(500);
-    assert!(h.tl.try_execute(&h.alice, &t, &f, &a, &None, &id).is_err());
+    let op = h.tl_op_id(&id, 500);
+    assert!(h.tl.try_execute(&h.alice, &op).is_err());
 }
 
 #[test]
@@ -348,8 +348,7 @@ fn guardian_can_veto_queued_proposal() {
     let op = h.tl_op_id(&id, 500);
     h.tl.cancel(&h.guardian, &op);
     h.warp(TL_DELAY);
-    let (t, f, a) = h.quorum_action(500);
-    assert!(h.tl.try_execute(&h.alice, &t, &f, &a, &None, &id).is_err());
+    assert!(h.tl.try_execute(&h.alice, &op).is_err());
 }
 
 #[test]

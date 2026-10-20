@@ -67,22 +67,30 @@ show_admins() {
 # targets_json fns_json args_json salt_hex.
 #
 # There is no operation id to pass in: the timelock derives it from the
-# batch, the predecessor and the salt, and `schedule` returns it.
+# batch and the salt, and `schedule` returns it.
 tl_schedule() {
   local proposer="$1" targets="$2" fns="$3" args="$4" salt="$5"
   invoke "$TIMELOCK_ID" "$proposer" schedule \
     --targets "$targets" --fns "$fns" --args "$args" \
-    --predecessor null --salt "$salt" \
+    --salt "$salt" \
     --delay "${TL_DELAY:?TL_DELAY must be set}"
 }
 
-# Executes the batch a `tl_schedule` queued. The salt has to be the same
-# one it was scheduled with: the id is derived from it.
-tl_execute() {
-  local executor="$1" targets="$2" fns="$3" args="$4" salt="$5"
-  invoke "$TIMELOCK_ID" "$executor" execute \
+# The id of the operation a batch and a salt describe. The timelock derives
+# it the same way, so this is what `execute` takes.
+tl_op_id() {
+  local targets="$1" fns="$2" args="$3" salt="$4"
+  view "$TIMELOCK_ID" hash_operation \
     --targets "$targets" --fns "$fns" --args "$args" \
     --predecessor null --salt "$salt"
+}
+
+# Executes a ready operation. The id is the one `tl_schedule` returned, or
+# the one `tl_op_id` computes.
+tl_execute() {
+  local executor="$1" id="$2"
+  invoke "$TIMELOCK_ID" "$executor" execute \
+    --executor "$executor" --id "$id"
 }
 
 # 32-byte hex salt derived from a label, so reruns are deterministic. The

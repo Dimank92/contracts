@@ -10,8 +10,8 @@
 //! Three roles, and no admin:
 //!
 //!   Proposer   may schedule an operation.
-//!   Executor   may execute a ready operation (anyone may, if the executor
-//!              set is empty — see `is_open_executor`).
+//!   Executor   may execute a ready operation. An empty executor set means
+//!              anyone may — see `is_open_executor`.
 //!   Canceller  may cancel a pending operation.
 //!
 //! There is deliberately no fourth role and no owner: the timelock's own
@@ -20,20 +20,20 @@
 //! re-entering itself, so `execute` recognises those calls and applies them
 //! in place instead of cross-calling.
 //!
-//! An operation is a batch of calls plus a predecessor and a salt. Its id is
-//! `sha256(xdr((targets, fns, args, predecessor, salt)))` — it commits to
-//! exactly what will run, and the salt is what makes two otherwise identical
-//! batches distinct. `execute` recomputes the id from the batch it is handed,
-//! so it can only ever run the batch that was scheduled.
+//! An operation is a batch of calls, a salt that makes two otherwise
+//! identical batches distinct, and — for `schedule_after` — a predecessor.
+//! Its id is `sha256` over the XDR of exactly those things, so the id
+//! commits to what will run and an operation can never be swapped for
+//! another.
 //!
 //! A predecessor orders operations against each other: an operation whose
 //! predecessor has not executed cannot execute. Cancelling a predecessor
-//! therefore leaves its dependants permanently unexecutable, which is the
-//! point: the batch that was going to run second never runs at all.
+//! therefore strands its dependants for good, which is the point: the batch
+//! that was going to run second never runs at all.
 
 use soroban_sdk::{
-    contract, contractimpl, panic_with_error, xdr::ToXdr, Address, BytesN, Env, Symbol, TryFromVal,
-    Val, Vec,
+    contract, contractimpl, panic_with_error, xdr::ToXdr, Address, BytesN, Env, Symbol,
+    TryFromVal, Val, Vec,
 };
 
 #[cfg(test)]
@@ -47,7 +47,7 @@ mod types;
 use error::Error;
 pub use migrations::CURRENT_SCHEMA_VERSION;
 use types::DataKey;
-pub use types::{Operation, OperationSpec, Role};
+pub use types::{Operation, Role};
 
 /// The shortest delay the timelock will ever accept, in seconds.
 ///
@@ -62,6 +62,28 @@ pub const MIN_MIN_DELAY: u64 = 60;
 pub struct Timelock;
 
 // ── internals ────────────────────────────────────────────────────────────────
+
+/// The zero id, which stands for "no predecessor" in the stored form.
+fn no_predecessor(env: &Env) -> BytesN<32> {
+    BytesN::from_array(env, &[0u8; 32])
+}
+
+/// The stored form of a predecessor: the id, or the zero id for none.
+fn predecessor_id(env: &Env, predecessor: Option<BytesN<32>>) -> BytesN<32> {
+    match predecessor {
+        Some(id) => id,
+        None => no_predecessor(env),
+    }
+}
+
+/// The predecessor of a stored operation, as the caller sees it.
+fn predecessor_of(env: &Env, op: &Operation) -> Option<BytesN<32>> {
+    if op.predecessor == no_predecessor(env) {
+        None
+    } else {
+        Some(op.predecessor.clone())
+    }
+}
 
 fn min_delay(env: &Env) -> u64 {
     env.storage()
@@ -99,23 +121,8 @@ fn set_role(env: &Env, role: Role, account: &Address, granted: bool) {
     events::role_changed(env, role, account.clone(), granted);
 }
 
-/// The zero id, which stands for "no predecessor" in the stored form.
-fn no_predecessor(env: &Env) -> BytesN<32> {
-    BytesN::from_array(env, &[0u8; 32])
-}
-
-/// The stored form of a predecessor: the id, or the zero id for none.
-fn predecessor_id(env: &Env, predecessor: Option<BytesN<32>>) -> BytesN<32> {
-    match predecessor {
-        Some(id) => id,
-        None => no_predecessor(env),
-    }
-}
-
 fn load(env: &Env, id: &BytesN<32>) -> Option<Operation> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::Operation(id.clone()))
+    env.storage().persistent().get(&DataKey::Operation(id.clone()))
 }
 
 /// The `i`th argument of a self-call, decoded.
@@ -216,90 +223,58 @@ impl Timelock {
     /// `now + delay`. Proposer-only, and `delay` may not be shorter than
     /// `min_delay`.
     ///
-    /// Returns the operation id, which is derived from the batch itself: the
-    /// same batch with the same predecessor and the same salt is the same
-    /// operation, and scheduling it twice is refused.
+    /// Returns the operation id, which is derived from the batch and the
+    /// salt: the same batch with the same salt is the same operation, and
+    /// scheduling it twice is refused.
     pub fn schedule(
         env: Env,
         proposer: Address,
         targets: Vec<Address>,
         fns: Vec<Symbol>,
         args: Vec<Vec<Val>>,
-        predecessor: Option<BytesN<32>>,
         salt: BytesN<32>,
         delay: u64,
     ) -> BytesN<32> {
-        migrations::require_current(&env);
-        proposer.require_auth();
-        require_role(&env, Role::Proposer, &proposer);
-
-        let n = targets.len();
-        if n == 0 || n != fns.len() || n != args.len() {
-            panic_with_error!(&env, Error::EmptyOperation);
-        }
-        if delay < Self::get_min_delay(env.clone()) {
-            panic_with_error!(&env, Error::InsufficientDelay);
-        }
-
-        let id = Self::hash_operation(
-            env.clone(),
-            targets.clone(),
-            fns.clone(),
-            args.clone(),
-            predecessor.clone(),
-            salt.clone(),
-        );
-        let key = DataKey::Operation(id.clone());
-        if env.storage().persistent().has(&key) {
-            panic_with_error!(&env, Error::AlreadyScheduled);
-        }
-
-        let ready_at = env.ledger().timestamp() + delay;
-        env.storage().persistent().set(
-            &key,
-            &Operation {
-                targets,
-                fns,
-                args,
-                predecessor: predecessor_id(&env, predecessor),
-                salt,
-                ready_at,
-                done: false,
-            },
-        );
-        events::scheduled(&env, id.clone(), proposer, ready_at);
-        id
+        Self::schedule_inner(&env, &proposer, targets, fns, args, None, salt, delay)
     }
 
-    /// Executes a ready operation. The batch, the predecessor and the salt
-    /// are passed again because the id is derived from them: only the batch
-    /// that was scheduled can be executed.
+    /// Schedules a batch that may not execute until `predecessor` has.
     ///
-    /// Every call runs, in order. A call that reverts reverts the whole
-    /// operation — there is no partial application.
-    pub fn execute(
+    /// The delay is the timelock's minimum: an operation that waits for
+    /// another one has already waited, and the wait it adds is the point.
+    pub fn schedule_after(
         env: Env,
-        executor: Address,
+        proposer: Address,
         targets: Vec<Address>,
         fns: Vec<Symbol>,
         args: Vec<Vec<Val>>,
-        predecessor: Option<BytesN<32>>,
+        predecessor: BytesN<32>,
         salt: BytesN<32>,
-    ) {
+    ) -> BytesN<32> {
+        let delay = Self::get_min_delay(env.clone());
+        Self::schedule_inner(
+            &env,
+            &proposer,
+            targets,
+            fns,
+            args,
+            Some(predecessor),
+            salt,
+            delay,
+        )
+    }
+
+    /// Executes a ready operation.
+    ///
+    /// Every call runs, in order. A call that reverts reverts the whole
+    /// operation — there is no partial application.
+    pub fn execute(env: Env, executor: Address, id: BytesN<32>) {
         migrations::require_current(&env);
         executor.require_auth();
         if !Self::is_open_executor(env.clone()) {
             require_role(&env, Role::Executor, &executor);
         }
 
-        let id = Self::hash_operation(
-            env.clone(),
-            targets,
-            fns,
-            args,
-            predecessor.clone(),
-            salt.clone(),
-        );
         let key = DataKey::Operation(id.clone());
         let mut op: Operation =
             load(&env, &id).unwrap_or_else(|| panic_with_error!(&env, Error::NotPending));
@@ -318,8 +293,7 @@ impl Timelock {
         // The predecessor must have executed. A cancelled predecessor is
         // gone from storage, so it reads as "not done" here: the dependant
         // stays unexecutable rather than running out of order.
-        let pred = op.predecessor.clone();
-        if pred != no_predecessor(&env) {
+        if let Some(pred) = predecessor_of(&env, &op) {
             let done = load(&env, &pred).is_some_and(|p| p.done);
             if !done {
                 panic_with_error!(&env, Error::PredecessorNotDone);
@@ -428,8 +402,8 @@ impl Timelock {
 
     /// The id of the operation a batch, a predecessor and a salt describe.
     ///
-    /// The same formula `schedule` and `execute` use, exposed so an
-    /// integrator can compute an id off-chain or in another contract.
+    /// The same formula `schedule` uses, exposed so an integrator can
+    /// compute an id off-chain or in another contract.
     pub fn hash_operation(
         env: Env,
         targets: Vec<Address>,
@@ -445,6 +419,62 @@ impl Timelock {
             predecessor: predecessor_id(&env, predecessor),
             salt,
         };
-        env.crypto().sha256(&spec.clone().to_xdr(&env)).into()
+        env.crypto().sha256(&spec.to_xdr(&env)).into()
+    }
+}
+
+/// The shared body of `schedule` and `schedule_after`.
+impl Timelock {
+    #[allow(clippy::too_many_arguments)]
+    fn schedule_inner(
+        env: &Env,
+        proposer: &Address,
+        targets: Vec<Address>,
+        fns: Vec<Symbol>,
+        args: Vec<Vec<Val>>,
+        predecessor: Option<BytesN<32>>,
+        salt: BytesN<32>,
+        delay: u64,
+    ) -> BytesN<32> {
+        migrations::require_current(env);
+        proposer.require_auth();
+        require_role(env, Role::Proposer, proposer);
+
+        let n = targets.len();
+        if n == 0 || n != fns.len() || n != args.len() {
+            panic_with_error!(env, Error::EmptyOperation);
+        }
+        if delay < min_delay(env) {
+            panic_with_error!(env, Error::InsufficientDelay);
+        }
+
+        let id = Self::hash_operation(
+            env.clone(),
+            targets.clone(),
+            fns.clone(),
+            args.clone(),
+            predecessor.clone(),
+            salt.clone(),
+        );
+        let key = DataKey::Operation(id.clone());
+        if env.storage().persistent().has(&key) {
+            panic_with_error!(env, Error::AlreadyScheduled);
+        }
+
+        let ready_at = env.ledger().timestamp() + delay;
+        env.storage().persistent().set(
+            &key,
+            &Operation {
+                targets,
+                fns,
+                args,
+                predecessor: predecessor_id(env, predecessor),
+                salt,
+                ready_at,
+                done: false,
+            },
+        );
+        events::scheduled(env, id.clone(), proposer.clone(), ready_at);
+        id
     }
 }

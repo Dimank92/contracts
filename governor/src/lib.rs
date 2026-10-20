@@ -287,7 +287,6 @@ impl Governor {
             &p.targets,
             &p.fns,
             &p.args,
-            &None,
             &id,
             &delay,
         );

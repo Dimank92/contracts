@@ -16,7 +16,7 @@ pub trait Votes {
 ///
 /// The timelock derives an operation's id from the batch it carries, the
 /// predecessor it waits on and a salt, so the governor cannot name an
-/// operation directly: it queues the proposal under the proposal's own id as
+/// operation directly: it queues a proposal under the proposal's own id as
 /// the salt and derives the operation id from the same inputs.
 #[allow(dead_code)]
 #[contractclient(name = "TimelockClient")]
@@ -27,7 +27,6 @@ pub trait Timelock {
         targets: Vec<Address>,
         fns: Vec<Symbol>,
         args: Vec<Vec<Val>>,
-        predecessor: Option<BytesN<32>>,
         salt: BytesN<32>,
         delay: u64,
     ) -> BytesN<32>;

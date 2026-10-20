@@ -13,8 +13,8 @@ case "$PHASE" in
       "[\"$MARKET_ID\",\"$ORACLE_ID\"]" '["transfer_admin","transfer_admin"]' "[$ARG,$ARG]" "$SALT"
     ;;
   execute)
-    tl_execute "$MULTISIG_ACCOUNT" \
-      "[\"$MARKET_ID\",\"$ORACLE_ID\"]" '["transfer_admin","transfer_admin"]' "[$ARG,$ARG]" "$SALT"
+    tl_execute "$MULTISIG_ACCOUNT" "$(tl_op_id \
+      "[\"$MARKET_ID\",\"$ORACLE_ID\"]" '["transfer_admin","transfer_admin"]' "[$ARG,$ARG]" "$SALT")"
     show_admins
     ;;
 esac

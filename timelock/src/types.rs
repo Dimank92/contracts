@@ -2,8 +2,8 @@ use soroban_sdk::{contracttype, Address, BytesN, Symbol, Val, Vec};
 
 /// What a participant in the timelock is allowed to do.
 ///
-/// Three roles, and no admin: the timelock has no owner, so every change to
-/// it — including these role sets — is itself a delayed operation.
+/// Three roles, and no admin: the role sets are the whole configuration, and
+/// the timelock's own settings change only through a delayed operation.
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]
@@ -31,10 +31,10 @@ pub struct Operation {
     /// or the zero id when there is none.
     ///
     /// `Option<BytesN<32>>` cannot be a `#[contracttype]` field — the SDK's
-    /// XDR conversion has no `From<Option<..>>` for it — so the stored form
-    /// is the id itself, with the zero id standing for "no predecessor".
+    /// XDR conversion has no `From<Option<..>>` for it — so the stored form is
+    /// the id itself, with the zero id standing for "no predecessor".
     pub predecessor: BytesN<32>,
-    /// The nonce that makes this operation's id unique.
+    /// The nonce that makes two otherwise identical batches distinct.
     pub salt: BytesN<32>,
     /// Ledger timestamp from which the operation may be executed.
     pub ready_at: u64,
@@ -46,10 +46,10 @@ pub struct Operation {
 /// The preimage an operation id is derived from.
 ///
 /// The id commits to exactly what will run: the calls, the predecessor they
-/// wait on, and the salt that makes two otherwise identical batches
-/// distinct. The parts of an operation that change over its life — when it
-/// became ready, whether it has run — are deliberately not part of it, so the
-/// id can be computed before the operation is scheduled.
+/// wait on, and the salt that makes two otherwise identical batches distinct.
+/// The parts of an operation that change over its life — when it became
+/// ready, whether it has run — are deliberately not part of it, so the id can
+/// be computed before the operation is scheduled.
 #[contracttype]
 #[derive(Clone)]
 pub struct OperationSpec {

@@ -26,7 +26,7 @@ case "$PHASE" in
     ;;
   execute)
     require PROPOSAL_ID EXECUTOR
-    tl_execute "$EXECUTOR" "$TARGETS" "$FNS" "$ARGS" "$PROPOSAL_ID"
+    tl_execute "$EXECUTOR" "$(tl_op_id "$TARGETS" "$FNS" "$ARGS" "$PROPOSAL_ID")"
     echo "locked in: $(view "$TIMELOCK_ID" has_role --role "$(role proposer)" --account "$MULTISIG_ACCOUNT") (expect false)"
     ;;
 esac

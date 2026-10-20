@@ -29,6 +29,9 @@ const TL_GRACE: u64 = 7 * 86_400;
 const VOTING_DELAY: u32 = 10;
 const VOTING_PERIOD: u32 = 720;
 
+/// A batch of calls: the target of each, the function, and the arguments.
+type Calls = (Vec<Address>, Vec<Symbol>, Vec<Vec<Val>>);
+
 // ── Minimal checkpointed voting token (stand-in for gov_token) ──────────────
 
 #[contracttype]
@@ -134,9 +137,9 @@ fn deploy<'a>() -> World<'a> {
 
     let gov_id = env.register_contract(None, Governor);
     let tl = TimelockClient::new(&env, &env.register_contract(None, Timelock));
-    // The multisig proposes and vetoes, and the governor may veto too; an
-    // empty executor set means anyone may execute a ready operation. The
-    // governor only becomes a proposer at stage 3.
+    // The multisig proposes and vetoes; the governor may veto too but does
+    // not propose until stage 3. An empty executor set means anyone may
+    // execute a ready operation.
     tl.initialize(
         &TL_DELAY,
         &TL_GRACE,
@@ -173,9 +176,6 @@ fn deploy<'a>() -> World<'a> {
     w.roll(1);
     w
 }
-
-/// A batch of calls: the target of each, the function, and the arguments.
-type Calls = (Vec<Address>, Vec<Symbol>, Vec<Vec<Val>>);
 
 impl World<'_> {
     fn roll(&self, ledgers: u32) {
@@ -273,24 +273,18 @@ impl World<'_> {
             t.clone().into_val(e),
             f.clone().into_val(e),
             a.clone().into_val(e),
-            None::<BytesN<32>>.into_val(e),
             salt.clone().into_val(e),
             TL_DELAY.into_val(e),
         ]
     }
 
     /// The arguments of an `execute` call, as the host sees them.
-    fn execute_args(&self, calls: &Calls, salt: &BytesN<32>) -> Vec<Val> {
+    fn execute_args(&self, id: &BytesN<32>) -> Vec<Val> {
         let e = &self.env;
-        let (t, f, a) = calls;
         vec![
             e,
             self.ms_account.clone().into_val(e),
-            t.clone().into_val(e),
-            f.clone().into_val(e),
-            a.clone().into_val(e),
-            None::<BytesN<32>>.into_val(e),
-            salt.clone().into_val(e),
+            id.clone().into_val(e),
         ]
     }
 
@@ -304,19 +298,25 @@ impl World<'_> {
             self.schedule_args(&(t.clone(), f.clone(), a.clone()), salt),
         );
         self.tl
-            .schedule(&self.ms_account, &t, &f, &a, &None, salt, &TL_DELAY)
+            .schedule(&self.ms_account, &t, &f, &a, salt, &TL_DELAY)
     }
 
-    fn execute_after_delay(&self, calls: &Calls, salt: &BytesN<32>) {
+    /// Executes a ready operation once its delay has elapsed.
+    fn execute_after_delay(&self, id: &BytesN<32>) {
         self.warp(TL_DELAY);
-        let (t, f, a) = calls;
         self.sign(
             &self.ms_account,
             &self.tl.address,
             "execute",
-            self.execute_args(calls, salt),
+            self.execute_args(id),
         );
-        self.tl.execute(&self.ms_account, &t, &f, &a, &None, salt);
+        self.tl.execute(&self.ms_account, id);
+    }
+
+    /// The timelock operation a governor proposal queues.
+    fn gov_op_id(&self, id: &BytesN<32>, calls: &Calls) -> BytesN<32> {
+        let (t, f, a) = calls;
+        self.tl.hash_operation(&t, &f, &a, &None, id)
     }
 
     /// Runs a full governor proposal through to timelock execution.
@@ -335,7 +335,8 @@ impl World<'_> {
         self.gov.queue(&id);
         // The governor queues its proposal under the proposal's own id as the
         // salt, so the timelock's operation id is derived from it.
-        self.execute_after_delay(&(t.clone(), f.clone(), a.clone()), &id);
+        let op = self.gov_op_id(&id, &(t.clone(), f.clone(), a.clone()));
+        self.execute_after_delay(&op);
         assert_eq!(self.gov.state(&id), ProposalState::Executed);
         id
     }
@@ -359,17 +360,10 @@ impl World<'_> {
         let calls: Calls = (
             vec![e, self.tl.address.clone()],
             vec![e, Symbol::new(e, "grant_role")],
-            vec![
-                e,
-                vec![
-                    e,
-                    Role::Proposer.into_val(e),
-                    self.gov.address.clone().into_val(e),
-                ],
-            ],
+            vec![e, vec![e, Role::Proposer.into_val(e), self.gov.address.clone().into_val(e)]],
         );
-        self.ms_schedule(calls.clone(), &salt);
-        self.execute_after_delay(&calls, &salt);
+        let id = self.ms_schedule(calls, &salt);
+        self.execute_after_delay(&id);
         assert!(self.tl.has_role(&Role::Proposer, &self.gov.address));
     }
 
@@ -380,23 +374,10 @@ impl World<'_> {
         let e = &self.env;
         self.govern((
             vec![e, self.tl.address.clone(), self.tl.address.clone()],
-            vec![
-                e,
-                Symbol::new(e, "revoke_role"),
-                Symbol::new(e, "revoke_role"),
-            ],
-            vec![
-                e,
-                vec![
-                    e,
-                    Role::Proposer.into_val(e),
-                    self.ms_account.clone().into_val(e),
-                ],
-                vec![
-                    e,
-                    Role::Canceller.into_val(e),
-                    self.ms_account.clone().into_val(e),
-                ],
+            vec![e, Symbol::new(e, "revoke_role"), Symbol::new(e, "revoke_role")],
+            vec![e, 
+                vec![e, Role::Proposer.into_val(e), self.ms_account.clone().into_val(e)],
+                vec![e, Role::Canceller.into_val(e), self.ms_account.clone().into_val(e)],
             ],
         ));
     }
@@ -433,8 +414,8 @@ fn staged_handover_end_to_end() {
         vec![e, Symbol::new(e, "set_fee_rate")],
         vec![e, vec![e, 120u32.into_val(e)]],
     );
-    w.ms_schedule(calls.clone(), &salt);
-    w.execute_after_delay(&calls, &salt);
+    let id = w.ms_schedule(calls, &salt);
+    w.execute_after_delay(&id);
     assert_eq!(w.market.get_fee_rate(), 120);
     w.assert_vault_invariant();
 
@@ -480,8 +461,8 @@ fn rollback_stage2_multisig_reclaims_admin_through_timelock() {
     w.to_stage2();
     let salt = w.salt();
     let calls = w.transfer_both_calls(&w.ms_account);
-    w.ms_schedule(calls.clone(), &salt);
-    w.execute_after_delay(&calls, &salt);
+    let id = w.ms_schedule(calls, &salt);
+    w.execute_after_delay(&id);
     assert!(w.admin_can_act(&w.ms_account));
     w.assert_vault_invariant();
 }
@@ -493,7 +474,7 @@ fn rollback_stage2_canceller_cancels_bad_handover() {
     let attacker = Address::generate(&w.env);
     let salt = w.salt();
     let calls = w.transfer_both_calls(&attacker);
-    let id = w.ms_schedule(calls.clone(), &salt);
+    let id = w.ms_schedule(calls, &salt);
     w.sign(
         &w.ms_account,
         &w.tl.address,
@@ -502,11 +483,7 @@ fn rollback_stage2_canceller_cancels_bad_handover() {
     );
     w.tl.cancel(&w.ms_account, &id);
     w.warp(TL_DELAY);
-    let (t, f, a) = calls;
-    assert!(w
-        .tl
-        .try_execute(&w.ms_account, &t, &f, &a, &None, &salt)
-        .is_err());
+    assert!(w.tl.try_execute(&w.ms_account, &id).is_err());
     assert_eq!(w.market.get_admin(), w.tl.address);
 }
 
@@ -517,7 +494,8 @@ fn rollback_stage3_canceller_vetoes_a_governor_proposal() {
 
     // A malicious governor proposal gets queued …
     let attacker = Address::generate(&w.env);
-    let (t, f, a) = w.transfer_both_calls(&attacker);
+    let calls = w.transfer_both_calls(&attacker);
+    let (t, f, a) = calls.clone();
     w.env.mock_all_auths();
     let id = w.gov.propose(
         &w.voter,
@@ -533,7 +511,7 @@ fn rollback_stage3_canceller_vetoes_a_governor_proposal() {
     w.gov.queue(&id);
 
     // … and the multisig vetoes it.
-    let op = w.tl.hash_operation(&t, &f, &a, &None, &id);
+    let op = w.gov_op_id(&id, &calls);
     w.sign(
         &w.ms_account,
         &w.tl.address,
@@ -542,18 +520,15 @@ fn rollback_stage3_canceller_vetoes_a_governor_proposal() {
     );
     w.tl.cancel(&w.ms_account, &op);
     w.warp(TL_DELAY);
-    assert!(w
-        .tl
-        .try_execute(&w.ms_account, &t, &f, &a, &None, &id)
-        .is_err());
+    assert!(w.tl.try_execute(&w.ms_account, &op).is_err());
     assert_eq!(w.market.get_admin(), w.tl.address);
 
     // The multisig kept the proposer role until lock-in, so it can still
     // schedule the corrective action.
     let salt = w.salt();
     let fix = w.transfer_both_calls(&w.ms_account);
-    w.ms_schedule(fix.clone(), &salt);
-    w.execute_after_delay(&fix, &salt);
+    let fix_id = w.ms_schedule(fix, &salt);
+    w.execute_after_delay(&fix_id);
     assert!(w.admin_can_act(&w.ms_account));
 }
 

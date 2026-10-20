@@ -958,9 +958,10 @@ seconds before it can run. Modelled on OpenZeppelin's TimelockController.
 
 | Function | Description |
 |---|---|
-| `initialize(min_delay, grace_period, proposers, executors, cancellers)` | One-time setup. Empty `executors` means anyone may execute a ready operation. There is no admin afterwards. `min_delay` may not be below the documented floor, and `grace_period` is how long a ready operation stays executable. |
-| `schedule(proposer, targets, fns, args, predecessor, salt, delay) -> id` | Proposer-only. The batch is three parallel vectors — the target, the function and the arguments of each call. `delay >= min_delay`. The id is derived from the batch, the predecessor and the salt (see `hash_operation`). Rejects an id that's already pending or done. |
-| `execute(executor, targets, fns, args, predecessor, salt)` | Executor-only (unless open). Requires the operation ready, not expired, and `predecessor` (if any) done. Runs every call in order via `invoke_contract`; any revert reverts the whole batch. |
+| `initialize(min_delay, grace_period, proposers, executors, cancellers)` | One-time setup. Empty `executors` means anyone may execute a ready operation. There is no admin afterwards. `min_delay` may not be below the documented floor (60 s), and `grace_period` is how long a ready operation stays executable. |
+| `schedule(proposer, targets, fns, args, salt, delay) -> id` | Proposer-only. The batch is three parallel vectors — the target, the function and the arguments of each call. `delay >= min_delay`. The id is derived from the batch and the salt (see `hash_operation`). Rejects an id that's already pending or done. |
+| `schedule_after(proposer, targets, fns, args, predecessor, salt) -> id` | Proposer-only. As `schedule`, but the operation may not execute until `predecessor` has. The delay is the timelock's minimum. |
+| `execute(executor, id)` | Executor-only (unless open). Requires the operation ready, not expired, and its predecessor (if any) done. Runs every call in order via `invoke_contract`; any revert reverts the whole batch. |
 | `cancel(canceller, id)` | Canceller-only. Removes a pending operation, so anything waiting on it as a predecessor is stranded for good. |
 
 **Three roles, no admin.** `Proposer` may schedule, `Executor` may execute,
@@ -993,8 +994,8 @@ schema-migration errors every Zenith contract shares.
 1. Deploy the timelock, then `transfer_admin(timelock)` on each contract.
 2. A proposer schedules the change, e.g. `targets = [options_market]`, `fns = ["set_fee_rate"]`, `args = [[25u32]]`, with a unique `salt`, and announces the id `schedule` returns.
 3. During the delay users can exit; a canceller can `cancel(id)`.
-4. Once `is_operation_ready(id)`, an executor calls `execute` with the exact same `targets`/`fns`/`args`/`predecessor`/`salt`.
-5. Use `predecessor` to force ordering (e.g. a migration after an `upgrade`).
+4. Once `is_operation_ready(id)`, an executor calls `execute(executor, id)`.
+5. Use `schedule_after` to force ordering (e.g. a migration after an `upgrade`).
 
 ## `params` reference
 

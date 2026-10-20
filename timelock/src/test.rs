@@ -3,7 +3,7 @@
 use crate::{Role, Timelock, TimelockClient};
 use soroban_sdk::{
     contract, contractimpl,
-    testutils::{Address as _, Ledger as _, MockAuth, MockAuthInvoke},
+    testutils::{Address as _, Ledger as _},
     vec, Address, BytesN, Env, IntoVal, Symbol, Val, Vec,
 };
 
@@ -73,40 +73,37 @@ impl Harness<'_> {
         BytesN::from_array(&self.env, &[n; 32])
     }
 
-    fn target_targets(&self) -> Vec<Address> {
+    fn targets(&self) -> Vec<Address> {
         vec![&self.env, self.target.address.clone()]
     }
 
-    fn set_value_fns(&self) -> Vec<Symbol> {
+    fn fns(&self) -> Vec<Symbol> {
         vec![&self.env, Symbol::new(&self.env, "set_value")]
     }
 
-    fn set_value_args(&self, value: u32) -> Vec<Vec<Val>> {
+    fn args(&self, value: u32) -> Vec<Vec<Val>> {
         vec![&self.env, vec![&self.env, value.into_val(&self.env)]]
-    }
-
-    /// The arguments of the `execute` call, as the host sees them.
-    fn execute_args(&self, n: u8, value: u32) -> Vec<Val> {
-        vec![
-            &self.env,
-            self.executor.clone().into_val(&self.env),
-            self.target_targets().into_val(&self.env),
-            self.set_value_fns().into_val(&self.env),
-            self.set_value_args(value).into_val(&self.env),
-            None::<BytesN<32>>.into_val(&self.env),
-            self.salt(n).into_val(&self.env),
-        ]
     }
 
     fn schedule_set_value(&self, n: u8, value: u32) -> BytesN<32> {
         self.client.schedule(
             &self.proposer,
-            &self.target_targets(),
-            &self.set_value_fns(),
-            &self.set_value_args(value),
-            &None,
+            &self.targets(),
+            &self.fns(),
+            &self.args(value),
             &self.salt(n),
             &DELAY,
+        )
+    }
+
+    fn schedule_set_value_after(&self, n: u8, value: u32, predecessor: &BytesN<32>) -> BytesN<32> {
+        self.client.schedule_after(
+            &self.proposer,
+            &self.targets(),
+            &self.fns(),
+            &self.args(value),
+            predecessor,
+            &self.salt(n),
         )
     }
 
@@ -117,21 +114,9 @@ impl Harness<'_> {
             &vec![&self.env, self.client.address.clone()],
             &vec![&self.env, Symbol::new(&self.env, func)],
             &vec![&self.env, args],
-            &None,
             &self.salt(n),
             &DELAY,
         )
-    }
-
-    fn execute_set_value(&self, n: u8, value: u32) {
-        self.client.execute(
-            &self.executor,
-            &self.target_targets(),
-            &self.set_value_fns(),
-            &self.set_value_args(value),
-            &None,
-            &self.salt(n),
-        );
     }
 
     fn warp(&self, dt: u64) {
@@ -171,18 +156,13 @@ fn initialize_refuses_a_delay_below_the_documented_floor() {
 
 #[test]
 fn an_empty_executor_set_means_anyone_may_execute() {
-    let h = setup();
-    assert!(!h.client.is_open_executor());
-    let e = &h.env;
+    let e = Env::default();
+    e.mock_all_auths();
     let client = TimelockClient::new(&e, &e.register_contract(None, Timelock));
-    client.initialize(
-        &DELAY,
-        &GRACE,
-        &vec![&e, h.proposer.clone()],
-        &vec![&e],
-        &vec![&e],
-    );
+    let a = Address::generate(&e);
+    client.initialize(&DELAY, &GRACE, &vec![&e, a.clone()], &vec![&e], &vec![&e]);
     assert!(client.is_open_executor());
+    assert!(client.has_role(&Role::Proposer, &a));
 }
 
 // ── role gating ──────────────────────────────────────────────────────────────
@@ -194,10 +174,9 @@ fn only_a_proposer_may_schedule() {
         .client
         .try_schedule(
             &h.outsider,
-            &h.target_targets(),
-            &h.set_value_fns(),
-            &h.set_value_args(1),
-            &None,
+            &h.targets(),
+            &h.fns(),
+            &h.args(1),
             &h.salt(1),
             &DELAY,
         )
@@ -206,10 +185,9 @@ fn only_a_proposer_may_schedule() {
         .client
         .try_schedule(
             &h.canceller,
-            &h.target_targets(),
-            &h.set_value_fns(),
-            &h.set_value_args(1),
-            &None,
+            &h.targets(),
+            &h.fns(),
+            &h.args(1),
             &h.salt(1),
             &DELAY,
         )
@@ -221,17 +199,7 @@ fn only_an_executor_may_execute() {
     let h = setup();
     let id = h.schedule_set_value(1, 42);
     h.warp(DELAY);
-    assert!(h
-        .client
-        .try_execute(
-            &h.outsider,
-            &h.target_targets(),
-            &h.set_value_fns(),
-            &h.set_value_args(42),
-            &None,
-            &h.salt(1),
-        )
-        .is_err());
+    assert!(h.client.try_execute(&h.outsider, &id).is_err());
     // The operation is still pending: the refused attempt changed nothing.
     assert!(h.client.is_operation_pending(&id));
 }
@@ -256,10 +224,9 @@ fn a_delay_shorter_than_min_delay_is_refused() {
         .client
         .try_schedule(
             &h.proposer,
-            &h.target_targets(),
-            &h.set_value_fns(),
-            &h.set_value_args(1),
-            &None,
+            &h.targets(),
+            &h.fns(),
+            &h.args(1),
             &h.salt(1),
             &(DELAY - 1),
         )
@@ -274,22 +241,21 @@ fn execution_is_refused_just_before_the_delay_and_allowed_exactly_at_it() {
 
     h.warp(DELAY - 1);
     assert!(!h.client.is_operation_ready(&id));
-    assert!(h
-        .client
-        .try_execute(
-            &h.executor,
-            &h.target_targets(),
-            &h.set_value_fns(),
-            &h.set_value_args(42),
-            &None,
-            &h.salt(1),
-        )
-        .is_err());
+    assert!(h.client.try_execute(&h.executor, &id).is_err());
 
     h.warp(1);
     assert!(h.client.is_operation_ready(&id));
-    h.execute_set_value(1, 42);
+    h.client.execute(&h.executor, &id);
     assert_eq!(h.target.value(), 42);
+}
+
+#[test]
+fn an_operation_expires_after_its_grace_period() {
+    let h = setup();
+    let id = h.schedule_set_value(1, 42);
+    h.warp(DELAY + GRACE + 1);
+    assert!(h.client.try_execute(&h.executor, &id).is_err());
+    assert_eq!(h.target.value(), 0);
 }
 
 // ── lifecycle ────────────────────────────────────────────────────────────────
@@ -299,19 +265,9 @@ fn an_operation_cannot_execute_twice() {
     let h = setup();
     h.schedule_set_value(1, 42);
     h.warp(DELAY);
-    h.execute_set_value(1, 42);
+    h.client.execute(&h.executor, &h.salt(1));
     assert!(h.client.is_operation_done(&h.salt(1)));
-    assert!(h
-        .client
-        .try_execute(
-            &h.executor,
-            &h.target_targets(),
-            &h.set_value_fns(),
-            &h.set_value_args(42),
-            &None,
-            &h.salt(1),
-        )
-        .is_err());
+    assert!(h.client.try_execute(&h.executor, &h.salt(1)).is_err());
 }
 
 #[test]
@@ -320,17 +276,7 @@ fn cancelling_before_execution_stops_it() {
     let id = h.schedule_set_value(1, 42);
     h.client.cancel(&h.canceller, &id);
     h.warp(DELAY);
-    assert!(h
-        .client
-        .try_execute(
-            &h.executor,
-            &h.target_targets(),
-            &h.set_value_fns(),
-            &h.set_value_args(42),
-            &None,
-            &h.salt(1),
-        )
-        .is_err());
+    assert!(h.client.try_execute(&h.executor, &id).is_err());
     assert_eq!(h.target.value(), 0);
 }
 
@@ -339,17 +285,7 @@ fn executing_after_a_cancel_is_refused() {
     let h = setup();
     let id = h.schedule_set_value(1, 42);
     h.client.cancel(&h.canceller, &id);
-    assert!(h
-        .client
-        .try_execute(
-            &h.executor,
-            &h.target_targets(),
-            &h.set_value_fns(),
-            &h.set_value_args(42),
-            &None,
-            &h.salt(1),
-        )
-        .is_err());
+    assert!(h.client.try_execute(&h.executor, &id).is_err());
 }
 
 #[test]
@@ -357,7 +293,7 @@ fn cancelling_an_already_executed_operation_is_refused() {
     let h = setup();
     h.schedule_set_value(1, 42);
     h.warp(DELAY);
-    h.execute_set_value(1, 42);
+    h.client.execute(&h.executor, &h.salt(1));
     assert!(h.client.try_cancel(&h.canceller, &h.salt(1)).is_err());
 }
 
@@ -375,10 +311,9 @@ fn scheduling_the_same_batch_twice_is_refused() {
         .client
         .try_schedule(
             &h.proposer,
-            &h.target_targets(),
-            &h.set_value_fns(),
-            &h.set_value_args(42),
-            &None,
+            &h.targets(),
+            &h.fns(),
+            &h.args(42),
             &h.salt(1),
             &DELAY,
         )
@@ -396,7 +331,6 @@ fn an_empty_batch_is_refused() {
             &vec![e],
             &vec![e],
             &vec![e],
-            &None,
             &h.salt(1),
             &DELAY,
         )
@@ -409,41 +343,16 @@ fn an_empty_batch_is_refused() {
 fn a_dependant_waits_for_its_predecessor() {
     let h = setup();
     let first = h.schedule_set_value(1, 11);
-    let second = h.client.schedule(
-        &h.proposer,
-        &h.target_targets(),
-        &h.set_value_fns(),
-        &h.set_value_args(22),
-        &Some(first.clone()),
-        &h.salt(2),
-        &DELAY,
-    );
+    let second = h.schedule_set_value_after(2, 22, &first);
     h.warp(DELAY);
 
     // The dependant is ready in time, but its predecessor has not run.
     assert!(h.client.is_operation_ready(&second));
-    assert!(h
-        .client
-        .try_execute(
-            &h.executor,
-            &h.target_targets(),
-            &h.set_value_fns(),
-            &h.set_value_args(22),
-            &Some(first.clone()),
-            &h.salt(2),
-        )
-        .is_err());
+    assert!(h.client.try_execute(&h.executor, &second).is_err());
     assert_eq!(h.target.value(), 0);
 
-    h.execute_set_value(1, 11);
-    h.client.execute(
-        &h.executor,
-        &h.target_targets(),
-        &h.set_value_fns(),
-        &h.set_value_args(22),
-        &Some(first.clone()),
-        &h.salt(2),
-    );
+    h.client.execute(&h.executor, &first);
+    h.client.execute(&h.executor, &second);
     assert_eq!(h.target.value(), 22);
 }
 
@@ -451,28 +360,10 @@ fn a_dependant_waits_for_its_predecessor() {
 fn cancelling_a_predecessor_strands_its_dependant() {
     let h = setup();
     let first = h.schedule_set_value(1, 11);
-    h.client.schedule(
-        &h.proposer,
-        &h.target_targets(),
-        &h.set_value_fns(),
-        &h.set_value_args(22),
-        &Some(first.clone()),
-        &h.salt(2),
-        &DELAY,
-    );
+    let second = h.schedule_set_value_after(2, 22, &first);
     h.client.cancel(&h.canceller, &first);
     h.warp(DELAY);
-    assert!(h
-        .client
-        .try_execute(
-            &h.executor,
-            &h.target_targets(),
-            &h.set_value_fns(),
-            &h.set_value_args(22),
-            &Some(first.clone()),
-            &h.salt(2),
-        )
-        .is_err());
+    assert!(h.client.try_execute(&h.executor, &second).is_err());
     assert_eq!(h.target.value(), 0);
 }
 
@@ -481,66 +372,45 @@ fn cancelling_a_predecessor_strands_its_dependant() {
 #[test]
 fn self_calls_reconfigure_the_timelock() {
     let h = setup();
-    let new_proposer = Address::generate(&h.env);
     let e = &h.env;
+    let new_proposer = Address::generate(&e);
 
-    let delay_args = vec![&e, (2 * DELAY).into_val(&e)];
-    let grant_args = vec![
-        &e,
-        Role::Proposer.into_val(&e),
-        new_proposer.clone().into_val(&e),
-    ];
-    let revoke_args = vec![
-        &e,
-        Role::Proposer.into_val(&e),
-        h.proposer.clone().into_val(&e),
-    ];
-    let open_args = vec![&e, true.into_val(&e)];
-
-    let delay_op = h.schedule_self(1, "update_delay", delay_args.clone());
-    let grant_op = h.schedule_self(2, "grant_role", grant_args.clone());
-    let revoke_op = h.schedule_self(3, "revoke_role", revoke_args.clone());
-    let open_op = h.schedule_self(4, "set_open_executor", open_args.clone());
+    let delay_op = h.schedule_self(1, "update_delay", vec![&e, (2 * DELAY).into_val(&e)]);
+    let grant_op = h.schedule_self(
+        2,
+        "grant_role",
+        vec![
+            &e,
+            Role::Proposer.into_val(&e),
+            new_proposer.clone().into_val(&e),
+        ],
+    );
+    let revoke_op = h.schedule_self(
+        3,
+        "revoke_role",
+        vec![
+            &e,
+            Role::Proposer.into_val(&e),
+            h.proposer.clone().into_val(&e),
+        ],
+    );
+    let open_op = h.schedule_self(4, "set_open_executor", vec![&e, true.into_val(&e)]);
 
     h.warp(DELAY);
+
     h.client.execute(
         &h.executor,
-        &vec![&e, h.client.address.clone()],
-        &vec![&e, Symbol::new(&e, "update_delay")],
-        &vec![&e, delay_args.clone()],
-        &None,
-        &h.salt(1),
+        &delay_op,
     );
     assert_eq!(h.client.get_min_delay(), 2 * DELAY);
 
-    h.client.execute(
-        &h.executor,
-        &vec![&e, h.client.address.clone()],
-        &vec![&e, Symbol::new(&e, "grant_role")],
-        &vec![&e, grant_args.clone()],
-        &None,
-        &h.salt(2),
-    );
+    h.client.execute(&h.executor, &grant_op);
     assert!(h.client.has_role(&Role::Proposer, &new_proposer));
 
-    h.client.execute(
-        &h.executor,
-        &vec![&e, h.client.address.clone()],
-        &vec![&e, Symbol::new(&e, "revoke_role")],
-        &vec![&e, revoke_args.clone()],
-        &None,
-        &h.salt(3),
-    );
+    h.client.execute(&h.executor, &revoke_op);
     assert!(!h.client.has_role(&Role::Proposer, &h.proposer));
 
-    h.client.execute(
-        &h.executor,
-        &vec![&e, h.client.address.clone()],
-        &vec![&e, Symbol::new(&e, "set_open_executor")],
-        &vec![&e, open_args.clone()],
-        &None,
-        &h.salt(4),
-    );
+    h.client.execute(&h.executor, &open_op);
     assert!(h.client.is_open_executor());
 
     // Every one of those operations ran.
@@ -554,19 +424,9 @@ fn self_calls_reconfigure_the_timelock() {
 fn a_self_call_the_timelock_does_not_implement_is_refused() {
     let h = setup();
     let e = &h.env;
-    h.schedule_self(1, "not_a_function", vec![&e]);
+    let op = h.schedule_self(1, "not_a_function", vec![&e]);
     h.warp(DELAY);
-    assert!(h
-        .client
-        .try_execute(
-            &h.executor,
-            &vec![&e, h.client.address.clone()],
-            &vec![&e, Symbol::new(&e, "not_a_function")],
-            &vec![&e, vec![&e]],
-            &None,
-            &h.salt(1),
-        )
-        .is_err());
+    assert!(h.client.try_execute(&h.executor, &op).is_err());
 }
 
 // ── the id ───────────────────────────────────────────────────────────────────
@@ -575,38 +435,27 @@ fn a_self_call_the_timelock_does_not_implement_is_refused() {
 fn the_operation_id_commits_to_the_batch_the_predecessor_and_the_salt() {
     let h = setup();
     let id = h.client.hash_operation(
-        &h.target_targets(),
-        &h.set_value_fns(),
-        &h.set_value_args(42),
+        &h.targets(),
+        &h.fns(),
+        &h.args(42),
         &None,
         &h.salt(1),
     );
     assert_eq!(id, h.schedule_set_value(1, 42));
 
-    // A different payload or a different salt gives a different id.
+    // A different payload, predecessor or salt gives a different id.
     let other = h.client.hash_operation(
-        &h.target_targets(),
-        &h.set_value_fns(),
-        &h.set_value_args(43),
+        &h.targets(),
+        &h.fns(),
+        &h.args(43),
         &None,
         &h.salt(1),
     );
     assert_ne!(id, other);
-    let salted = h.client.hash_operation(
-        &h.target_targets(),
-        &h.set_value_fns(),
-        &h.set_value_args(42),
-        &None,
-        &h.salt(2),
-    );
+    let salted = h.client.hash_operation(&h.targets(), &h.fns(), &h.args(42), &None, &h.salt(2));
     assert_ne!(id, salted);
-    let preceded = h.client.hash_operation(
-        &h.target_targets(),
-        &h.set_value_fns(),
-        &h.set_value_args(42),
-        &Some(h.salt(3)),
-        &h.salt(1),
-    );
+    let preceded =
+        h.client.hash_operation(&h.targets(), &h.fns(), &h.args(42), &Some(h.salt(3)), &h.salt(1));
     assert_ne!(id, preceded);
 }
 
@@ -625,8 +474,13 @@ fn the_stored_operation_is_the_spec_it_was_scheduled_with() {
     assert_eq!(op.ready_at, DELAY);
     // The spec the id was derived from is the same one that was stored.
     assert_eq!(
-        h.client
-            .hash_operation(&op.targets, &op.fns, &op.args, &None, &op.salt,),
+        h.client.hash_operation(
+            &op.targets,
+            &op.fns,
+            &op.args,
+            &None,
+            &op.salt,
+        ),
         id
     );
 }
@@ -641,22 +495,19 @@ fn the_timelock_is_the_admin_of_the_contract_it_acts_on() {
     // Only the executor's own authorization is supplied. The target's admin
     // is the timelock, and the timelock is its direct invoker, so the
     // target's own admin check passes without a second signature.
-    h.env.mock_auths(&[MockAuth {
+    h.env.set_auths(&[MockAuth {
         address: &h.executor,
         invoke: &MockAuthInvoke {
             contract: &h.client.address,
             fn_name: "execute",
-            args: h.execute_args(1, 42),
+            args: vec![
+                &h.env,
+                h.executor.clone().into_val(&h.env),
+                h.salt(1).into_val(&h.env),
+            ],
             sub_invokes: &[],
         },
     }]);
-    h.client.execute(
-        &h.executor,
-        &h.target_targets(),
-        &h.set_value_fns(),
-        &h.set_value_args(42),
-        &None,
-        &h.salt(1),
-    );
+    h.client.execute(&h.executor, &h.salt(1));
     assert_eq!(h.target.value(), 42);
 }

@@ -49,7 +49,7 @@ still works after lock-in.
 | Transition | Script | Mechanism |
 |------------|--------|-----------|
 | 0 → 1 | `stage1_admin_to_multisig.sh` | The deployer calls `transfer_admin(multisig_account)` on options_market and price_oracle. |
-| 1 → 2 | `stage2_admin_to_timelock.sh` | The multisig calls `transfer_admin(timelock)`. First confirm that the timelock's proposer and guardian are the multisig account. |
+| 1 → 2 | `stage2_admin_to_timelock.sh` | The multisig calls `transfer_admin(timelock)`. First confirm that the timelock's proposer and canceller are the multisig account. |
 | 2 → 3 | `stage3_proposer_to_governor.sh` | The multisig schedules a timelock self-call `grant_role(Proposer, governor)`, then anyone executes it after `min_delay`. |
 | 3 → 4 | `stage4_lock_in.sh` | A governor proposal calls the timelock's `revoke_role(Proposer, multisig)` and `revoke_role(Canceller, multisig)`. |
 

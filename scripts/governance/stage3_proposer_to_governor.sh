@@ -15,7 +15,7 @@ case "$PHASE" in
     tl_schedule "$MULTISIG_ACCOUNT" "$TARGETS" "$FNS" "$ARGS" "$SALT"
     ;;
   execute)
-    tl_execute "$MULTISIG_ACCOUNT" "$TARGETS" "$FNS" "$ARGS" "$SALT"
+    tl_execute "$MULTISIG_ACCOUNT" "$(tl_op_id "$TARGETS" "$FNS" "$ARGS" "$SALT")"
     echo "timelock governor is proposer: $(view "$TIMELOCK_ID" has_role --role "$(role proposer)" --account "$GOVERNOR_ID") (expect true)"
     ;;
 esac
