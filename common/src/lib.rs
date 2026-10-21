@@ -15,6 +15,7 @@
 //! and pinned-multisig wasm upgrades (`upgrade`) every contract uses —
 //! see docs/migrations.md.
 
+pub mod guard;
 pub mod migrations;
 pub mod upgrade;
 

@@ -1,0 +1,21 @@
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   /home/user/contracts/options_market/Cargo.toml
+workspace: /home/user/contracts/Cargo.toml
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   /home/user/contracts/price_oracle/Cargo.toml
+workspace: /home/user/contracts/Cargo.toml
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   /home/user/contracts/streams/Cargo.toml
+workspace: /home/user/contracts/Cargo.toml
+   Compiling zenith-common v0.1.0 (/home/user/contracts/common)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.46s
+     Running tests/guard.rs (target/debug/deps/guard-fc0a26f56f37902b)
+
+running 4 tests
+test guard::test::cei_orders_stages_and_short_circuits ... ok
+test guard::test::reentry_never_executes_or_unlocks_outer_guard ... ok
+test guard::test::releases_on_success_error_and_question_mark ... ok
+test guard::test::failed_invocation_rolls_back_acquisition ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
