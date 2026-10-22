@@ -17,4 +17,9 @@ pub enum Error {
     InvalidUtilization = 11,
     TooManyPositions = 12,
     BelowMinimumDeposit = 13,
+    DepositCapExceeded = 14,
+    TotalCapacityExceeded = 15,
+    InvalidFeeConfig = 16,
+    Paused = 17,
+    Unauthorized = 18,
 }

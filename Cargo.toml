@@ -9,6 +9,7 @@ members = [
     "governor",
     "grants_escrow",
     "integration_tests",
+    "lp_pool",
     "multisig",
     "options_market",
     "params",

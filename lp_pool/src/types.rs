@@ -37,6 +37,10 @@ pub enum DataKey {
     SeriesCap(u64),
     SeriesLocked(u64),
     Positions,
+    /// `PoolConfig`, read once per entrypoint.
+    Config,
+    /// `idle` right after the previous epoch closed; the base for PnL.
+    EpochBaseline,
 }
 
 /// A user's queued deposit (asset amount) or withdrawal (share amount).
@@ -64,4 +68,16 @@ pub struct PoolPosition {
     pub position_id: u64,
     pub series_id: u64,
     pub collateral: i128,
+}
+
+/// Admin-set caps, fees and pause flag. Zero caps mean unlimited.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PoolConfig {
+    pub max_deposit_per_epoch: i128,
+    pub total_capacity: i128,
+    pub performance_fee_bps: u32,
+    pub management_fee_bps: u32,
+    pub treasury: Option<Address>,
+    pub paused: bool,
 }

@@ -30,9 +30,8 @@ soroban-sdk = { version = "21.0.0", features = ["testutils"] }
 # Dev/test-only: registers a REAL multisig contract instance inside the
 # test Env for cross-contract tests. Never linked into the production
 # wasm (see src/multisig_client.rs).
+proptest = "1"
 multisig = { package = "zenith-multisig", path = "../multisig", features = ["testutils"] }
-# Adversarial mock contracts for negative-path cross-contract tests (issue #115).
-test_adversaries = { package = "zenith-test-adversaries", path = "../test_adversaries" }
 
 [features]
 testutils = ["soroban-sdk/testutils"]

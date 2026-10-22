@@ -18,6 +18,9 @@ epoch N+1 open ──► users: claim(user) → shares / assets from epoch N
 |---|---|---|
 | `initialize(admin, keeper, asset, market, max_utilization_bps)` | admin | One-time setup. |
 | `set_keeper`, `set_max_utilization`, `set_series_cap(series_id, max_collateral)` | admin | Governance risk limits. A cap of 0 de-lists a series. |
+| `set_deposit_caps(max_deposit_per_epoch, total_capacity)` | admin / `_via_multisig` | Caps on queued deposits per epoch and on `idle + locked + queued`; 0 = unlimited. |
+| `set_fees(performance_fee_bps, management_fee_bps, treasury)` | admin / `_via_multisig` | `sum <= 10_000`; non-zero fees need a treasury. |
+| `set_paused(paused)` | admin / `_via_multisig` | Blocks `deposit` only. |
 | `deposit(user, amount)` | user | Queues `amount ≥ MIN_DEPOSIT` into the current epoch. |
 | `request_withdraw(user, shares)` | user | Moves shares out of the balance into a withdrawal ticket for the current epoch. |
 | `claim(user)` | anyone | Settles `user`'s tickets from processed epochs (shares credited, assets paid to `user`). `deposit`/`request_withdraw` claim first automatically. |
@@ -95,3 +98,22 @@ down, in the pool's favour.
 - **Shares aren't a token yet.** Shares are internal balances. The
   SEP-41 `lp_token` contract exists for composability; wiring the pool
   to mint through it is a follow-up.
+
+## Caps, fees and pause
+
+- **Caps.** A deposit that would push the epoch's queued deposits over
+  `max_deposit_per_epoch`, or `idle + locked + queued` over
+  `total_capacity`, is rejected (`DepositCapExceeded` /
+  `TotalCapacityExceeded`); it is never truncated to fit. Reaching a cap
+  exactly is allowed and emits `cap_reached`. Lowering a cap below the
+  current size never touches existing positions or queued tickets; it only
+  blocks new deposits.
+- **Fees.** At `process_epoch`, before conversions, the pool pays the
+  treasury `performance_fee_bps` of the epoch's PnL (`idle` now minus `idle`
+  after the previous close, so a losing epoch pays nothing) plus
+  `management_fee_bps` of `idle`, both rounded down. Fees leave `idle`, so
+  they never mint shares. With no treasury set, no fee is charged.
+- **Pause.** `paused` rejects `deposit` with `Paused`. Withdrawal requests,
+  `claim`, `process_epoch` and redemptions keep working.
+- Admin calls accept the admin's signature or, via the `_via_multisig`
+  twins, an executable multisig approval (`Standard` class).

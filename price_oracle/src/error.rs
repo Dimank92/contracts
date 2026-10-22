@@ -14,6 +14,18 @@ pub enum Error {
     TooManyFeeders = 8,
     Unauthorized = 9,
     InvalidMinReports = 10,
+    NotInitialized = 11,
+    InvalidAmount = 12,
+    InvalidDisputeWindow = 13,
+    NoBond = 14,
+    InsufficientBond = 15,
+    DisputeAlreadyOpen = 16,
+    NoDispute = 17,
+    DisputeWindowOpen = 18,
+    DisputeWindowClosed = 19,
+    InvalidEvidence = 20,
+    ReportAlreadySlashed = 21,
+    FeederDisputed = 22,
     // Schema migrations (zenith_common::migrations) — same codes in
     // every Zenith contract. See docs/migrations.md.
     SchemaVersionMismatch = 100,

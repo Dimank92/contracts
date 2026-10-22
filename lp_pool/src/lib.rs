@@ -44,7 +44,8 @@ mod ttl;
 mod types;
 
 use error::Error;
-use types::{DataKey, EpochResult, PoolPosition, Ticket};
+use types::{DataKey, EpochResult, PoolConfig, PoolPosition, Ticket};
+use zenith_common::{ActionClass, Auth};
 
 /// Virtual shares/assets in every conversion (ERC-4626 decimal offset).
 pub const VIRTUAL_SHARES: i128 = 1_000;
@@ -62,6 +63,87 @@ pub struct LpPool;
 
 #[contractimpl]
 impl LpPool {
+    fn require_auth(env: &Env, auth: &Auth) {
+        ttl::extend_instance(env);
+        if !env.storage().instance().has(&DataKey::Admin) {
+            panic_with_error!(env, Error::NotInitialized);
+        }
+        zenith_common::require_admin_or_multisig(
+            env,
+            &DataKey::Admin,
+            auth,
+            ActionClass::Standard,
+            Error::Unauthorized,
+        );
+    }
+
+    fn save_config(env: &Env, config: &PoolConfig) {
+        env.storage().instance().set(&DataKey::Config, config);
+        events::config_updated(env);
+    }
+
+    fn set_caps_inner(env: &Env, auth: Auth, max_deposit_per_epoch: i128, total_capacity: i128) {
+        Self::require_auth(env, &auth);
+        if max_deposit_per_epoch < 0 || total_capacity < 0 {
+            panic_with_error!(env, Error::InvalidAmount);
+        }
+        let mut c = config(env);
+        c.max_deposit_per_epoch = max_deposit_per_epoch;
+        c.total_capacity = total_capacity;
+        Self::save_config(env, &c);
+    }
+
+    fn set_fees_inner(env: &Env, auth: Auth, args: (u32, u32, Option<Address>)) {
+        Self::require_auth(env, &auth);
+        let (performance_fee_bps, management_fee_bps, treasury) = args;
+        let sum = i128::from(performance_fee_bps) + i128::from(management_fee_bps);
+        if sum > BPS || (sum > 0 && treasury.is_none()) {
+            panic_with_error!(env, Error::InvalidFeeConfig);
+        }
+        let mut c = config(env);
+        c.performance_fee_bps = performance_fee_bps;
+        c.management_fee_bps = management_fee_bps;
+        c.treasury = treasury;
+        Self::save_config(env, &c);
+    }
+
+    fn set_paused_inner(env: &Env, auth: Auth, paused: bool) {
+        Self::require_auth(env, &auth);
+        let mut c = config(env);
+        c.paused = paused;
+        Self::save_config(env, &c);
+        events::paused(env, paused);
+    }
+
+    /// Pays the epoch's fees to the treasury out of `gross` idle assets
+    /// and returns what is left. The performance fee is a share of PnL
+    /// since the last close, so a losing epoch pays none; both round down.
+    fn collect_fees(env: &Env, gross: i128) -> i128 {
+        let c = config(env);
+        let treasury = match c.treasury {
+            Some(t) => t,
+            None => return gross,
+        };
+        let pnl = gross - get_i128(env, &DataKey::EpochBaseline);
+        let performance = if pnl > 0 {
+            mul(env, pnl, c.performance_fee_bps.into()) / BPS
+        } else {
+            0
+        };
+        let management = mul(env, gross, c.management_fee_bps.into()) / BPS;
+        let fee = performance + management;
+        if fee == 0 {
+            return gross;
+        }
+        token::Client::new(env, &asset(env)).transfer(
+            &env.current_contract_address(),
+            &treasury,
+            &fee,
+        );
+        events::fees_collected(env, epoch(env), treasury, performance, management);
+        gross - fee
+    }
+
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -111,6 +193,58 @@ impl LpPool {
         ttl::set_persistent(&env, &DataKey::SeriesCap(series_id), &max_collateral);
     }
 
+    /// Sets the per-epoch and total deposit caps (zero = unlimited).
+    /// Lowering a cap below the current size only blocks *new* deposits.
+    pub fn set_deposit_caps(env: Env, max_deposit_per_epoch: i128, total_capacity: i128) {
+        Self::set_caps_inner(&env, Auth::Admin, max_deposit_per_epoch, total_capacity);
+    }
+
+    pub fn set_deposit_caps_via_multisig(
+        env: Env,
+        multisig: Address,
+        action_id: u64,
+        max_deposit_per_epoch: i128,
+        total_capacity: i128,
+    ) {
+        let auth = Auth::Multisig(multisig, action_id);
+        Self::set_caps_inner(&env, auth, max_deposit_per_epoch, total_capacity);
+    }
+
+    /// Sets performance/management fees (bps of epoch PnL / of assets per
+    /// epoch, `sum <= 10_000`) and the treasury they are paid to. A
+    /// non-zero fee requires a treasury.
+    pub fn set_fees(
+        env: Env,
+        performance_fee_bps: u32,
+        management_fee_bps: u32,
+        treasury: Option<Address>,
+    ) {
+        let args = (performance_fee_bps, management_fee_bps, treasury);
+        Self::set_fees_inner(&env, Auth::Admin, args);
+    }
+
+    pub fn set_fees_via_multisig(
+        env: Env,
+        multisig: Address,
+        action_id: u64,
+        performance_fee_bps: u32,
+        management_fee_bps: u32,
+        treasury: Option<Address>,
+    ) {
+        let args = (performance_fee_bps, management_fee_bps, treasury);
+        Self::set_fees_inner(&env, Auth::Multisig(multisig, action_id), args);
+    }
+
+    /// Blocks (or re-enables) new deposits. Withdrawal requests, claims
+    /// and epoch processing are never blocked.
+    pub fn set_paused(env: Env, paused: bool) {
+        Self::set_paused_inner(&env, Auth::Admin, paused);
+    }
+
+    pub fn set_paused_via_multisig(env: Env, multisig: Address, action_id: u64, paused: bool) {
+        Self::set_paused_inner(&env, Auth::Multisig(multisig, action_id), paused);
+    }
+
     // ── Depositors ────────────────────────────────────────────────────────────
 
     /// Queues `amount` of the asset for conversion to shares when the
@@ -119,8 +253,29 @@ impl LpPool {
     pub fn deposit(env: Env, user: Address, amount: i128) {
         ttl::extend_instance(&env);
         user.require_auth();
+        let config = config(&env);
+        if config.paused {
+            panic_with_error!(&env, Error::Paused);
+        }
         if amount < MIN_DEPOSIT {
             panic_with_error!(&env, Error::BelowMinimumDeposit);
+        }
+        // Over-cap deposits are rejected outright, never truncated to fit.
+        let pending = checked_add(&env, get_i128(&env, &DataKey::PendingDeposits), amount);
+        if config.max_deposit_per_epoch > 0 && pending > config.max_deposit_per_epoch {
+            panic_with_error!(&env, Error::DepositCapExceeded);
+        }
+        let size = checked_add(
+            &env,
+            checked_add(
+                &env,
+                get_i128(&env, &DataKey::Idle),
+                get_i128(&env, &DataKey::Locked),
+            ),
+            pending,
+        );
+        if config.total_capacity > 0 && size > config.total_capacity {
+            panic_with_error!(&env, Error::TotalCapacityExceeded);
         }
         Self::claim_inner(&env, &user);
         token::Client::new(&env, &asset(&env)).transfer(
@@ -132,6 +287,11 @@ impl LpPool {
         add_ticket(&env, &DataKey::Deposit(user.clone()), epoch, amount);
         add_i128(&env, &DataKey::PendingDeposits, amount);
         events::deposit_queued(&env, user, epoch, amount);
+        if (config.max_deposit_per_epoch > 0 && pending == config.max_deposit_per_epoch)
+            || (config.total_capacity > 0 && size == config.total_capacity)
+        {
+            events::cap_reached(&env, epoch, size);
+        }
     }
 
     /// Queues `shares` for redemption at the current epoch's closing
@@ -333,7 +493,8 @@ impl LpPool {
         if !positions(&env).is_empty() {
             panic_with_error!(&env, Error::PositionsStillOpen);
         }
-        let assets = get_i128(&env, &DataKey::Idle);
+        let gross = get_i128(&env, &DataKey::Idle);
+        let assets = Self::collect_fees(&env, gross);
         let supply = get_i128(&env, &DataKey::TotalShares);
         let deposit_assets = get_i128(&env, &DataKey::PendingDeposits);
         let withdraw_shares = get_i128(&env, &DataKey::PendingWithdrawShares);
@@ -342,11 +503,9 @@ impl LpPool {
         let withdraw_assets = to_assets(&env, withdraw_shares, assets, supply);
         let deposit_shares = to_shares(&env, deposit_assets, assets, supply);
 
-        set_i128(
-            &env,
-            &DataKey::Idle,
-            assets - withdraw_assets + deposit_assets,
-        );
+        let idle = assets - withdraw_assets + deposit_assets;
+        set_i128(&env, &DataKey::Idle, idle);
+        set_i128(&env, &DataKey::EpochBaseline, idle);
         add_i128(&env, &DataKey::Claimable, withdraw_assets);
         set_i128(
             &env,
@@ -415,6 +574,10 @@ impl LpPool {
 
     pub fn get_epoch_result(env: Env, epoch: u32) -> Option<EpochResult> {
         ttl::get_persistent(&env, &DataKey::EpochResult(epoch))
+    }
+
+    pub fn get_config(env: Env) -> PoolConfig {
+        config(&env)
     }
 
     pub fn get_positions(env: Env) -> Vec<PoolPosition> {
@@ -513,6 +676,20 @@ fn market(env: &Env) -> Address {
 
 fn epoch(env: &Env) -> u32 {
     env.storage().instance().get(&DataKey::Epoch).unwrap_or(0)
+}
+
+fn config(env: &Env) -> PoolConfig {
+    env.storage()
+        .instance()
+        .get(&DataKey::Config)
+        .unwrap_or(PoolConfig {
+            max_deposit_per_epoch: 0,
+            total_capacity: 0,
+            performance_fee_bps: 0,
+            management_fee_bps: 0,
+            treasury: None,
+            paused: false,
+        })
 }
 
 fn positions(env: &Env) -> Vec<PoolPosition> {

@@ -32,12 +32,33 @@ Soroban (Stellar smart contract) crates for the Zenith options protocol.
   from other tags' deposits. `options_market::escrow_series_to_vault` /
   `claim_refund_from_vault` now wire this in for the specific gap it was
   built for — see "Known gaps" below for the scope of that integration.
+- **price_oracle history and disputes.** Each aggregate round stores a
+  Uniswap-v2-style cumulative `price * elapsed_ledgers`; `twap(symbol,
+  window_ledgers)` is one subtraction over two observations, `None` when the
+  window reaches past the 256-round retention (windows are also clamped to 30
+  days), and carries the last price across gaps (`twap_data` reports the gap).
+  `get_round` / `latest_round` read retained rounds. Slashing is two-step:
+  `propose_slash` moves the amount into a `Disputed` bond for
+  `dispute_window_ledgers`; the accused posts an evidence hash (<= 64 bytes)
+  and cannot report or count toward quorum meanwhile; then the admin or
+  multisig calls `resolve_dispute(Slash | Restore)` (slashed amounts go to
+  the burn or reward-pool total), or anyone calls `finalize_dispute` one day
+  later, which restores. Bonds are accounting entries; custody is the
+  separate feeder-staking work.
 - [`timelock/`](timelock) — a delayed-execution admin (proposer /
   executor / canceller roles, predecessor dependencies) meant to hold the
   admin role on the other contracts so users always get an exit window.
+  Read-only queries (no auth, no writes, no TTL extension): `get_proposal`,
+  `is_executable`, `is_executed`, `is_cancelled`, `next_executable_at`,
+  `predecessor`, `proposal_count`, `pending_count`, `get_pending(offset,
+  limit)` (limit 1..=50 over a pending list capped at 100; `offset` indexes
+  the pending list, not the id space), and the roles `proposer`,
+  `executor`, `canceller`, `delay`, `guardian`.
 - [`lp_pool/`](lp_pool) — a liquidity-provider pool that writes options
   on `options_market` on behalf of its depositors, with epoch-queued
-  deposits and withdrawals. See [docs/lp_pool.md](docs/lp_pool.md).
+  deposits and withdrawals, admin-set deposit caps, performance/management
+  fees to a treasury, and a deposit-only pause. See
+  [docs/lp_pool.md](docs/lp_pool.md).
 - [`lp_token/`](lp_token) — a SEP-41 share token that only the pinned
   `lp_pool` can mint. See [docs/lp_token.md](docs/lp_token.md).
 - [`multisig/`](multisig) — M-of-N approval tracking for opaque,

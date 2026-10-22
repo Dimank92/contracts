@@ -18,6 +18,7 @@ codegen-units = 1
 
 [dependencies]
 soroban-sdk = { version = "21.0.0" }
+zenith-common = { path = "../common" }
 
 [dev-dependencies]
 soroban-sdk = { version = "21.0.0", features = ["testutils"] }

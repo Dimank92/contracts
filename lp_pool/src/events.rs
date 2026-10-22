@@ -41,3 +41,30 @@ pub fn epoch_processed(env: &Env, epoch: u32, total_assets: i128, total_shares: 
         (total_assets, total_shares),
     );
 }
+
+pub fn config_updated(env: &Env) {
+    env.events()
+        .publish((Symbol::new(env, "config_updated"),), ());
+}
+
+pub fn cap_reached(env: &Env, epoch: u32, total: i128) {
+    env.events()
+        .publish((Symbol::new(env, "cap_reached"), epoch), total);
+}
+
+pub fn paused(env: &Env, paused: bool) {
+    env.events().publish((Symbol::new(env, "paused"),), paused);
+}
+
+pub fn fees_collected(
+    env: &Env,
+    epoch: u32,
+    treasury: Address,
+    performance: i128,
+    management: i128,
+) {
+    env.events().publish(
+        (Symbol::new(env, "fees_collected"), epoch, treasury),
+        (performance, management),
+    );
+}
