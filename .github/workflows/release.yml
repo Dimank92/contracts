@@ -1,0 +1,121 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+      - 'v*.*.*-*'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.75.0"
+  WASM_TARGET: wasm32-unknown-unknown
+
+jobs:
+  build-and-release:
+    name: Build wasm artifacts and publish release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ env.WASM_TARGET }}
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-${{ env.RUST_TOOLCHAIN }}-
+
+      - name: Record resolved toolchain and dependency versions
+        id: versions
+        run: |
+          set -euo pipefail
+          mkdir -p release-notes
+          {
+            echo "## Build environment"
+            echo ""
+            echo '```'
+            echo "rustc: $(rustc --version)"
+            echo "cargo: $(cargo --version)"
+            echo "target: ${WASM_TARGET}"
+            echo '```'
+            echo ""
+            echo "## Resolved dependency versions"
+            echo ""
+            echo '```'
+            cargo tree --workspace --locked --depth 1 2>/dev/null || cargo tree --workspace --depth 1
+            echo '```'
+          } > release-notes/environment.md
+          cat release-notes/environment.md
+
+      - name: Build wasm artifacts and generate checksums
+        run: |
+          set -euo pipefail
+          chmod +x scripts/build-wasm.sh
+          ./scripts/build-wasm.sh --release --out-dir artifacts
+
+      - name: Verify artifacts were produced
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          wasm_files=(artifacts/*.wasm)
+          if [ "${#wasm_files[@]}" -eq 0 ]; then
+            echo "::error::No wasm artifacts were produced; failing release."
+            exit 1
+          fi
+          if [ ! -f artifacts/SHA256SUMS ]; then
+            echo "::error::SHA256SUMS manifest was not generated; failing release."
+            exit 1
+          fi
+          echo "Produced ${#wasm_files[@]} wasm artifact(s):"
+          printf '  %s\n' "${wasm_files[@]}"
+          echo "Checksum manifest:"
+          cat artifacts/SHA256SUMS
+
+      - name: Assemble release notes
+        run: |
+          set -euo pipefail
+          {
+            echo "# Release ${GITHUB_REF_NAME}"
+            echo ""
+            echo "Wasm artifacts for tag \`${GITHUB_REF_NAME}\`."
+            echo ""
+            echo "## Artifacts"
+            echo ""
+            echo '```'
+            cat artifacts/SHA256SUMS
+            echo '```'
+            echo ""
+            cat release-notes/environment.md
+          } > release-notes/RELEASE_NOTES.md
+          cat release-notes/RELEASE_NOTES.md
+
+      - name: Upload artifacts to GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body_path: release-notes/RELEASE_NOTES.md
+          files: |
+            artifacts/*.wasm
+            artifacts/SHA256SUMS
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

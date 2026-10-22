@@ -313,6 +313,148 @@ fn get_price_returns_once_the_quorum_is_met() {
     assert!(h.client.get_price(&xlm).is_some());
 }
 
+/// A single fresh feeder must not single-handedly determine the
+/// aggregate once the quorum is above one — the README calls this out as
+/// the reason the quorum exists at all.
+#[test]
+fn a_single_fresh_feeder_produces_no_aggregate_while_two_do() {
+    let h = setup();
+    h.client.set_min_reports(&2);
+
+    let xlm = Symbol::new(&h.env, "XLM");
+    let feeder_a = Address::generate(&h.env);
+    let feeder_b = Address::generate(&h.env);
+    h.client.add_feeder(&feeder_a);
+    h.client.add_feeder(&feeder_b);
+
+    h.client.report_price(&feeder_a, &xlm, &1_000_000);
+    assert!(h.client.get_price(&xlm).is_none());
+
+    h.client.report_price(&feeder_b, &xlm, &1_100_000);
+    assert_eq!(h.client.get_price(&xlm).unwrap(), 1_050_000);
+}
+
+/// `min_reports == 1` is the boundary where a single fresh feeder is
+/// enough on its own.
+#[test]
+fn min_reports_of_one_accepts_a_single_fresh_feeder() {
+    let h = setup();
+    assert_eq!(h.client.get_min_reports(), 1);
+
+    let xlm = Symbol::new(&h.env, "XLM");
+    let feeder = Address::generate(&h.env);
+    h.client.add_feeder(&feeder);
+    h.client.report_price(&feeder, &xlm, &1_200_000);
+
+    assert_eq!(h.client.get_price(&xlm).unwrap(), 1_200_000);
+}
+
+/// `min_reports` exactly equal to the feeder count is satisfiable only
+/// when every registered feeder reports fresh.
+#[test]
+fn min_reports_equal_to_the_feeder_count_requires_every_feeder() {
+    let h = setup();
+    let xlm = Symbol::new(&h.env, "XLM");
+    let feeder_a = Address::generate(&h.env);
+    let feeder_b = Address::generate(&h.env);
+    h.client.add_feeder(&feeder_a);
+    h.client.add_feeder(&feeder_b);
+    h.client.set_min_reports(&h.client.get_feeder_count());
+
+    h.client.report_price(&feeder_a, &xlm, &1_000_000);
+    assert!(h.client.get_price(&xlm).is_none());
+
+    h.client.report_price(&feeder_b, &xlm, &1_100_000);
+    assert_eq!(h.client.get_price(&xlm).unwrap(), 1_050_000);
+}
+
+/// `min_reports` larger than the number of registered feeders can never
+/// be satisfied: aggregation fails closed rather than falling back to
+/// whatever reports happen to exist.
+#[test]
+fn min_reports_larger_than_the_feeder_count_never_aggregates() {
+    let h = setup();
+    let xlm = Symbol::new(&h.env, "XLM");
+    let feeder_a = Address::generate(&h.env);
+    let feeder_b = Address::generate(&h.env);
+    h.client.add_feeder(&feeder_a);
+    h.client.add_feeder(&feeder_b);
+    h.client.set_min_reports(&3);
+
+    h.client.report_price(&feeder_a, &xlm, &1_000_000);
+    h.client.report_price(&feeder_b, &xlm, &1_100_000);
+
+    assert!(h.client.get_price(&xlm).is_none());
+}
+
+/// Once the staleness window elapses for every feeder, `get_price` must
+/// return `None` rather than serving the last-known (stale) price.
+#[test]
+fn an_elapsed_staleness_window_for_every_feeder_yields_no_price() {
+    let h = setup();
+    let xlm = Symbol::new(&h.env, "XLM");
+    let feeder_a = Address::generate(&h.env);
+    let feeder_b = Address::generate(&h.env);
+    h.client.add_feeder(&feeder_a);
+    h.client.add_feeder(&feeder_b);
+    h.client.report_price(&feeder_a, &xlm, &1_000_000);
+    h.client.report_price(&feeder_b, &xlm, &1_100_000);
+    assert!(h.client.get_price(&xlm).is_some());
+
+    h.env
+        .ledger()
+        .set_timestamp(h.env.ledger().timestamp() + h.client.get_max_staleness() + 1);
+
+    assert!(h.client.get_price(&xlm).is_none());
+}
+
+/// The staleness window is read from `env.ledger()`, not wall-clock time:
+/// moving the ledger timestamp is what ages reports out.
+#[test]
+fn staleness_window_is_measured_against_ledger_time() {
+    let h = setup();
+    let xlm = Symbol::new(&h.env, "XLM");
+    let feeder = Address::generate(&h.env);
+    h.client.add_feeder(&feeder);
+    h.client.report_price(&feeder, &xlm, &1_200_000);
+
+    // Exactly at the window boundary the report is still fresh.
+    h.env
+        .ledger()
+        .set_timestamp(h.env.ledger().timestamp() + h.client.get_max_staleness());
+    assert_eq!(h.client.get_price(&xlm).unwrap(), 1_200_000);
+
+    // One second past the boundary it is stale.
+    h.env
+        .ledger()
+        .set_timestamp(h.env.ledger().timestamp() + 1);
+    assert!(h.client.get_price(&xlm).is_none());
+}
+
+/// The setters are admin-gated: without any authorization armed, the
+/// `require_auth()` on the admin must abort the call.
+#[test]
+#[should_panic]
+fn set_min_reports_without_authorization_panics() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register_contract(None, PriceOracle);
+    let client = PriceOracleClient::new(&env, &contract_id);
+    client.initialize(&admin);
+    client.set_min_reports(&2);
+}
+
+#[test]
+#[should_panic]
+fn set_max_staleness_without_authorization_panics() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register_contract(None, PriceOracle);
+    let client = PriceOracleClient::new(&env, &contract_id);
+    client.initialize(&admin);
+    client.set_max_staleness(&7200);
+}
+
 #[test]
 fn a_feeder_going_stale_can_drop_below_the_quorum() {
     let h = setup();
@@ -478,6 +620,21 @@ fn set_min_reports_emits_a_min_reports_updated_event_with_the_new_value() {
     let events = h.env.events().all();
     let (_, _topics, data) = events.last().unwrap();
     assert_eq!(u32::try_from_val(&h.env, &data).unwrap(), 3);
+}
+
+/// Both policy values are readable without auth so integrators and
+/// indexers can surface the current configuration.
+#[test]
+fn policy_getters_are_readable_without_authorization() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register_contract(None, PriceOracle);
+    let client = PriceOracleClient::new(&env, &contract_id);
+    client.initialize(&admin);
+
+    // No mock_all_auths() armed: reads must not require auth.
+    assert_eq!(client.get_min_reports(), 1);
+    assert_eq!(client.get_max_staleness(), 3600);
 }
 
 #[test]
@@ -682,6 +839,39 @@ fn set_min_reports_via_multisig_still_rejects_zero_once_approved() {
 
     h.client
         .set_min_reports_via_multisig(&multisig_id, &action_id, &0);
+}
+
+/// The multisig boundary is load-bearing: a proposal approved by only a
+/// minority of signers must not be able to move the quorum policy.
+#[test]
+#[should_panic(expected = "Error(Contract, #9)")] // Unauthorized
+fn set_min_reports_via_multisig_rejects_a_minority_approval() {
+    let h = setup();
+    let (multisig_id, signers) = setup_multisig(&h);
+    let multisig_client = MultisigClient::new(&h.env, &multisig_id);
+
+    let action_id = aid(&h.env, 8);
+    multisig_client.approve(&signers[0], &action_id); // only 1 of 3
+
+    h.client
+        .set_min_reports_via_multisig(&multisig_id, &action_id, &2);
+}
+
+/// A proposal approved against a different action id must not authorize
+/// this call — the action id is part of the authorization, not a label.
+#[test]
+#[should_panic(expected = "Error(Contract, #9)")] // Unauthorized
+fn set_min_reports_via_multisig_rejects_a_mismatched_action_id() {
+    let h = setup();
+    let (multisig_id, signers) = setup_multisig(&h);
+    let multisig_client = MultisigClient::new(&h.env, &multisig_id);
+
+    let approved = aid(&h.env, 9);
+    multisig_client.approve(&signers[0], &approved);
+    multisig_client.approve(&signers[1], &approved);
+
+    h.client
+        .set_min_reports_via_multisig(&multisig_id, &aid(&h.env, 10), &2);
 }
 
 // ─── cross-contract: add_feeder_via_multisig / remove_feeder_via_multisig ──

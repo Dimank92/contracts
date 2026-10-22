@@ -1977,3 +1977,281 @@ fn collateral_reclaimed_event_carries_position_and_amount() {
     assert_eq!(event_pos_id, pos_id);
     assert_eq!(reclaim, 700_000_000); // full collateral back, OTM means no payout owed
 }
+
+// ─── top_up_collateral ──────────────────────────────────────────────────────
+
+/// Opens a short position in a fresh series and returns (series_id, writer,
+/// position_id). The premium pool is funded first so write_option's
+/// InsufficientPremiumPool gate is satisfied.
+fn open_short(h: &Harness, collateral: i128) -> (u64, Address, u64) {
+    let series_id = make_series(h, OptionType::Call, 700_000_000, 40_000_000);
+    fund_premium_pool(h, series_id, USDC_DECIMALS);
+    let writer = Address::generate(&h.env);
+    mint(h, &writer, collateral);
+    let pos_id = h
+        .client
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &collateral);
+    (series_id, writer, pos_id)
+}
+
+#[test]
+fn top_up_collateral_pulls_tokens_and_raises_recorded_collateral() {
+    let h = setup();
+    let (_series_id, writer, pos_id) = open_short(&h, 700_000_000);
+
+    let extra = 100_000_000i128;
+    mint(&h, &writer, extra);
+    let before = balance(&h, &writer);
+
+    h.client.top_up_collateral(&writer, &pos_id, &extra);
+
+    assert_eq!(balance(&h, &writer), before - extra);
+    let position = h.client.get_position(&pos_id).unwrap();
+    assert_eq!(position.collateral_locked, 700_000_000 + extra);
+}
+
+#[test]
+fn top_up_collateral_can_be_repeated_in_the_same_ledger() {
+    let h = setup();
+    let (_series_id, writer, pos_id) = open_short(&h, 700_000_000);
+
+    mint(&h, &writer, 30_000_000);
+    h.client.top_up_collateral(&writer, &pos_id, &10_000_000);
+    h.client.top_up_collateral(&writer, &pos_id, &20_000_000);
+
+    let position = h.client.get_position(&pos_id).unwrap();
+    assert_eq!(position.collateral_locked, 730_000_000);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")] // Unauthorized
+fn top_up_collateral_rejects_a_non_writer() {
+    let h = setup();
+    let (_series_id, _writer, pos_id) = open_short(&h, 700_000_000);
+
+    let stranger = Address::generate(&h.env);
+    mint(&h, &stranger, 100_000_000);
+    h.client.top_up_collateral(&stranger, &pos_id, &100_000_000);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #12)")] // ZeroContracts (zero amount)
+fn top_up_collateral_rejects_a_zero_amount() {
+    let h = setup();
+    let (_series_id, writer, pos_id) = open_short(&h, 700_000_000);
+    h.client.top_up_collateral(&writer, &pos_id, &0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #15)")] // WrongSide
+fn top_up_collateral_rejects_a_long_position() {
+    let h = setup();
+    let series_id = make_series(&h, OptionType::Call, 700_000_000, 40_000_000);
+    let buyer = Address::generate(&h.env);
+    mint(&h, &buyer, 1_000 * USDC_DECIMALS);
+    let pos_id = h
+        .client
+        .buy_option(&buyer, &series_id, &USDC_DECIMALS, &(50 * USDC_DECIMALS));
+
+    h.client.top_up_collateral(&buyer, &pos_id, &100_000_000);
+}
+
+#[test]
+fn collateral_topped_up_event_carries_position_amounts_and_total() {
+    let h = setup();
+    let (_series_id, writer, pos_id) = open_short(&h, 700_000_000);
+    mint(&h, &writer, 100_000_000);
+    h.client.top_up_collateral(&writer, &pos_id, &100_000_000);
+
+    let events = h.env.events().all();
+    let (_, _topics, data) = events.last().unwrap();
+    let (event_pos_id, amount, total) = <(u64, i128, i128)>::try_from_val(&h.env, &data).unwrap();
+    assert_eq!(event_pos_id, pos_id);
+    assert_eq!(amount, 100_000_000);
+    assert_eq!(total, 800_000_000);
+}
+
+// ─── unwind_position ────────────────────────────────────────────────────────
+
+#[test]
+fn unwind_position_returns_collateral_net_of_the_buy_back_premium() {
+    let h = setup();
+    let (_series_id, writer, pos_id) = open_short(&h, 700_000_000);
+
+    // No oracle price set: the buy-back premium falls back to the series'
+    // own premium (40_000_000 for one contract), same basis buy_option uses.
+    let before = balance(&h, &writer);
+    h.client.unwind_position(&writer, &pos_id);
+    assert_eq!(balance(&h, &writer) - before, 700_000_000 - 40_000_000);
+
+    let position = h.client.get_position(&pos_id).unwrap();
+    assert!(position.is_settled);
+    assert_eq!(position.collateral_locked, 0);
+}
+
+#[test]
+fn unwind_position_uses_the_current_oracle_price_for_the_buy_back() {
+    let h = setup();
+    let (_series_id, writer, pos_id) = open_short(&h, 700_000_000);
+    let oracle_id = setup_price_oracle(&h);
+    report_price(&h, &oracle_id, &Symbol::new(&h.env, "XLM"), 700_000_000);
+
+    let before = balance(&h, &writer);
+    h.client.unwind_position(&writer, &pos_id);
+    // At-the-money call: intrinsic is zero, so only the series premium is
+    // bought back — the writer gets back collateral minus that premium.
+    assert_eq!(balance(&h, &writer) - before, 700_000_000 - 40_000_000);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #13)")] // PriceNotSet
+fn unwind_position_rejects_a_stale_oracle_price() {
+    let h = setup();
+    let (_series_id, writer, pos_id) = open_short(&h, 700_000_000);
+    let oracle_id = setup_price_oracle(&h);
+    // Report once, then let the ledger clock run past price_oracle's
+    // default 1-hour max_staleness — unwind must fail rather than guess.
+    report_price(&h, &oracle_id, &Symbol::new(&h.env, "XLM"), 700_000_000);
+    let now = h.env.ledger().timestamp();
+    h.env.ledger().set_timestamp(now + 2 * 3_600);
+
+    h.client.unwind_position(&writer, &pos_id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")] // SeriesNotExpired
+fn unwind_position_rejects_a_position_after_expiry() {
+    let h = setup();
+    let (series_id, writer, pos_id) = open_short(&h, 700_000_000);
+    advance_past_expiry(&h, series_id);
+    h.client.unwind_position(&writer, &pos_id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")] // Unauthorized
+fn unwind_position_rejects_a_non_writer() {
+    let h = setup();
+    let (_series_id, _writer, pos_id) = open_short(&h, 700_000_000);
+    let stranger = Address::generate(&h.env);
+    h.client.unwind_position(&stranger, &pos_id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #15)")] // WrongSide
+fn unwind_position_rejects_a_long_position() {
+    let h = setup();
+    let series_id = make_series(&h, OptionType::Call, 700_000_000, 40_000_000);
+    let buyer = Address::generate(&h.env);
+    mint(&h, &buyer, 1_000 * USDC_DECIMALS);
+    let pos_id = h
+        .client
+        .buy_option(&buyer, &series_id, &USDC_DECIMALS, &(50 * USDC_DECIMALS));
+    h.client.unwind_position(&buyer, &pos_id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #10)")] // AlreadySettled
+fn unwind_position_twice_is_rejected() {
+    let h = setup();
+    let (_series_id, writer, pos_id) = open_short(&h, 700_000_000);
+    h.client.unwind_position(&writer, &pos_id);
+    h.client.unwind_position(&writer, &pos_id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #17)")] // ContractPaused
+fn unwind_position_is_blocked_while_the_series_is_halted() {
+    let h = setup();
+    let (series_id, writer, pos_id) = open_short(&h, 700_000_000);
+    h.client.halt_series(&series_id);
+    h.client.unwind_position(&writer, &pos_id);
+}
+
+#[test]
+fn position_unwound_event_carries_position_amounts_and_remaining_collateral() {
+    let h = setup();
+    let (_series_id, writer, pos_id) = open_short(&h, 700_000_000);
+    h.client.unwind_position(&writer, &pos_id);
+
+    let events = h.env.events().all();
+    let (_, _topics, data) = events.last().unwrap();
+    let (event_pos_id, buy_back, released, remaining) =
+        <(u64, i128, i128, i128)>::try_from_val(&h.env, &data).unwrap();
+    assert_eq!(event_pos_id, pos_id);
+    assert_eq!(buy_back, 40_000_000);
+    assert_eq!(released, 700_000_000 - 40_000_000);
+    assert_eq!(remaining, 0);
+}
+
+// ─── vault tag invariant ────────────────────────────────────────────────────
+
+/// Sums `collateral_locked` over every live (not settled, not exercised)
+/// short position the market knows about for `series_id`.
+fn live_short_collateral(h: &Harness, series_id: u64) -> i128 {
+    let mut total = 0i128;
+    for pos_id in 0..h.client.get_position_count() {
+        if let Some(position) = h.client.get_position(&pos_id) {
+            if position.series_id == series_id
+                && position.side == PositionSide::Short
+                && !position.is_settled
+                && !position.is_exercised
+            {
+                total += position.collateral_locked;
+            }
+        }
+    }
+    total
+}
+
+/// The core accounting invariant: after ANY sequence of lock / top-up /
+/// unwind / settle operations, the series' vault tag balance must equal the
+/// sum of live positions' recorded collateral for that series.
+#[test]
+fn vault_tag_balance_always_equals_sum_of_live_collateral() {
+    let h = setup();
+    h.env.mock_all_auths_allowing_non_root_auth();
+    let vault_id = setup_vault(&h);
+    let vault_client = VaultClient::new(&h.env, &vault_id);
+
+    let series_id = make_series(&h, OptionType::Call, 700_000_000, 40_000_000);
+    fund_premium_pool(&h, series_id, 3 * USDC_DECIMALS);
+
+    let writer = Address::generate(&h.env);
+    mint(&h, &writer, 3_000_000_000);
+
+    // 1. Lock two positions.
+    let pos_a = h
+        .client
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+    let pos_b = h
+        .client
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+    assert_eq!(
+        vault_client.balance_of(&series_id),
+        live_short_collateral(&h, series_id)
+    );
+
+    // 2. Top up one of them.
+    h.client.top_up_collateral(&writer, &pos_a, &50_000_000);
+    assert_eq!(
+        vault_client.balance_of(&series_id),
+        live_short_collateral(&h, series_id)
+    );
+
+    // 3. Unwind the other before expiry.
+    h.client.unwind_position(&writer, &pos_b);
+    assert_eq!(
+        vault_client.balance_of(&series_id),
+        live_short_collateral(&h, series_id)
+    );
+
+    // 4. Settle the remaining position at expiry.
+    advance_past_expiry(&h, series_id);
+    h.client.set_settlement_price(&series_id, &(650_000_000)); // OTM
+    h.client.reclaim_collateral(&writer, &pos_a);
+    assert_eq!(
+        vault_client.balance_of(&series_id),
+        live_short_collateral(&h, series_id)
+    );
+    assert_eq!(vault_client.balance_of(&series_id), 0);
+}

@@ -19,8 +19,129 @@
 //!
 //! See the adversary catalog in `CATALOG.md` for the full list and the
 //! specific vulnerability each adversary exercises.
+//!
+//! ## Per-contract adversary suites
+//!
+//! Alongside the mock adversaries above, this crate hosts per-contract
+//! adversarial suites that attack the real protocol contracts through their
+//! public entrypoints only (no back doors into storage). Each suite lives in
+//! its own module and is deterministic (no wall-clock or RNG dependence).
+//!
+//! Suites whose target contract has not yet been reconstructed are gated
+//! behind a `cfg` feature so they are reported as *gated* in the CI report
+//! rather than silently skipped. See [`ci_report`] for the machine-readable
+//! list of executed vs. gated suites.
 
 pub mod multisig;
 pub mod oracle;
 pub mod tokens;
 pub mod vault;
+
+// ---------------------------------------------------------------------------
+// Per-contract adversarial suites (issue #234).
+//
+// Each suite is compiled only when its target contract is available. The
+// `*_available` cfg flags are set by the build script / CI matrix so that a
+// suite whose contract is still a stub is *listed* (via `ci_report`) instead
+// of being silently omitted or `#[ignore]`d.
+// ---------------------------------------------------------------------------
+
+/// Adversarial suite for `price_oracle` aggregation: stale and minority
+/// feeder sets against the `min_reports` quorum.
+#[cfg(feature = "price_oracle")]
+pub mod oracle_suite;
+
+/// Adversarial suite for `timelock` execution ordering: predecessor bypass
+/// and role bypass attempts.
+#[cfg(feature = "timelock")]
+pub mod timelock_suite;
+
+/// Adversarial suite for `multisig` approval races: duplicate/replayed and
+/// expired (`approval_ttl`) approvals.
+#[cfg(feature = "multisig")]
+pub mod multisig_suite;
+
+/// Adversarial suite for `options_market` settlement and collateral abuse:
+/// double-claim and under-collateralized settlement paths.
+#[cfg(feature = "options_market")]
+pub mod options_market_suite;
+
+/// Machine-readable CI report of which adversary suites were executed and
+/// which were gated because their target contract is not yet reconstructed.
+///
+/// This module is always compiled so the CI harness can enumerate every
+/// suite and surface gated ones explicitly rather than letting them vanish.
+pub mod ci_report {
+    /// Status of a single adversary suite in the CI report.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum SuiteStatus {
+        /// The suite's target contract is available and the suite runs.
+        Executed,
+        /// The suite is gated because its target contract is not yet
+        /// reconstructed; it is listed here rather than silently skipped.
+        Gated,
+    }
+
+    /// A single entry in the CI report.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct SuiteEntry {
+        /// Stable identifier for the suite (matches the module name).
+        pub name: &'static str,
+        /// The contract under attack.
+        pub target: &'static str,
+        /// Whether the suite is executed or gated.
+        pub status: SuiteStatus,
+    }
+
+    /// The full list of per-contract adversary suites and their status.
+    ///
+    /// The `status` of each entry is resolved at compile time from the same
+    /// feature flags that gate the suite modules, so the report can never
+    /// drift from what actually compiled.
+    pub const SUITES: &[SuiteEntry] = &[
+        SuiteEntry {
+            name: "oracle_suite",
+            target: "price_oracle",
+            status: suite_status(cfg!(feature = "price_oracle")),
+        },
+        SuiteEntry {
+            name: "timelock_suite",
+            target: "timelock",
+            status: suite_status(cfg!(feature = "timelock")),
+        },
+        SuiteEntry {
+            name: "multisig_suite",
+            target: "multisig",
+            status: suite_status(cfg!(feature = "multisig")),
+        },
+        SuiteEntry {
+            name: "options_market_suite",
+            target: "options_market",
+            status: suite_status(cfg!(feature = "options_market")),
+        },
+    ];
+
+    /// Map a compile-time availability flag to a [`SuiteStatus`].
+    const fn suite_status(available: bool) -> SuiteStatus {
+        if available {
+            SuiteStatus::Executed
+        } else {
+            SuiteStatus::Gated
+        }
+    }
+
+    /// Return the suites that are gated (target contract not yet
+    /// reconstructed). CI surfaces these explicitly in its report.
+    pub fn gated_suites() -> impl Iterator<Item = &'static SuiteEntry> {
+        SUITES
+            .iter()
+            .filter(|e| e.status == SuiteStatus::Gated)
+    }
+
+    /// Return the suites that are executed in this build.
+    pub fn executed_suites() -> impl Iterator<Item = &'static SuiteEntry> {
+        SUITES
+            .iter()
+            .filter(|e| e.status == SuiteStatus::Executed)
+    }
+}
