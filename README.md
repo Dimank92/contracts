@@ -1112,3 +1112,8 @@ start, limit)` (paginated, `limit` capped at 50). Events:
   fall outside this pattern entirely — none of them are admin-gated to
   begin with, so there's no single-signature check for a `_via_multisig`
   variant to replace.
+
+## Handsoff notes
+
+<!-- handsoff-issue-225 -->
+- #225: Add CPU, Ledger-I/O, and TTL Resource Budget Tests for `price_oracle`, `vault`, and `timelock`
