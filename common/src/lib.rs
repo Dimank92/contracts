@@ -108,3 +108,31 @@ where
         panic_with_error!(env, err);
     }
 }
+
+/// One-shot `initialize` guard. Panics with `already_initialized` if the
+/// contract's `init_key` flag is set, or — for deployments that predate
+/// the flag — if `legacy_key` (the entry `initialize` has always written,
+/// e.g. `Admin`) is already present. Call it first in `initialize`, then
+/// call [`mark_initialized`] once the config is stored. A panic reverts
+/// the whole invocation, so a failed `initialize` leaves no flag behind.
+pub fn require_uninitialized<K, L, E>(
+    env: &Env,
+    init_key: &K,
+    legacy_key: &L,
+    already_initialized: E,
+) where
+    K: IntoVal<Env, Val>,
+    L: IntoVal<Env, Val>,
+    E: Into<soroban_sdk::Error>,
+{
+    let s = env.storage().instance();
+    if s.has(init_key) || s.has(legacy_key) {
+        panic_with_error!(env, already_initialized);
+    }
+}
+
+/// Sets the flag [`require_uninitialized`] checks. Instance storage, so
+/// its TTL is extended with the contract's other instance entries.
+pub fn mark_initialized<K: IntoVal<Env, Val>>(env: &Env, init_key: &K) {
+    env.storage().instance().set(init_key, &true);
+}

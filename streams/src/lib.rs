@@ -63,9 +63,13 @@ fn streamed_at(stream: &Stream, now: u64) -> i128 {
 #[contractimpl]
 impl Streams {
     pub fn initialize(env: Env, governance: Address) {
-        if env.storage().instance().has(&DataKey::Governance) {
-            panic_with_error!(&env, Error::AlreadyInitialized);
-        }
+        zenith_common::require_uninitialized(
+            &env,
+            &DataKey::Initialized,
+            &DataKey::Governance,
+            Error::AlreadyInitialized,
+        );
+        zenith_common::mark_initialized(&env, &DataKey::Initialized);
         env.storage()
             .instance()
             .set(&DataKey::Governance, &governance);

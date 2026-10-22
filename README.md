@@ -526,6 +526,10 @@ have to poll every view function to track what changed.
 | 9 | `Unauthorized` |
 | 10 | `InvalidMinReports` |
 
+### One-shot `initialize`
+
+`multisig`, `staking`, `streams`, `lp_pool`, `lp_token`, `governor` and `params` guard `initialize` with `zenith_common::require_uninitialized` (storage key `DataKey::Initialized`); a second call fails with `AlreadyInitialized` and mutates nothing. A deployment that predates the flag but already holds its admin/config entry (`Admin`, `Signers`, ...) counts as initialized.
+
 ## `vault` reference
 
 A per-(token, tag) escrow ledger. One deployment holds any number of

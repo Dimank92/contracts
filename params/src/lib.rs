@@ -49,9 +49,13 @@ impl Params {
 
     pub fn initialize(env: Env, timelock: Address) {
         ttl::extend_instance(&env);
-        if env.storage().instance().has(&DataKey::Timelock) {
-            panic_with_error!(&env, Error::AlreadyInitialized);
-        }
+        zenith_common::require_uninitialized(
+            &env,
+            &DataKey::Initialized,
+            &DataKey::Timelock,
+            Error::AlreadyInitialized,
+        );
+        zenith_common::mark_initialized(&env, &DataKey::Initialized);
         env.storage().instance().set(&DataKey::Timelock, &timelock);
         env.storage().instance().set(&DataKey::Version, &0u64);
         zenith_common::migrations::init_schema(&env, CURRENT_SCHEMA_VERSION);

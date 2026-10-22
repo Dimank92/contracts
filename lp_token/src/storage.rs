@@ -24,6 +24,8 @@ pub struct AllowanceValue {
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
+    /// One-shot initialize flag; see `zenith_common::require_uninitialized`.
+    Initialized,
     /// The only address allowed to mint.
     Pool,
     Decimals,

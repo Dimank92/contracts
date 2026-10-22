@@ -3,6 +3,8 @@ use soroban_sdk::{contracttype, Address, BytesN, Symbol, Val, Vec};
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
+    /// One-shot initialize flag; see `zenith_common::require_uninitialized`.
+    Initialized,
     /// O(1) membership check — see issue #101.
     IsSigner(Address),
     /// Map<Address, u32>: every signer and their voting weight.

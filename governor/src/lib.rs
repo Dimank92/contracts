@@ -161,9 +161,13 @@ impl Governor {
         quorum_bps: u32,
         proposal_threshold: i128,
     ) {
-        if env.storage().instance().has(&DataKey::Token) {
-            panic_with_error!(&env, Error::AlreadyInitialized);
-        }
+        zenith_common::require_uninitialized(
+            &env,
+            &DataKey::Initialized,
+            &DataKey::Token,
+            Error::AlreadyInitialized,
+        );
+        zenith_common::mark_initialized(&env, &DataKey::Initialized);
         env.storage().instance().set(&DataKey::Token, &token);
         env.storage().instance().set(&DataKey::Timelock, &timelock);
         Self::apply_voting_delay(&env, voting_delay);

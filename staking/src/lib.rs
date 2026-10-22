@@ -105,9 +105,13 @@ fn distribute(env: &Env, token: &Address, amount: i128) {
 #[contractimpl]
 impl Staking {
     pub fn initialize(env: Env, stake_token: Address, splitter: Address, cooldown: u64) {
-        if env.storage().instance().has(&DataKey::StakeToken) {
-            panic_with_error!(&env, Error::AlreadyInitialized);
-        }
+        zenith_common::require_uninitialized(
+            &env,
+            &DataKey::Initialized,
+            &DataKey::StakeToken,
+            Error::AlreadyInitialized,
+        );
+        zenith_common::mark_initialized(&env, &DataKey::Initialized);
         env.storage()
             .instance()
             .set(&DataKey::StakeToken, &stake_token);

@@ -70,9 +70,13 @@ impl LpPool {
         market: Address,
         max_utilization_bps: u32,
     ) {
-        if env.storage().instance().has(&DataKey::Admin) {
-            panic_with_error!(&env, Error::AlreadyInitialized);
-        }
+        zenith_common::require_uninitialized(
+            &env,
+            &DataKey::Initialized,
+            &DataKey::Admin,
+            Error::AlreadyInitialized,
+        );
+        zenith_common::mark_initialized(&env, &DataKey::Initialized);
         admin.require_auth();
         check_bps(&env, max_utilization_bps);
         ttl::extend_instance(&env);

@@ -11,6 +11,8 @@ pub struct PendingUnstake {
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
+    /// One-shot initialize flag; see `zenith_common::require_uninitialized`.
+    Initialized,
     StakeToken,
     /// The only address allowed to call notify_reward (the fee splitter).
     Splitter,
