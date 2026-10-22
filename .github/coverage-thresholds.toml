@@ -1,0 +1,33 @@
+# Per-crate test-coverage floors for the workspace coverage gate.
+#
+# Model: fail-on-decrease. Each entry is the *minimum* line-coverage
+# percentage a crate must keep. When a suite is un-ignored and coverage
+# rises, raise the floor in the same PR so the win is ratcheted in.
+#
+# The gate (see .github/workflows/coverage.yml) fails when a crate's
+# measured coverage is below its floor here. A crate present in the
+# workspace but missing from this file is an error (fail closed) so a
+# new crate can never silently default to a zero threshold.
+#
+# `ignored_tests` records the current #[ignore] population per crate so
+# an increase is visible in the PR summary.
+
+[defaults]
+# Applied only to crates explicitly listed below that omit `min`.
+min = 0.0
+
+[crates.vault]
+min = 0.0
+ignored_tests = 0
+
+[crates.price_oracle]
+min = 0.0
+ignored_tests = 0
+
+[crates.options_market]
+min = 0.0
+ignored_tests = 0
+
+[crates.streams]
+min = 0.0
+ignored_tests = 0
