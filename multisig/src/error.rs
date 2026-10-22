@@ -35,4 +35,5 @@ pub enum Error {
     InvalidDeadline = 29,
     NotProposer = 30,
     DeadlineAlreadySet = 31,
+    DomainMismatch = 32,
 }

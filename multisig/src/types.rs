@@ -1,4 +1,9 @@
-use soroban_sdk::{contracttype, Address, BytesN, Symbol, Val, Vec};
+use soroban_sdk::{contracttype, Address, Bytes, BytesN, Env, Symbol, Val, Vec};
+
+/// Domain separator mixed into every approval key and signed payload so an
+/// approval gathered for one contract instance, class, or network cannot be
+/// replayed against the same opaque `action_id` elsewhere.
+const APPROVAL_DOMAIN: &[u8] = b"multisig:approval:v1";
 
 #[contracttype]
 #[derive(Clone)]
@@ -18,6 +23,8 @@ pub enum DataKey {
     /// Absent means no approvals. Keyed by the signer-set epoch, so a
     /// rotation invalidates every outstanding vote in O(1). Lives in
     /// temporary storage when `ApprovalTtl > 0`, persistent otherwise.
+    /// The `BytesN<32>` is the domain-separated approval key produced by
+    /// [`approval_key`], never the raw caller-supplied `action_id`.
     Approvals(u32, BytesN<32>),
     /// The one-time vetoer address; immutable once set.
     Vetoer,
@@ -47,6 +54,24 @@ pub enum DataKey {
     SignerChange(BytesN<32>),
     /// change_id -> timestamp at which a queued change becomes executable.
     SignerChangeReadyAt(BytesN<32>),
+}
+
+/// Deterministic, domain-separated approval key for `action_id` cast under
+/// `class` on this contract instance and network. Callers (and `__check_auth`)
+/// must derive their `action_id` and approvals through this single helper so
+/// the storage key and the signed payload always agree.
+///
+/// The key commits to: a fixed domain tag, the contract address, the target
+/// class, the network passphrase, and the caller-supplied `action_id`.
+/// Approvals are never stored under the raw caller-supplied bytes.
+pub fn approval_key(env: &Env, class: &Symbol, action_id: &BytesN<32>) -> BytesN<32> {
+    let mut buf = Bytes::new(env);
+    buf.extend_from_slice(APPROVAL_DOMAIN);
+    buf.append(&Bytes::from_array(env, &env.current_contract_address().to_string().into_bytes()));
+    buf.append(&Bytes::from_array(env, &class.to_string().into_bytes()));
+    buf.append(&Bytes::from_array(env, &env.ledger().network_id().to_array()));
+    buf.append(&Bytes::from_array(env, &action_id.to_array()));
+    env.crypto().sha256(&buf).into()
 }
 
 #[contracttype]
