@@ -1,6 +1,6 @@
-/// floor(a × b / c) for non-negative operands. Panics on overflow or c == 0.
-pub fn mul_div_floor(a: i128, b: i128, c: i128) -> i128 {
-    a.checked_mul(b).unwrap().checked_div(c).unwrap()
+/// floor(a × b / c) for non-negative operands. `None` on overflow or c == 0.
+pub fn checked_mul_div_floor(a: i128, b: i128, c: i128) -> Option<i128> {
+    a.checked_mul(b)?.checked_div(c)
 }
 
 /// Property-based tests; see README "Property tests".
@@ -17,6 +17,12 @@ mod proptests {
     /// Non-negative operands (the documented domain) whose product fits.
     fn operand() -> impl Strategy<Value = i128> {
         0i128..=i64::MAX as i128
+    }
+
+    /// Panicking form of `checked_mul_div_floor`, so the properties below
+    /// can also assert the exact overflow / zero-divisor boundary.
+    fn mul_div_floor(a: i128, b: i128, c: i128) -> i128 {
+        checked_mul_div_floor(a, b, c).unwrap()
     }
 
     fn divisor() -> impl Strategy<Value = i128> {
@@ -74,5 +80,17 @@ mod proptests {
             let actual = catch_unwind(AssertUnwindSafe(|| mul_div_floor(a, b, c))).ok();
             prop_assert_eq!(actual, expected);
         }
+    }
+}
+
+#[cfg(test)]
+mod checked_tests {
+    use super::checked_mul_div_floor;
+
+    #[test]
+    fn overflow_and_zero_divisor_are_none() {
+        assert_eq!(checked_mul_div_floor(i128::MAX, 2, 1), None);
+        assert_eq!(checked_mul_div_floor(1, 1, 0), None);
+        assert_eq!(checked_mul_div_floor(7, 3, 2), Some(10));
     }
 }

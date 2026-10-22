@@ -23,6 +23,9 @@ codegen-units = 1
 # zenith-common boundaries — one of the #106 size reductions.
 lto = true
 
+[lints]
+workspace = true
+
 [dependencies]
 soroban-sdk = { workspace = true }
 zenith-common = { workspace = true }

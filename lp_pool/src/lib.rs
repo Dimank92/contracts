@@ -1,3 +1,7 @@
+// Public API docs are enforced by `cargo xtask doc` (#268): the gate builds
+// rustdoc, where this lint is on, and only there — soroban-sdk macro output is
+// undocumented, which would otherwise fail `clippy -D warnings`.
+#![cfg_attr(doc, warn(missing_docs))]
 #![no_std]
 
 //! Zenith LP Pool — pooled option writing on behalf of depositors.
@@ -201,7 +205,7 @@ impl LpPool {
             .storage()
             .instance()
             .get(&DataKey::MaxUtilizationBps)
-            .unwrap();
+            .unwrap_or_else(|| panic_with_error!(&env, Error::InternalInvariant));
         let new_locked = checked_add(&env, locked, collateral);
         if mul(&env, new_locked, BPS) > mul(&env, checked_add(&env, idle, locked), max_bps.into()) {
             panic_with_error!(&env, Error::UtilizationCapExceeded);
@@ -277,7 +281,7 @@ impl LpPool {
             .position(|p| p.position_id == position_id)
             .unwrap_or_else(|| panic_with_error!(&env, Error::PositionNotFound))
             as u32;
-        let position = positions.get(index).unwrap();
+        let position = positions.get(index).unwrap_or_else(|| panic_with_error!(&env, Error::InternalInvariant));
 
         let pool = env.current_contract_address();
         let usdc = token::Client::new(&env, &asset(&env));
@@ -504,11 +508,11 @@ fn require_keeper(env: &Env) {
 }
 
 fn asset(env: &Env) -> Address {
-    env.storage().instance().get(&DataKey::Asset).unwrap()
+    env.storage().instance().get(&DataKey::Asset).unwrap_or_else(|| panic_with_error!(env, Error::InternalInvariant))
 }
 
 fn market(env: &Env) -> Address {
-    env.storage().instance().get(&DataKey::Market).unwrap()
+    env.storage().instance().get(&DataKey::Market).unwrap_or_else(|| panic_with_error!(env, Error::InternalInvariant))
 }
 
 fn epoch(env: &Env) -> u32 {
@@ -524,7 +528,7 @@ fn ticket(env: &Env, key: &DataKey) -> Option<Ticket> {
 }
 
 fn epoch_result(env: &Env, epoch: u32) -> EpochResult {
-    ttl::get_persistent(env, &DataKey::EpochResult(epoch)).unwrap()
+    ttl::get_persistent(env, &DataKey::EpochResult(epoch)).unwrap_or_else(|| panic_with_error!(env, Error::InternalInvariant))
 }
 
 /// Adds to a queued ticket for `epoch`. Callers claim any older ticket

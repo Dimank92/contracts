@@ -101,6 +101,7 @@ pub fn init_schema(env: &Env, version: u32) {
         .set(&MigrationKey::SchemaVersion, &version);
 }
 
+/// Stored schema version. Read-only.
 pub fn schema_version(env: &Env) -> u32 {
     env.storage()
         .instance()
@@ -113,6 +114,7 @@ pub fn migration_state(env: &Env) -> Option<(u32, u32)> {
     load_state(env).map(|s| (s.target, s.cursor))
 }
 
+/// Whether a staged migration is in progress. Read-only.
 pub fn is_migrating(env: &Env) -> bool {
     env.storage().instance().has(&MigrationKey::MigrationState)
 }

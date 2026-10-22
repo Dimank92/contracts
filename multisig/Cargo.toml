@@ -10,6 +10,9 @@ publish.workspace = true
 # building a deployable wasm cdylib on its own — same as price_oracle.
 crate-type = ["cdylib", "rlib"]
 
+[lints]
+workspace = true
+
 [dependencies]
 soroban-sdk = { workspace = true }
 

@@ -17,6 +17,8 @@ members = [
     "streams",
     "timelock",
     "vault",
+    "tools/api-diff",
+    "tools/multisig-cli",
     "tools/spec-diff",
     "xtask",
 ]
@@ -43,6 +45,18 @@ params = { package = "zenith-params", path = "params" }
 price_oracle = { package = "zenith-price-oracle", path = "price_oracle" }
 timelock = { package = "zenith-timelock", path = "timelock" }
 vault = { package = "zenith-vault", path = "vault" }
+
+# Panic-path policy (#267): a panic aborts the whole Soroban transaction, so
+# contract code must surface typed errors instead. Members opt in with
+# `[lints] workspace = true`; clippy.toml exempts test code. Provably
+# infallible sites carry a justified `#[allow]` (see docs/panic-policy.md).
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unreachable = "deny"
+unimplemented = "deny"
 
 # Shared by every contract (profiles in member manifests are ignored inside
 # a workspace).

@@ -1,3 +1,7 @@
+// Public API docs are enforced by `cargo xtask doc` (#268): the gate builds
+// rustdoc, where this lint is on, and only there — soroban-sdk macro output is
+// undocumented, which would otherwise fail `clippy -D warnings`.
+#![cfg_attr(doc, warn(missing_docs))]
 #![no_std]
 
 //! Shared admin/multisig/pause helpers for the Zenith contracts.
@@ -29,8 +33,11 @@ use soroban_sdk::{contracttype, panic_with_error, vec, Address, Env, IntoVal, Sy
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub enum ActionClass {
+    /// Time-critical response: pausing, vetoes and similar safety actions.
     Emergency = 0,
+    /// Routine administration: parameter and configuration changes.
     Standard = 1,
+    /// High-impact changes: upgrades, signer rotation, admin handover.
     Critical = 2,
 }
 
@@ -78,8 +85,19 @@ pub fn require_admin_or_multisig<K, E>(
     }
 }
 
+/// Contract error code every Zenith contract reserves for
+/// `Error::InternalInvariant`, raised when a guaranteed-present value is
+/// missing instead of panicking.
+pub const INTERNAL_INVARIANT: u32 = 90;
+
+/// Returns the stored admin address. Fails with `InternalInvariant` (90) if the contract was never initialized.
 pub fn get_admin<K: IntoVal<Env, Val>>(env: &Env, admin_key: &K) -> Address {
-    env.storage().instance().get(admin_key).unwrap()
+    env.storage().instance().get(admin_key).unwrap_or_else(|| {
+        panic_with_error!(
+            env,
+            soroban_sdk::Error::from_contract_error(INTERNAL_INVARIANT)
+        )
+    })
 }
 
 /// Stores `new_admin` and returns the previous admin, for the caller's
@@ -90,10 +108,12 @@ pub fn set_admin<K: IntoVal<Env, Val>>(env: &Env, admin_key: &K, new_admin: &Add
     old
 }
 
+/// Whether the contract is paused under `paused_key`. Read-only.
 pub fn is_paused<K: IntoVal<Env, Val>>(env: &Env, paused_key: &K) -> bool {
     env.storage().instance().get(paused_key).unwrap_or(false)
 }
 
+/// Sets the paused flag under `paused_key`. Callers must authorize first.
 pub fn set_paused<K: IntoVal<Env, Val>>(env: &Env, paused_key: &K, paused: bool) {
     env.storage().instance().set(paused_key, &paused);
 }

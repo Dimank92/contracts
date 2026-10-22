@@ -1,3 +1,7 @@
+// Public API docs are enforced by `cargo xtask doc` (#268): the gate builds
+// rustdoc, where this lint is on, and only there — soroban-sdk macro output is
+// undocumented, which would otherwise fail `clippy -D warnings`.
+#![cfg_attr(doc, warn(missing_docs))]
 #![no_std]
 
 //! Zenith Streams — linear, per-second token streams with an optional
@@ -21,6 +25,7 @@ mod test;
 
 mod error;
 mod events;
+/// Fixed-point helpers for stream accrual.
 pub mod math;
 mod migrations;
 mod types;
@@ -29,6 +34,7 @@ use error::Error;
 pub use migrations::CURRENT_SCHEMA_VERSION;
 use types::{DataKey, Stream};
 
+/// Linear token streaming contract.
 #[contract]
 pub struct Streams;
 
@@ -46,22 +52,24 @@ fn save(env: &Env, stream_id: u64, stream: &Stream) {
 }
 
 /// Amount streamed to the recipient as of `now`, in `[0, total]`.
-fn streamed_at(stream: &Stream, now: u64) -> i128 {
+fn streamed_at(env: &Env, stream: &Stream, now: u64) -> i128 {
     if stream.canceled || now >= stream.end {
         return stream.total;
     }
     if now < stream.cliff || now <= stream.start {
         return 0;
     }
-    math::mul_div_floor(
+    math::checked_mul_div_floor(
         stream.total,
         (now - stream.start) as i128,
         (stream.end - stream.start) as i128,
     )
+    .unwrap_or_else(|| panic_with_error!(env, Error::InternalInvariant))
 }
 
 #[contractimpl]
 impl Streams {
+    /// Sets the governance address and the stream counter. Fails with `AlreadyInitialized` on a second call.
     pub fn initialize(env: Env, governance: Address) {
         if env.storage().instance().has(&DataKey::Governance) {
             panic_with_error!(&env, Error::AlreadyInitialized);
@@ -73,8 +81,12 @@ impl Streams {
         zenith_common::migrations::init_schema(&env, CURRENT_SCHEMA_VERSION);
     }
 
+    /// Governance address. Read-only.
     pub fn get_governance(env: Env) -> Address {
-        env.storage().instance().get(&DataKey::Governance).unwrap()
+        env.storage()
+            .instance()
+            .get(&DataKey::Governance)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::InternalInvariant))
     }
 
     /// Creates a stream and pulls `total` of `token` from `funder` upfront.
@@ -107,7 +119,7 @@ impl Streams {
             .storage()
             .instance()
             .get(&DataKey::StreamCounter)
-            .unwrap();
+            .unwrap_or_else(|| panic_with_error!(&env, Error::InternalInvariant));
         env.storage()
             .instance()
             .set(&DataKey::StreamCounter, &(stream_id + 1));
@@ -139,7 +151,7 @@ impl Streams {
         if amount <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
         }
-        let available = streamed_at(&stream, env.ledger().timestamp()) - stream.withdrawn;
+        let available = streamed_at(&env, &stream, env.ledger().timestamp()) - stream.withdrawn;
         if amount > available {
             panic_with_error!(&env, Error::InsufficientBalance);
         }
@@ -168,7 +180,7 @@ impl Streams {
             panic_with_error!(&env, Error::StreamCanceled);
         }
 
-        let streamed = streamed_at(&stream, env.ledger().timestamp());
+        let streamed = streamed_at(&env, &stream, env.ledger().timestamp());
         let to_recipient = streamed - stream.withdrawn;
         let to_funder = stream.total - streamed;
 
@@ -232,6 +244,7 @@ impl Streams {
         )
     }
 
+    /// Stored schema version. Read-only.
     pub fn schema_version(env: Env) -> u32 {
         zenith_common::migrations::schema_version(&env)
     }
@@ -246,18 +259,20 @@ impl Streams {
     /// back if the stream were cancelled right now.
     pub fn balance_of(env: Env, stream_id: u64) -> (i128, i128) {
         let stream = load(&env, stream_id);
-        let streamed = streamed_at(&stream, env.ledger().timestamp());
+        let streamed = streamed_at(&env, &stream, env.ledger().timestamp());
         (streamed - stream.withdrawn, stream.total - streamed)
     }
 
+    /// Stream by id, if it exists. Read-only.
     pub fn get_stream(env: Env, stream_id: u64) -> Option<Stream> {
         env.storage().persistent().get(&DataKey::Stream(stream_id))
     }
 
+    /// Number of streams created so far. Read-only.
     pub fn get_stream_count(env: Env) -> u64 {
         env.storage()
             .instance()
             .get(&DataKey::StreamCounter)
-            .unwrap()
+            .unwrap_or_else(|| panic_with_error!(&env, Error::InternalInvariant))
     }
 }

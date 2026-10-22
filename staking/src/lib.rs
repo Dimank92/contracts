@@ -1,3 +1,7 @@
+// Public API docs are enforced by `cargo xtask doc` (#268): the gate builds
+// rustdoc, where this lint is on, and only there — soroban-sdk macro output is
+// undocumented, which would otherwise fail `clippy -D warnings`.
+#![cfg_attr(doc, warn(missing_docs))]
 #![no_std]
 
 //! Zenith Staking — stake ZEN, earn a pro-rata share of protocol fees.
@@ -40,6 +44,7 @@ pub const ACC_PRECISION: i128 = 1_000_000_000_000_000_000;
 /// Caps per-user update cost, which iterates every reward token.
 pub const MAX_REWARD_TOKENS: u32 = 10;
 
+/// Staking contract: stake a token and accrue rewards per share.
 #[contract]
 pub struct Staking;
 
@@ -76,7 +81,10 @@ fn update_user(env: &Env, user: &Address) {
         if rpt != paid {
             if stake > 0 {
                 let owed_key = DataKey::Owed(user.clone(), token.clone());
-                let accrued = stake.checked_mul(rpt - paid).unwrap() / ACC_PRECISION;
+                let accrued = stake
+                    .checked_mul(rpt - paid)
+                    .unwrap_or_else(|| panic_with_error!(env, Error::InternalInvariant))
+                    / ACC_PRECISION;
                 set_i128(env, &owed_key, get_i128(env, &owed_key) + accrued);
             }
             set_i128(env, &paid_key, rpt);
@@ -96,7 +104,10 @@ fn distribute(env: &Env, token: &Address, amount: i128) {
     }
     if pending > 0 {
         let rpt_key = DataKey::RewardPerToken(token.clone());
-        let delta = pending.checked_mul(ACC_PRECISION).unwrap() / total;
+        let delta = pending
+            .checked_mul(ACC_PRECISION)
+            .unwrap_or_else(|| panic_with_error!(env, Error::InternalInvariant))
+            / total;
         set_i128(env, &rpt_key, get_i128(env, &rpt_key) + delta);
         set_i128(env, &carry_key, 0);
     }
@@ -104,6 +115,7 @@ fn distribute(env: &Env, token: &Address, amount: i128) {
 
 #[contractimpl]
 impl Staking {
+    /// Sets the stake token, reward splitter and unstake cooldown. Fails with `AlreadyInitialized` on a second call.
     pub fn initialize(env: Env, stake_token: Address, splitter: Address, cooldown: u64) {
         if env.storage().instance().has(&DataKey::StakeToken) {
             panic_with_error!(&env, Error::AlreadyInitialized);
@@ -116,6 +128,7 @@ impl Staking {
         zenith_common::migrations::init_schema(&env, CURRENT_SCHEMA_VERSION);
     }
 
+    /// Stakes `amount` of the stake token from `user`. Requires `user` auth; fails with `InvalidAmount` if `amount <= 0`.
     pub fn stake(env: Env, user: Address, amount: i128) {
         user.require_auth();
         migrations::require_current(&env);
@@ -124,7 +137,11 @@ impl Staking {
         }
         update_user(&env, &user);
 
-        let stake_token: Address = env.storage().instance().get(&DataKey::StakeToken).unwrap();
+        let stake_token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::StakeToken)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::InternalInvariant));
         token::Client::new(&env, &stake_token).transfer(
             &user,
             &env.current_contract_address(),
@@ -168,7 +185,11 @@ impl Staking {
             .instance()
             .set(&DataKey::TotalStaked, &(total_staked(&env) - amount));
 
-        let cooldown: u64 = env.storage().instance().get(&DataKey::Cooldown).unwrap();
+        let cooldown: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::Cooldown)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::InternalInvariant));
         let pending_key = DataKey::PendingUnstake(user.clone());
         let prev: Option<PendingUnstake> = env.storage().persistent().get(&pending_key);
         let pending = PendingUnstake {
@@ -194,7 +215,11 @@ impl Staking {
         }
         env.storage().persistent().remove(&pending_key);
 
-        let stake_token: Address = env.storage().instance().get(&DataKey::StakeToken).unwrap();
+        let stake_token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::StakeToken)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::InternalInvariant));
         token::Client::new(&env, &stake_token).transfer(
             &env.current_contract_address(),
             &user,
@@ -228,7 +253,11 @@ impl Staking {
     /// `token` to transfer in. Any SEP-41 token can be a reward token, up
     /// to MAX_REWARD_TOKENS distinct ones.
     pub fn notify_reward(env: Env, token: Address, amount: i128) {
-        let splitter: Address = env.storage().instance().get(&DataKey::Splitter).unwrap();
+        let splitter: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Splitter)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::InternalInvariant));
         splitter.require_auth();
         migrations::require_current(&env);
         if amount <= 0 {
@@ -285,6 +314,7 @@ impl Staking {
         )
     }
 
+    /// Stored schema version. Read-only.
     pub fn schema_version(env: Env) -> u32 {
         zenith_common::migrations::schema_version(&env)
     }
@@ -296,41 +326,58 @@ impl Staking {
 
     // ── Views ────────────────────────────────────────────────────────────────
 
+    /// Rewards in `token` accrued to `user` and not yet claimed. Read-only.
     pub fn earned(env: Env, user: Address, token: Address) -> i128 {
         let stake = get_i128(&env, &DataKey::Stake(user.clone()));
         let rpt = get_i128(&env, &DataKey::RewardPerToken(token.clone()));
         let paid = get_i128(&env, &DataKey::UserPaid(user.clone(), token.clone()));
         get_i128(&env, &DataKey::Owed(user, token))
-            + stake.checked_mul(rpt - paid).unwrap() / ACC_PRECISION
+            + stake
+                .checked_mul(rpt - paid)
+                .unwrap_or_else(|| panic_with_error!(&env, Error::InternalInvariant))
+                / ACC_PRECISION
     }
 
+    /// `user`'s staked balance. Read-only.
     pub fn staked_of(env: Env, user: Address) -> i128 {
         get_i128(&env, &DataKey::Stake(user))
     }
 
+    /// Total staked balance. Read-only.
     pub fn total_staked(env: Env) -> i128 {
         total_staked(&env)
     }
 
+    /// `user`'s pending unstake request, if any. Read-only.
     pub fn pending_unstake(env: Env, user: Address) -> Option<PendingUnstake> {
         env.storage()
             .persistent()
             .get(&DataKey::PendingUnstake(user))
     }
 
+    /// Tokens that have been distributed as rewards. Read-only.
     pub fn reward_tokens(env: Env) -> Vec<Address> {
         reward_tokens(&env)
     }
 
+    /// Reward amount of `token` held while nobody was staked. Read-only.
     pub fn undistributed(env: Env, token: Address) -> i128 {
         get_i128(&env, &DataKey::Undistributed(token))
     }
 
+    /// Reward splitter address. Read-only.
     pub fn get_splitter(env: Env) -> Address {
-        env.storage().instance().get(&DataKey::Splitter).unwrap()
+        env.storage()
+            .instance()
+            .get(&DataKey::Splitter)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::InternalInvariant))
     }
 
+    /// Unstake cooldown in seconds. Read-only.
     pub fn get_cooldown(env: Env) -> u64 {
-        env.storage().instance().get(&DataKey::Cooldown).unwrap()
+        env.storage()
+            .instance()
+            .get(&DataKey::Cooldown)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::InternalInvariant))
     }
 }

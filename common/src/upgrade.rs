@@ -44,6 +44,7 @@ pub fn pin_multisig(env: &Env, multisig: &Address) {
         .publish((Symbol::new(env, "upgrade_multisig_pinned"),), multisig.clone());
 }
 
+/// Multisig pinned for wasm upgrades, if any. Read-only.
 pub fn pinned_multisig(env: &Env) -> Option<Address> {
     env.storage().instance().get(&UpgradeKey::PinnedMultisig)
 }

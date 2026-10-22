@@ -1,0 +1,163 @@
+{
+  "functions": {
+    "balance_of": {
+      "inputs": [
+        [
+          "stream_id",
+          "U64"
+        ]
+      ],
+      "outputs": [
+        "(I128, I128)"
+      ]
+    },
+    "cancel": {
+      "inputs": [
+        [
+          "caller",
+          "Address"
+        ],
+        [
+          "stream_id",
+          "U64"
+        ]
+      ],
+      "outputs": []
+    },
+    "create_stream": {
+      "inputs": [
+        [
+          "funder",
+          "Address"
+        ],
+        [
+          "recipient",
+          "Address"
+        ],
+        [
+          "token",
+          "Address"
+        ],
+        [
+          "total",
+          "I128"
+        ],
+        [
+          "start",
+          "U64"
+        ],
+        [
+          "cliff",
+          "U64"
+        ],
+        [
+          "end",
+          "U64"
+        ]
+      ],
+      "outputs": [
+        "U64"
+      ]
+    },
+    "get_governance": {
+      "inputs": [],
+      "outputs": [
+        "Address"
+      ]
+    },
+    "get_stream": {
+      "inputs": [
+        [
+          "stream_id",
+          "U64"
+        ]
+      ],
+      "outputs": [
+        "Option<Stream>"
+      ]
+    },
+    "get_stream_count": {
+      "inputs": [],
+      "outputs": [
+        "U64"
+      ]
+    },
+    "initialize": {
+      "inputs": [
+        [
+          "governance",
+          "Address"
+        ]
+      ],
+      "outputs": []
+    },
+    "migrate": {
+      "inputs": [
+        [
+          "from",
+          "U32"
+        ],
+        [
+          "to",
+          "U32"
+        ]
+      ],
+      "outputs": [
+        "U32"
+      ]
+    },
+    "migrate_batch": {
+      "inputs": [
+        [
+          "cursor",
+          "U32"
+        ],
+        [
+          "limit",
+          "U32"
+        ]
+      ],
+      "outputs": [
+        "U32"
+      ]
+    },
+    "migration_state": {
+      "inputs": [],
+      "outputs": [
+        "Option<(U32, U32)>"
+      ]
+    },
+    "schema_version": {
+      "inputs": [],
+      "outputs": [
+        "U32"
+      ]
+    },
+    "transfer": {
+      "inputs": [
+        [
+          "stream_id",
+          "U64"
+        ],
+        [
+          "new_recipient",
+          "Address"
+        ]
+      ],
+      "outputs": []
+    },
+    "withdraw": {
+      "inputs": [
+        [
+          "stream_id",
+          "U64"
+        ],
+        [
+          "amount",
+          "I128"
+        ]
+      ],
+      "outputs": []
+    }
+  }
+}

@@ -18,4 +18,8 @@ pub enum Error {
     MigrationInProgress = 102,
     NoMigrationInProgress = 103,
     InvalidMigrationBatch = 104,
+    /// A state the contract guarantees by construction was missing (e.g. a
+    /// storage entry that `initialize` always writes). Never expected on a
+    /// correctly deployed contract; replaces a panic with a typed error.
+    InternalInvariant = 90,
 }

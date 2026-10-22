@@ -1,0 +1,460 @@
+{
+  "functions": {
+    "approve": {
+      "inputs": [
+        [
+          "signer",
+          "Address"
+        ],
+        [
+          "action_id",
+          "BytesN<32>"
+        ]
+      ],
+      "outputs": []
+    },
+    "bump": {
+      "inputs": [
+        [
+          "keys",
+          "Vec<DataKey>"
+        ]
+      ],
+      "outputs": []
+    },
+    "execute": {
+      "inputs": [
+        [
+          "proposal_id",
+          "BytesN<32>"
+        ]
+      ],
+      "outputs": [
+        "Val"
+      ]
+    },
+    "execute_signer_change": {
+      "inputs": [
+        [
+          "change_id",
+          "BytesN<32>"
+        ]
+      ],
+      "outputs": []
+    },
+    "expire": {
+      "inputs": [
+        [
+          "action_id",
+          "BytesN<32>"
+        ]
+      ],
+      "outputs": []
+    },
+    "get_action": {
+      "inputs": [
+        [
+          "action_id",
+          "BytesN<32>"
+        ]
+      ],
+      "outputs": [
+        "Option<ActionMeta>"
+      ]
+    },
+    "get_approval_count": {
+      "inputs": [
+        [
+          "action_id",
+          "BytesN<32>"
+        ]
+      ],
+      "outputs": [
+        "U32"
+      ]
+    },
+    "get_approval_ttl": {
+      "inputs": [],
+      "outputs": [
+        "U64"
+      ]
+    },
+    "get_approval_weight": {
+      "inputs": [
+        [
+          "action_id",
+          "BytesN<32>"
+        ]
+      ],
+      "outputs": [
+        "U32"
+      ]
+    },
+    "get_execute_by": {
+      "inputs": [
+        [
+          "action_id",
+          "BytesN<32>"
+        ]
+      ],
+      "outputs": [
+        "Option<U64>"
+      ]
+    },
+    "get_pending_actions": {
+      "inputs": [
+        [
+          "cursor",
+          "U32"
+        ],
+        [
+          "limit",
+          "U32"
+        ]
+      ],
+      "outputs": [
+        "Vec<BytesN<32>>"
+      ]
+    },
+    "get_pending_count": {
+      "inputs": [],
+      "outputs": [
+        "U32"
+      ]
+    },
+    "get_proposal": {
+      "inputs": [
+        [
+          "proposal_id",
+          "BytesN<32>"
+        ]
+      ],
+      "outputs": [
+        "Option<Proposal>"
+      ]
+    },
+    "get_rotation_delay": {
+      "inputs": [],
+      "outputs": [
+        "U64"
+      ]
+    },
+    "get_rotation_threshold": {
+      "inputs": [],
+      "outputs": [
+        "U32"
+      ]
+    },
+    "get_signer_change": {
+      "inputs": [
+        [
+          "change_id",
+          "BytesN<32>"
+        ]
+      ],
+      "outputs": [
+        "Option<SignerChange>"
+      ]
+    },
+    "get_signer_change_ready_at": {
+      "inputs": [
+        [
+          "change_id",
+          "BytesN<32>"
+        ]
+      ],
+      "outputs": [
+        "Option<U64>"
+      ]
+    },
+    "get_signer_count": {
+      "inputs": [],
+      "outputs": [
+        "U32"
+      ]
+    },
+    "get_signer_epoch": {
+      "inputs": [],
+      "outputs": [
+        "U32"
+      ]
+    },
+    "get_signer_weight": {
+      "inputs": [
+        [
+          "address",
+          "Address"
+        ]
+      ],
+      "outputs": [
+        "U32"
+      ]
+    },
+    "get_signers": {
+      "inputs": [],
+      "outputs": [
+        "Map<Address, U32>"
+      ]
+    },
+    "get_threshold": {
+      "inputs": [],
+      "outputs": [
+        "U32"
+      ]
+    },
+    "get_total_weight": {
+      "inputs": [],
+      "outputs": [
+        "U32"
+      ]
+    },
+    "get_vetoer": {
+      "inputs": [],
+      "outputs": [
+        "Option<Address>"
+      ]
+    },
+    "has_approved": {
+      "inputs": [
+        [
+          "action_id",
+          "BytesN<32>"
+        ],
+        [
+          "signer",
+          "Address"
+        ]
+      ],
+      "outputs": [
+        "Bool"
+      ]
+    },
+    "initialize": {
+      "inputs": [
+        [
+          "signers",
+          "Vec<Address>"
+        ],
+        [
+          "threshold",
+          "U32"
+        ],
+        [
+          "approval_ttl",
+          "U64"
+        ]
+      ],
+      "outputs": []
+    },
+    "initialize_weighted": {
+      "inputs": [
+        [
+          "signers",
+          "Vec<(Address, U32)>"
+        ],
+        [
+          "threshold_weight",
+          "U32"
+        ],
+        [
+          "approval_ttl",
+          "U64"
+        ],
+        [
+          "rotation_threshold",
+          "U32"
+        ],
+        [
+          "rotation_delay",
+          "U64"
+        ]
+      ],
+      "outputs": []
+    },
+    "is_approved": {
+      "inputs": [
+        [
+          "action_id",
+          "BytesN<32>"
+        ]
+      ],
+      "outputs": [
+        "Bool"
+      ]
+    },
+    "is_signer": {
+      "inputs": [
+        [
+          "address",
+          "Address"
+        ]
+      ],
+      "outputs": [
+        "Bool"
+      ]
+    },
+    "propose": {
+      "inputs": [
+        [
+          "proposer",
+          "Address"
+        ],
+        [
+          "target",
+          "Address"
+        ],
+        [
+          "function",
+          "Symbol"
+        ],
+        [
+          "args",
+          "Vec<Val>"
+        ]
+      ],
+      "outputs": [
+        "BytesN<32>"
+      ]
+    },
+    "propose_signer_change": {
+      "inputs": [
+        [
+          "proposer",
+          "Address"
+        ],
+        [
+          "add",
+          "Vec<SignerWeight>"
+        ],
+        [
+          "remove",
+          "Vec<Address>"
+        ],
+        [
+          "new_threshold",
+          "U32"
+        ],
+        [
+          "new_rotation_threshold",
+          "U32"
+        ]
+      ],
+      "outputs": [
+        "BytesN<32>"
+      ]
+    },
+    "prune": {
+      "inputs": [
+        [
+          "action_ids",
+          "Vec<BytesN<32>>"
+        ]
+      ],
+      "outputs": [
+        "U32"
+      ]
+    },
+    "queue_signer_change": {
+      "inputs": [
+        [
+          "change_id",
+          "BytesN<32>"
+        ]
+      ],
+      "outputs": [
+        "U64"
+      ]
+    },
+    "register_action": {
+      "inputs": [
+        [
+          "proposer",
+          "Address"
+        ],
+        [
+          "action_id",
+          "BytesN<32>"
+        ],
+        [
+          "description_hash",
+          "BytesN<32>"
+        ]
+      ],
+      "outputs": []
+    },
+    "reset": {
+      "inputs": [
+        [
+          "action_id",
+          "BytesN<32>"
+        ]
+      ],
+      "outputs": []
+    },
+    "revoke": {
+      "inputs": [
+        [
+          "signer",
+          "Address"
+        ],
+        [
+          "action_id",
+          "BytesN<32>"
+        ]
+      ],
+      "outputs": []
+    },
+    "set_execute_by": {
+      "inputs": [
+        [
+          "proposer",
+          "Address"
+        ],
+        [
+          "action_id",
+          "BytesN<32>"
+        ],
+        [
+          "execute_by",
+          "U64"
+        ]
+      ],
+      "outputs": []
+    },
+    "set_vetoer": {
+      "inputs": [
+        [
+          "vetoer",
+          "Address"
+        ]
+      ],
+      "outputs": []
+    },
+    "veto": {
+      "inputs": [
+        [
+          "vetoer",
+          "Address"
+        ],
+        [
+          "action_id",
+          "BytesN<32>"
+        ]
+      ],
+      "outputs": []
+    },
+    "veto_signer_change": {
+      "inputs": [
+        [
+          "signer",
+          "Address"
+        ],
+        [
+          "change_id",
+          "BytesN<32>"
+        ]
+      ],
+      "outputs": []
+    }
+  }
+}

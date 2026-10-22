@@ -1,3 +1,7 @@
+// Public API docs are enforced by `cargo xtask doc` (#268): the gate builds
+// rustdoc, where this lint is on, and only there — soroban-sdk macro output is
+// undocumented, which would otherwise fail `clippy -D warnings`.
+#![cfg_attr(doc, warn(missing_docs))]
 #![no_std]
 
 //! Zenith Grants Escrow — milestone-based escrow for community grants
@@ -30,10 +34,14 @@ pub use types::{Grant, Milestone, MilestoneStatus};
 /// How long after a milestone's deadline reviewers still have to approve
 /// a submission before the funder may reclaim it.
 pub const GRACE_PERIOD: u64 = 7 * 86_400;
+/// Maximum milestones per grant.
 pub const MAX_MILESTONES: u32 = 20;
+/// Maximum reviewers per grant.
 pub const MAX_REVIEWERS: u32 = 20;
+/// Maximum page size for listing calls.
 pub const MAX_PAGE_SIZE: u32 = 50;
 
+/// Milestone-based grant escrow with reviewer quorum release.
 #[contract]
 pub struct GrantsEscrow;
 
@@ -71,12 +79,18 @@ impl GrantsEscrow {
             panic_with_error!(&env, Error::InvalidReviewers);
         }
         for i in 0..reviewers.len() {
-            let reviewer = reviewers.get(i).unwrap();
+            let reviewer = reviewers
+                .get(i)
+                .unwrap_or_else(|| panic_with_error!(&env, Error::InternalInvariant));
             if reviewer == grantee {
                 panic_with_error!(&env, Error::ReviewerIsGrantee);
             }
             for j in (i + 1)..reviewers.len() {
-                if reviewer == reviewers.get(j).unwrap() {
+                if reviewer
+                    == reviewers
+                        .get(j)
+                        .unwrap_or_else(|| panic_with_error!(&env, Error::InternalInvariant))
+                {
                     panic_with_error!(&env, Error::InvalidReviewers);
                 }
             }
@@ -209,7 +223,10 @@ impl GrantsEscrow {
         let now = env.ledger().timestamp();
         let mut total: i128 = 0;
         for idx in 0..grant.milestones.len() {
-            let mut milestone = grant.milestones.get(idx).unwrap();
+            let mut milestone = grant
+                .milestones
+                .get(idx)
+                .unwrap_or_else(|| panic_with_error!(&env, Error::InternalInvariant));
             let open = matches!(
                 milestone.status,
                 MilestoneStatus::Pending | MilestoneStatus::Submitted
@@ -266,6 +283,7 @@ impl GrantsEscrow {
         )
     }
 
+    /// Stored schema version. Read-only.
     pub fn schema_version(env: Env) -> u32 {
         ttl::extend_instance(&env);
         zenith_common::migrations::schema_version(&env)
@@ -277,11 +295,13 @@ impl GrantsEscrow {
         zenith_common::migrations::migration_state(&env)
     }
 
+    /// Grant by id, if it exists. Read-only.
     pub fn get_grant(env: Env, grant_id: u64) -> Option<Grant> {
         ttl::extend_instance(&env);
         ttl::get_persistent(&env, &DataKey::Grant(grant_id))
     }
 
+    /// Number of grants created so far. Read-only.
     pub fn get_grant_count(env: Env) -> u64 {
         ttl::extend_instance(&env);
         env.storage()
@@ -290,6 +310,7 @@ impl GrantsEscrow {
             .unwrap_or(0)
     }
 
+    /// Whether `reviewer` has approved milestone `idx` of grant `grant_id`. Read-only.
     pub fn has_approved(env: Env, grant_id: u64, idx: u32, reviewer: Address) -> bool {
         ttl::extend_instance(&env);
         env.storage()
@@ -297,6 +318,7 @@ impl GrantsEscrow {
             .has(&DataKey::Approval(grant_id, idx, reviewer))
     }
 
+    /// Number of grants for `grantee`. Read-only.
     pub fn get_grantee_grant_count(env: Env, grantee: Address) -> u32 {
         ttl::extend_instance(&env);
         let ids: Option<Vec<u64>> = ttl::get_persistent(&env, &DataKey::GranteeGrants(grantee));

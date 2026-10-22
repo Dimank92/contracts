@@ -60,7 +60,7 @@ impl Multisig {
     pub fn migrate(env: Env, signer: Address, from: u32, to: u32) -> u32 {
         ttl::extend_instance(&env);
         signer.require_auth();
-        let signers: Vec<Address> = env.storage().instance().get(&DataKey::Signers).unwrap();
+        let signers: Vec<Address> = env.storage().instance().get(&DataKey::Signers).unwrap_or_else(|| panic_with_error!(&env, Error::InternalInvariant));
         if !signers.contains(&signer) {
             panic_with_error!(&env, Error::NotASigner);
         }

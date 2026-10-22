@@ -55,12 +55,14 @@ Commands:
                  `extra-test` run from [package.metadata.zenith]). Args after
                  `--` go to the test binaries.
   clippy         Build required wasm, then `cargo clippy --all-targets -D warnings`.
+  doc            Build rustdoc for the contract crates and fail on any warning
+                 (missing docs, broken intra-doc links); scripts/doc-check.py.
   fmt [--check]  `cargo fmt --all`.
   check-imports  Verify every contractimport! is declared in wasm-deps and
                  points at the shared target/ directory.
   check-wasm     Inspect built wasm for linked-in testutils/host code.
   graph          Print the wasm build order and each crate's wasm needs.
-  ci             fmt --check, check-imports, build, check-wasm, clippy, test.
+  ci             fmt --check, check-imports, build, check-wasm, clippy, doc, test.
 
 <crate> is a package name (zenith-vault) or directory (vault). Default: all.
 ";
@@ -90,6 +92,7 @@ fn run() -> Result<()> {
         "test" => test(&ws, &opts),
         "clippy" => clippy(&ws, &opts),
         "fmt" => fmt(&ws, &opts),
+        "doc" => doc(&ws),
         "check-imports" => check_imports(&ws),
         "check-wasm" => check_wasm(&ws, &opts),
         "graph" => graph(&ws),
@@ -550,6 +553,21 @@ fn fmt(ws: &Workspace, opts: &Opts) -> Result<()> {
     }
 }
 
+fn doc(ws: &Workspace) -> Result<()> {
+    eprintln!("$ scripts/doc-check.py");
+    let status = Command::new("python3")
+        .arg("scripts/doc-check.py")
+        .current_dir(&ws.root)
+        .env("CARGO_TARGET_DIR", &ws.target_dir)
+        .status()
+        .map_err(|e| format!("failed to run scripts/doc-check.py: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("scripts/doc-check.py failed ({status})"))
+    }
+}
+
 fn graph(ws: &Workspace) -> Result<()> {
     let order = ws.wasm_build_order(&ws.contracts().into_iter().collect())?;
     println!("wasm build order:");
@@ -839,12 +857,13 @@ fn ci(ws: &Workspace) -> Result<()> {
         check: true,
         ..Opts::default()
     };
-    let steps: [(&str, &dyn Fn() -> Result<()>); 6] = [
+    let steps: [(&str, &dyn Fn() -> Result<()>); 7] = [
         ("fmt --check", &|| fmt(ws, &check)),
         ("check-imports", &|| check_imports(ws)),
         ("build", &|| build(ws, &all)),
         ("check-wasm", &|| check_wasm(ws, &all)),
         ("clippy", &|| clippy(ws, &all)),
+        ("doc", &|| doc(ws)),
         ("test", &|| test(ws, &all)),
     ];
     let started = Instant::now();

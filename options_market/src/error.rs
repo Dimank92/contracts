@@ -42,4 +42,6 @@ pub enum Error {
     MigrationPending = 32,
     InvalidActiveSeriesCap = 33,
     InvalidPageLimit = 34,
+    /// A guaranteed-present value was missing; typed replacement for a panic.
+    InternalInvariant = 90,
 }

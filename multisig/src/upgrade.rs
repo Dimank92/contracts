@@ -45,7 +45,7 @@ pub enum UpgradeKey {
 }
 
 fn signers(env: &Env) -> Vec<Address> {
-    env.storage().instance().get(&DataKey::Signers).unwrap()
+    env.storage().instance().get(&DataKey::Signers).unwrap_or_else(|| panic_with_error!(env, Error::InternalInvariant))
 }
 
 fn require_signer(env: &Env, signers: &Vec<Address>, signer: &Address) {

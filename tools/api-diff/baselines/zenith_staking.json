@@ -1,0 +1,194 @@
+{
+  "functions": {
+    "claim_rewards": {
+      "inputs": [
+        [
+          "user",
+          "Address"
+        ]
+      ],
+      "outputs": []
+    },
+    "earned": {
+      "inputs": [
+        [
+          "user",
+          "Address"
+        ],
+        [
+          "token",
+          "Address"
+        ]
+      ],
+      "outputs": [
+        "I128"
+      ]
+    },
+    "get_cooldown": {
+      "inputs": [],
+      "outputs": [
+        "U64"
+      ]
+    },
+    "get_splitter": {
+      "inputs": [],
+      "outputs": [
+        "Address"
+      ]
+    },
+    "initialize": {
+      "inputs": [
+        [
+          "stake_token",
+          "Address"
+        ],
+        [
+          "splitter",
+          "Address"
+        ],
+        [
+          "cooldown",
+          "U64"
+        ]
+      ],
+      "outputs": []
+    },
+    "migrate": {
+      "inputs": [
+        [
+          "from",
+          "U32"
+        ],
+        [
+          "to",
+          "U32"
+        ]
+      ],
+      "outputs": [
+        "U32"
+      ]
+    },
+    "migrate_batch": {
+      "inputs": [
+        [
+          "cursor",
+          "U32"
+        ],
+        [
+          "limit",
+          "U32"
+        ]
+      ],
+      "outputs": [
+        "U32"
+      ]
+    },
+    "migration_state": {
+      "inputs": [],
+      "outputs": [
+        "Option<(U32, U32)>"
+      ]
+    },
+    "notify_reward": {
+      "inputs": [
+        [
+          "token",
+          "Address"
+        ],
+        [
+          "amount",
+          "I128"
+        ]
+      ],
+      "outputs": []
+    },
+    "pending_unstake": {
+      "inputs": [
+        [
+          "user",
+          "Address"
+        ]
+      ],
+      "outputs": [
+        "Option<PendingUnstake>"
+      ]
+    },
+    "request_unstake": {
+      "inputs": [
+        [
+          "user",
+          "Address"
+        ],
+        [
+          "amount",
+          "I128"
+        ]
+      ],
+      "outputs": []
+    },
+    "reward_tokens": {
+      "inputs": [],
+      "outputs": [
+        "Vec<Address>"
+      ]
+    },
+    "schema_version": {
+      "inputs": [],
+      "outputs": [
+        "U32"
+      ]
+    },
+    "stake": {
+      "inputs": [
+        [
+          "user",
+          "Address"
+        ],
+        [
+          "amount",
+          "I128"
+        ]
+      ],
+      "outputs": []
+    },
+    "staked_of": {
+      "inputs": [
+        [
+          "user",
+          "Address"
+        ]
+      ],
+      "outputs": [
+        "I128"
+      ]
+    },
+    "total_staked": {
+      "inputs": [],
+      "outputs": [
+        "I128"
+      ]
+    },
+    "undistributed": {
+      "inputs": [
+        [
+          "token",
+          "Address"
+        ]
+      ],
+      "outputs": [
+        "I128"
+      ]
+    },
+    "withdraw": {
+      "inputs": [
+        [
+          "user",
+          "Address"
+        ]
+      ],
+      "outputs": [
+        "I128"
+      ]
+    }
+  }
+}

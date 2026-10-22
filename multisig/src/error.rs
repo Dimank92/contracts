@@ -35,4 +35,8 @@ pub enum Error {
     InvalidDeadline = 29,
     NotProposer = 30,
     DeadlineAlreadySet = 31,
+    /// A state the contract guarantees by construction was missing (e.g. a
+    /// storage entry that `initialize` always writes). Never expected on a
+    /// correctly deployed contract; replaces a panic with a typed error.
+    InternalInvariant = 90,
 }

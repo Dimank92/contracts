@@ -1,3 +1,7 @@
+// Public API docs are enforced by `cargo xtask doc` (#268): the gate builds
+// rustdoc, where this lint is on, and only there — soroban-sdk macro output is
+// undocumented, which would otherwise fail `clippy -D warnings`.
+#![cfg_attr(doc, warn(missing_docs))]
 #![no_std]
 
 //! Zenith Multisig — weighted approval tracking, an on-chain action
@@ -63,6 +67,7 @@ const DAY_IN_LEDGERS: u32 = 17_280;
 const TTL_THRESHOLD: u32 = 7 * DAY_IN_LEDGERS;
 const TTL_EXTEND_TO: u32 = 30 * DAY_IN_LEDGERS;
 
+/// Weighted multisig, action registry and proposal executor.
 #[contract]
 pub struct Multisig;
 
@@ -165,6 +170,7 @@ impl Multisig {
         Self::warn_single_key_quorum(&env, &map, threshold_weight);
     }
 
+    /// Whether `address` is a current signer. Read-only.
     pub fn is_signer(env: Env, address: Address) -> bool {
         ttl::extend_instance(&env);
         Self::signers(&env).contains_key(address)
@@ -176,16 +182,19 @@ impl Multisig {
         Self::signers(&env).get(address).unwrap_or(0)
     }
 
+    /// Current signers and their weights. Read-only.
     pub fn get_signers(env: Env) -> Map<Address, u32> {
         ttl::extend_instance(&env);
         Self::signers(&env)
     }
 
+    /// Number of signers. Read-only.
     pub fn get_signer_count(env: Env) -> u32 {
         ttl::extend_instance(&env);
         Self::signers(&env).len()
     }
 
+    /// Sum of all signer weights. Read-only.
     pub fn get_total_weight(env: Env) -> u32 {
         ttl::extend_instance(&env);
         Self::total_weight(&env, &Self::signers(&env))
@@ -194,33 +203,43 @@ impl Multisig {
     /// Approval weight `is_approved` requires.
     pub fn get_threshold(env: Env) -> u32 {
         ttl::extend_instance(&env);
-        env.storage().instance().get(&DataKey::Threshold).unwrap()
+        env.storage()
+            .instance()
+            .get(&DataKey::Threshold)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::InternalInvariant))
     }
 
+    /// Weight needed to rotate the signer set. Read-only.
     pub fn get_rotation_threshold(env: Env) -> u32 {
         ttl::extend_instance(&env);
         env.storage()
             .instance()
             .get(&DataKey::RotationThreshold)
-            .unwrap()
+            .unwrap_or_else(|| panic_with_error!(&env, Error::InternalInvariant))
     }
 
+    /// Delay in seconds between approving and executing a signer change. Read-only.
     pub fn get_rotation_delay(env: Env) -> u64 {
         ttl::extend_instance(&env);
         env.storage()
             .instance()
             .get(&DataKey::RotationDelay)
-            .unwrap()
+            .unwrap_or_else(|| panic_with_error!(&env, Error::InternalInvariant))
     }
 
+    /// Signer-set epoch; bumped on every executed change. Read-only.
     pub fn get_signer_epoch(env: Env) -> u32 {
         ttl::extend_instance(&env);
         Self::epoch(&env)
     }
 
+    /// Seconds an approval stays fresh. Read-only.
     pub fn get_approval_ttl(env: Env) -> u64 {
         ttl::extend_instance(&env);
-        env.storage().instance().get(&DataKey::ApprovalTtl).unwrap()
+        env.storage()
+            .instance()
+            .get(&DataKey::ApprovalTtl)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::InternalInvariant))
     }
 
     /// Records `signer`'s approval of `action_id`, stamped with the
@@ -325,7 +344,11 @@ impl Multisig {
     pub fn is_approved(env: Env, action_id: BytesN<32>) -> bool {
         ttl::extend_instance(&env);
         let weight = Self::tally(&env, &action_id).1;
-        let threshold: u32 = env.storage().instance().get(&DataKey::Threshold).unwrap();
+        let threshold: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::Threshold)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::InternalInvariant));
         // The deadline is only read once quorum is otherwise met, keeping
         // the common path at a single approvals read.
         weight >= threshold && !Self::past_deadline(&env, &action_id)
@@ -388,13 +411,18 @@ impl Multisig {
             panic_with_error!(&env, Error::ActionNotPending);
         }
         if Self::past_deadline(&env, &action_id) {
-            let execute_by = Self::get_execute_by(env.clone(), action_id.clone()).unwrap();
+            let execute_by = Self::get_execute_by(env.clone(), action_id.clone())
+                .unwrap_or_else(|| panic_with_error!(&env, Error::InternalInvariant));
             Self::clear_approvals(&env, &action_id);
             Self::finish(&env, &action_id, ActionStatus::Expired);
             events::action_expired(&env, action_id, execute_by);
             return;
         }
-        let ttl: u64 = env.storage().instance().get(&DataKey::ApprovalTtl).unwrap();
+        let ttl: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ApprovalTtl)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::InternalInvariant));
         let age = env.ledger().timestamp().saturating_sub(meta.created_at);
         if ttl == 0 || age <= ttl || Self::get_approval_count(env.clone(), action_id.clone()) > 0 {
             panic_with_error!(&env, Error::NotExpired);
@@ -417,6 +445,7 @@ impl Multisig {
         env.storage().instance().set(&DataKey::Vetoer, &vetoer);
     }
 
+    /// Signer allowed to veto pending signer changes, if set. Read-only.
     pub fn get_vetoer(env: Env) -> Option<Address> {
         ttl::extend_instance(&env);
         env.storage().instance().get(&DataKey::Vetoer)
@@ -465,6 +494,7 @@ impl Multisig {
         ttl::set_persistent(&env, &key, &execute_by);
     }
 
+    /// Execution deadline of `action_id`, if one was set. Read-only.
     pub fn get_execute_by(env: Env, action_id: BytesN<32>) -> Option<u64> {
         ttl::get_persistent(&env, &DataKey::ExecuteBy(action_id))
     }
@@ -497,10 +527,12 @@ impl Multisig {
         removed
     }
 
+    /// Registry entry for `action_id`, if any. Read-only.
     pub fn get_action(env: Env, action_id: BytesN<32>) -> Option<ActionMeta> {
         env.storage().persistent().get(&DataKey::Action(action_id))
     }
 
+    /// Number of pending actions. Read-only.
     pub fn get_pending_count(env: Env) -> u32 {
         Self::pending(&env).len()
     }
@@ -516,7 +548,11 @@ impl Multisig {
         let mut page = Vec::new(&env);
         let end = cursor.saturating_add(limit).min(pending.len());
         for i in cursor..end {
-            page.push_back(pending.get(i).unwrap());
+            page.push_back(
+                pending
+                    .get(i)
+                    .unwrap_or_else(|| panic_with_error!(&env, Error::InternalInvariant)),
+            );
         }
         page
     }
@@ -579,6 +615,7 @@ impl Multisig {
         env.invoke_contract::<Val>(&proposal.target, &proposal.function, proposal.args)
     }
 
+    /// Proposal by id, if it exists. Read-only.
     pub fn get_proposal(env: Env, proposal_id: BytesN<32>) -> Option<Proposal> {
         env.storage()
             .persistent()
@@ -643,7 +680,7 @@ impl Multisig {
             .storage()
             .instance()
             .get(&DataKey::RotationDelay)
-            .unwrap();
+            .unwrap_or_else(|| panic_with_error!(&env, Error::InternalInvariant));
         let ready_at = env.ledger().timestamp().saturating_add(delay);
         ttl::set_persistent(&env, &ready_key, &ready_at);
         events::signer_change_queued(&env, change_id, ready_at);
@@ -691,6 +728,7 @@ impl Multisig {
         events::signers_rotated(&env, change_id, epoch);
     }
 
+    /// Pending signer change by id, if it exists. Read-only.
     pub fn get_signer_change(env: Env, change_id: BytesN<32>) -> Option<SignerChange> {
         ttl::get_persistent(&env, &DataKey::SignerChange(change_id))
     }
@@ -703,7 +741,10 @@ impl Multisig {
 
 impl Multisig {
     fn signers(env: &Env) -> Map<Address, u32> {
-        env.storage().instance().get(&DataKey::Signers).unwrap()
+        env.storage()
+            .instance()
+            .get(&DataKey::Signers)
+            .unwrap_or_else(|| panic_with_error!(env, Error::InternalInvariant))
     }
 
     fn epoch(env: &Env) -> u32 {
@@ -808,7 +849,7 @@ impl Multisig {
             .storage()
             .instance()
             .get(&DataKey::RotationThreshold)
-            .unwrap();
+            .unwrap_or_else(|| panic_with_error!(env, Error::InternalInvariant));
         if weight < needed {
             panic_with_error!(env, Error::NotYetApproved);
         }
@@ -903,7 +944,12 @@ impl Multisig {
             if let Some(i) = pending.first_index_of(action_id) {
                 let last = pending.len() - 1;
                 if i != last {
-                    pending.set(i, pending.get(last).unwrap());
+                    pending.set(
+                        i,
+                        pending
+                            .get(last)
+                            .unwrap_or_else(|| panic_with_error!(env, Error::InternalInvariant)),
+                    );
                 }
                 pending.pop_back();
                 env.storage().persistent().set(&DataKey::Pending, &pending);
@@ -923,7 +969,10 @@ impl Multisig {
     }
 
     fn approval_ttl(env: &Env) -> u64 {
-        env.storage().instance().get(&DataKey::ApprovalTtl).unwrap()
+        env.storage()
+            .instance()
+            .get(&DataKey::ApprovalTtl)
+            .unwrap_or_else(|| panic_with_error!(env, Error::InternalInvariant))
     }
 
     fn signer_index(env: &Env, signer: &Address) -> u32 {

@@ -1,3 +1,7 @@
+// Public API docs are enforced by `cargo xtask doc` (#268): the gate builds
+// rustdoc, where this lint is on, and only there — soroban-sdk macro output is
+// undocumented, which would otherwise fail `clippy -D warnings`.
+#![cfg_attr(doc, warn(missing_docs))]
 #![no_std]
 
 //! Zenith Params — a single, timelock-controlled registry for protocol
@@ -32,6 +36,7 @@ pub use types::{BoundsProposal, Param};
 /// change can take effect.
 pub const BOUNDS_CHANGE_DELAY: u64 = 7 * 86_400;
 
+/// Governed parameter registry contract.
 #[contract]
 pub struct Params;
 
@@ -47,6 +52,7 @@ impl Params {
         }
     }
 
+    /// Binds the registry to its `timelock` and starts the schema. Fails with `AlreadyInitialized` on a second call.
     pub fn initialize(env: Env, timelock: Address) {
         ttl::extend_instance(&env);
         if env.storage().instance().has(&DataKey::Timelock) {
@@ -150,6 +156,7 @@ impl Params {
         events::bounds_updated(&env, key, proposal.min, proposal.max);
     }
 
+    /// Discards the pending bounds proposal for `key`. Timelock only; fails with `NoPendingBounds` if none exists.
     pub fn cancel_bounds(env: Env, key: Symbol) {
         ttl::extend_instance(&env);
         Self::require_timelock(&env);
@@ -162,29 +169,37 @@ impl Params {
         events::bounds_cancelled(&env, key);
     }
 
+    /// Parameter record for `key`, if set. Read-only.
     pub fn get_param(env: Env, key: Symbol) -> Option<Param> {
         ttl::extend_instance(&env);
         ttl::get_persistent(&env, &DataKey::Param(key))
     }
 
+    /// Value of `key`. Read-only; see `get_param` for the unset case.
     pub fn get_value(env: Env, key: Symbol) -> i128 {
         ttl::extend_instance(&env);
         Self::load(&env, &key).value
     }
 
+    /// Pending bounds proposal for `key`, if any. Read-only.
     pub fn get_pending_bounds(env: Env, key: Symbol) -> Option<BoundsProposal> {
         ttl::extend_instance(&env);
         ttl::get_persistent(&env, &DataKey::PendingBounds(key))
     }
 
+    /// Registry version, bumped on every change. Read-only.
     pub fn get_version(env: Env) -> u64 {
         ttl::extend_instance(&env);
         env.storage().instance().get(&DataKey::Version).unwrap_or(0)
     }
 
+    /// Timelock address allowed to mutate the registry. Read-only.
     pub fn get_timelock(env: Env) -> Address {
         ttl::extend_instance(&env);
-        env.storage().instance().get(&DataKey::Timelock).unwrap()
+        env.storage()
+            .instance()
+            .get(&DataKey::Timelock)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::InternalInvariant))
     }
 
     // ── Schema migrations (docs/migrations.md) ──────────────────────────────
@@ -218,6 +233,7 @@ impl Params {
         )
     }
 
+    /// Stored schema version. Read-only.
     pub fn schema_version(env: Env) -> u32 {
         ttl::extend_instance(&env);
         zenith_common::migrations::schema_version(&env)
@@ -232,7 +248,11 @@ impl Params {
 
 impl Params {
     fn require_timelock(env: &Env) {
-        let timelock: Address = env.storage().instance().get(&DataKey::Timelock).unwrap();
+        let timelock: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Timelock)
+            .unwrap_or_else(|| panic_with_error!(env, Error::InternalInvariant));
         timelock.require_auth();
     }
 

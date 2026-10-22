@@ -1,3 +1,7 @@
+// Public API docs are enforced by `cargo xtask doc` (#268): the gate builds
+// rustdoc, where this lint is on, and only there — soroban-sdk macro output is
+// undocumented, which would otherwise fail `clippy -D warnings`.
+#![cfg_attr(doc, warn(missing_docs))]
 #![no_std]
 
 //! Zenith Governor — on-chain proposals and voting for Zenith's admin
@@ -45,25 +49,35 @@ pub use migrations::CURRENT_SCHEMA_VERSION;
 use types::DataKey;
 pub use types::{Proposal, ProposalState};
 
+/// Vote support value: against.
 pub const SUPPORT_AGAINST: u32 = 0;
+/// Vote support value: for.
 pub const SUPPORT_FOR: u32 = 1;
+/// Vote support value: abstain.
 pub const SUPPORT_ABSTAIN: u32 = 2;
 
 /// ~2 weeks of 5-second ledgers.
 pub const MAX_VOTING_DELAY: u32 = 241_920;
 /// ~1 hour of 5-second ledgers.
 pub const MIN_VOTING_PERIOD: u32 = 720;
+/// Upper bound on the voting period, in ledgers.
 pub const MAX_VOTING_PERIOD: u32 = 241_920;
 /// Quorum must be between 1% and 100% of past total supply.
 pub const MIN_QUORUM_BPS: u32 = 100;
+/// Upper bound on the quorum, in basis points.
 pub const MAX_QUORUM_BPS: u32 = 10_000;
+/// Maximum actions per proposal.
 pub const MAX_ACTIONS: u32 = 10;
 
+/// Token-weighted governor that queues approved proposals on the timelock.
 #[contract]
 pub struct Governor;
 
 fn get<V: soroban_sdk::TryFromVal<Env, Val>>(env: &Env, key: &DataKey) -> V {
-    env.storage().instance().get(key).unwrap()
+    env.storage()
+        .instance()
+        .get(key)
+        .unwrap_or_else(|| panic_with_error!(env, Error::InternalInvariant))
 }
 
 fn load(env: &Env, id: &BytesN<32>) -> Proposal {
@@ -152,6 +166,7 @@ fn cast(env: &Env, voter: Address, id: BytesN<32>, support: u32) -> i128 {
 
 #[contractimpl]
 impl Governor {
+    /// Binds the voting `token` and `timelock` and sets the initial parameters. Fails with `AlreadyInitialized` on a second call.
     pub fn initialize(
         env: Env,
         token: Address,
@@ -186,6 +201,7 @@ impl Governor {
             .into()
     }
 
+    /// Creates a proposal of up to `MAX_ACTIONS` calls and returns its id. Requires `proposer` auth; fails with `InvalidProposal` on malformed actions.
     pub fn propose(
         env: Env,
         proposer: Address,
@@ -307,24 +323,28 @@ impl Governor {
 
     // ── Governance-settable parameters (timelock only) ───────────────────────
 
+    /// Sets the voting delay in ledgers. Governance (timelock) only.
     pub fn set_voting_delay(env: Env, value: u32) {
         only_governance(&env);
         migrations::require_current(&env);
         Self::apply_voting_delay(&env, value);
     }
 
+    /// Sets the voting period in ledgers. Governance (timelock) only.
     pub fn set_voting_period(env: Env, value: u32) {
         only_governance(&env);
         migrations::require_current(&env);
         Self::apply_voting_period(&env, value);
     }
 
+    /// Sets the quorum in basis points. Governance (timelock) only.
     pub fn set_quorum_bps(env: Env, value: u32) {
         only_governance(&env);
         migrations::require_current(&env);
         Self::apply_quorum_bps(&env, value);
     }
 
+    /// Sets the minimum voting power needed to propose. Governance (timelock) only.
     pub fn set_proposal_threshold(env: Env, value: i128) {
         only_governance(&env);
         migrations::require_current(&env);
@@ -362,6 +382,7 @@ impl Governor {
 
     // ── Views ────────────────────────────────────────────────────────────────
 
+    /// Stored schema version. Read-only.
     pub fn schema_version(env: Env) -> u32 {
         zenith_common::migrations::schema_version(&env)
     }
@@ -371,14 +392,17 @@ impl Governor {
         zenith_common::migrations::migration_state(&env)
     }
 
+    /// Current state of proposal `id`. Read-only.
     pub fn state(env: Env, id: BytesN<32>) -> ProposalState {
         state_of(&env, &id, &load(&env, &id))
     }
 
+    /// Proposal by id, if it exists. Read-only.
     pub fn get_proposal(env: Env, id: BytesN<32>) -> Option<Proposal> {
         env.storage().persistent().get(&DataKey::Proposal(id))
     }
 
+    /// Whether `voter` has voted on proposal `id`. Read-only.
     pub fn has_voted(env: Env, id: BytesN<32>, voter: Address) -> bool {
         env.storage().persistent().has(&DataKey::Voted(id, voter))
     }
@@ -387,29 +411,38 @@ impl Governor {
     pub fn quorum(env: Env, ledger: u32) -> i128 {
         let supply = votes(&env).get_past_total_supply(&ledger);
         let bps = get::<u32>(&env, &DataKey::QuorumBps) as i128;
-        supply.checked_mul(bps).unwrap() / 10_000
+        supply
+            .checked_mul(bps)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::InternalInvariant))
+            / 10_000
     }
 
+    /// Voting delay in ledgers. Read-only.
     pub fn voting_delay(env: Env) -> u32 {
         get(&env, &DataKey::VotingDelay)
     }
 
+    /// Voting period in ledgers. Read-only.
     pub fn voting_period(env: Env) -> u32 {
         get(&env, &DataKey::VotingPeriod)
     }
 
+    /// Quorum in basis points. Read-only.
     pub fn quorum_bps(env: Env) -> u32 {
         get(&env, &DataKey::QuorumBps)
     }
 
+    /// Voting power required to propose. Read-only.
     pub fn proposal_threshold(env: Env) -> i128 {
         get(&env, &DataKey::ProposalThreshold)
     }
 
+    /// Voting token address. Read-only.
     pub fn get_token(env: Env) -> Address {
         get(&env, &DataKey::Token)
     }
 
+    /// Timelock address. Read-only.
     pub fn get_timelock(env: Env) -> Address {
         get(&env, &DataKey::Timelock)
     }

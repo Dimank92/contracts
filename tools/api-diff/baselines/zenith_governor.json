@@ -1,0 +1,307 @@
+{
+  "functions": {
+    "cancel": {
+      "inputs": [
+        [
+          "caller",
+          "Address"
+        ],
+        [
+          "id",
+          "BytesN<32>"
+        ]
+      ],
+      "outputs": []
+    },
+    "cast_vote": {
+      "inputs": [
+        [
+          "voter",
+          "Address"
+        ],
+        [
+          "id",
+          "BytesN<32>"
+        ],
+        [
+          "support",
+          "U32"
+        ]
+      ],
+      "outputs": [
+        "I128"
+      ]
+    },
+    "cast_vote_by_sig": {
+      "inputs": [
+        [
+          "voter",
+          "Address"
+        ],
+        [
+          "id",
+          "BytesN<32>"
+        ],
+        [
+          "support",
+          "U32"
+        ]
+      ],
+      "outputs": [
+        "I128"
+      ]
+    },
+    "get_proposal": {
+      "inputs": [
+        [
+          "id",
+          "BytesN<32>"
+        ]
+      ],
+      "outputs": [
+        "Option<Proposal>"
+      ]
+    },
+    "get_timelock": {
+      "inputs": [],
+      "outputs": [
+        "Address"
+      ]
+    },
+    "get_token": {
+      "inputs": [],
+      "outputs": [
+        "Address"
+      ]
+    },
+    "has_voted": {
+      "inputs": [
+        [
+          "id",
+          "BytesN<32>"
+        ],
+        [
+          "voter",
+          "Address"
+        ]
+      ],
+      "outputs": [
+        "Bool"
+      ]
+    },
+    "hash_proposal": {
+      "inputs": [
+        [
+          "targets",
+          "Vec<Address>"
+        ],
+        [
+          "fns",
+          "Vec<Symbol>"
+        ],
+        [
+          "args",
+          "Vec<Vec<Val>>"
+        ],
+        [
+          "description_hash",
+          "BytesN<32>"
+        ]
+      ],
+      "outputs": [
+        "BytesN<32>"
+      ]
+    },
+    "initialize": {
+      "inputs": [
+        [
+          "token",
+          "Address"
+        ],
+        [
+          "timelock",
+          "Address"
+        ],
+        [
+          "voting_delay",
+          "U32"
+        ],
+        [
+          "voting_period",
+          "U32"
+        ],
+        [
+          "quorum_bps",
+          "U32"
+        ],
+        [
+          "proposal_threshold",
+          "I128"
+        ]
+      ],
+      "outputs": []
+    },
+    "migrate": {
+      "inputs": [
+        [
+          "from",
+          "U32"
+        ],
+        [
+          "to",
+          "U32"
+        ]
+      ],
+      "outputs": [
+        "U32"
+      ]
+    },
+    "migrate_batch": {
+      "inputs": [
+        [
+          "cursor",
+          "U32"
+        ],
+        [
+          "limit",
+          "U32"
+        ]
+      ],
+      "outputs": [
+        "U32"
+      ]
+    },
+    "migration_state": {
+      "inputs": [],
+      "outputs": [
+        "Option<(U32, U32)>"
+      ]
+    },
+    "proposal_threshold": {
+      "inputs": [],
+      "outputs": [
+        "I128"
+      ]
+    },
+    "propose": {
+      "inputs": [
+        [
+          "proposer",
+          "Address"
+        ],
+        [
+          "targets",
+          "Vec<Address>"
+        ],
+        [
+          "fns",
+          "Vec<Symbol>"
+        ],
+        [
+          "args",
+          "Vec<Vec<Val>>"
+        ],
+        [
+          "description_hash",
+          "BytesN<32>"
+        ]
+      ],
+      "outputs": [
+        "BytesN<32>"
+      ]
+    },
+    "queue": {
+      "inputs": [
+        [
+          "id",
+          "BytesN<32>"
+        ]
+      ],
+      "outputs": [
+        "U64"
+      ]
+    },
+    "quorum": {
+      "inputs": [
+        [
+          "ledger",
+          "U32"
+        ]
+      ],
+      "outputs": [
+        "I128"
+      ]
+    },
+    "quorum_bps": {
+      "inputs": [],
+      "outputs": [
+        "U32"
+      ]
+    },
+    "schema_version": {
+      "inputs": [],
+      "outputs": [
+        "U32"
+      ]
+    },
+    "set_proposal_threshold": {
+      "inputs": [
+        [
+          "value",
+          "I128"
+        ]
+      ],
+      "outputs": []
+    },
+    "set_quorum_bps": {
+      "inputs": [
+        [
+          "value",
+          "U32"
+        ]
+      ],
+      "outputs": []
+    },
+    "set_voting_delay": {
+      "inputs": [
+        [
+          "value",
+          "U32"
+        ]
+      ],
+      "outputs": []
+    },
+    "set_voting_period": {
+      "inputs": [
+        [
+          "value",
+          "U32"
+        ]
+      ],
+      "outputs": []
+    },
+    "state": {
+      "inputs": [
+        [
+          "id",
+          "BytesN<32>"
+        ]
+      ],
+      "outputs": [
+        "ProposalState"
+      ]
+    },
+    "voting_delay": {
+      "inputs": [],
+      "outputs": [
+        "U32"
+      ]
+    },
+    "voting_period": {
+      "inputs": [],
+      "outputs": [
+        "U32"
+      ]
+    }
+  }
+}

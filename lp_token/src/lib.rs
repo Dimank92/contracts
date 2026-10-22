@@ -1,3 +1,7 @@
+// Public API docs are enforced by `cargo xtask doc` (#268): the gate builds
+// rustdoc, where this lint is on, and only there — soroban-sdk macro output is
+// undocumented, which would otherwise fail `clippy -D warnings`.
+#![cfg_attr(doc, warn(missing_docs))]
 #![no_std]
 
 //! Zenith LP share token — a SEP-41 token whose supply only the pinned
@@ -135,15 +139,15 @@ impl token::Interface for LpToken {
     }
 
     fn decimals(env: Env) -> u32 {
-        env.storage().instance().get(&DataKey::Decimals).unwrap()
+        env.storage().instance().get(&DataKey::Decimals).unwrap_or_else(|| panic_with_error!(&env, Error::InternalInvariant))
     }
 
     fn name(env: Env) -> String {
-        env.storage().instance().get(&DataKey::Name).unwrap()
+        env.storage().instance().get(&DataKey::Name).unwrap_or_else(|| panic_with_error!(&env, Error::InternalInvariant))
     }
 
     fn symbol(env: Env) -> String {
-        env.storage().instance().get(&DataKey::Symbol).unwrap()
+        env.storage().instance().get(&DataKey::Symbol).unwrap_or_else(|| panic_with_error!(&env, Error::InternalInvariant))
     }
 }
 
