@@ -21,6 +21,8 @@
 //! workspace member's features (in particular dev-dependency `testutils`)
 //! are unified into it; `check-wasm` verifies that on the actual artifacts.
 
+mod determinism;
+
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -59,6 +61,9 @@ Commands:
   check-imports  Verify every contractimport! is declared in wasm-deps and
                  points at the shared target/ directory.
   check-wasm     Inspect built wasm for linked-in testutils/host code.
+  check-determinism
+                 Reject f32/f64, float literals and std time/env/HashMap in
+                 contract crates' non-test code.
   graph          Print the wasm build order and each crate's wasm needs.
   ci             fmt --check, check-imports, build, check-wasm, clippy, test.
 
@@ -92,6 +97,7 @@ fn run() -> Result<()> {
         "fmt" => fmt(&ws, &opts),
         "check-imports" => check_imports(&ws),
         "check-wasm" => check_wasm(&ws, &opts),
+        "check-determinism" => check_determinism(),
         "graph" => graph(&ws),
         "ci" => ci(&ws),
         other => Err(format!("unknown command `{other}`\n\n{USAGE}")),
@@ -550,6 +556,11 @@ fn fmt(ws: &Workspace, opts: &Opts) -> Result<()> {
     }
 }
 
+fn check_determinism() -> Result<()> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    determinism::run(&root)
+}
+
 fn graph(ws: &Workspace) -> Result<()> {
     let order = ws.wasm_build_order(&ws.contracts().into_iter().collect())?;
     println!("wasm build order:");
@@ -839,9 +850,10 @@ fn ci(ws: &Workspace) -> Result<()> {
         check: true,
         ..Opts::default()
     };
-    let steps: [(&str, &dyn Fn() -> Result<()>); 6] = [
+    let steps: [(&str, &dyn Fn() -> Result<()>); 7] = [
         ("fmt --check", &|| fmt(ws, &check)),
         ("check-imports", &|| check_imports(ws)),
+        ("check-determinism", &|| check_determinism()),
         ("build", &|| build(ws, &all)),
         ("check-wasm", &|| check_wasm(ws, &all)),
         ("clippy", &|| clippy(ws, &all)),

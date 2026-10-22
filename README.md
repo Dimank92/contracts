@@ -935,6 +935,13 @@ vetoer may also be a signer. The proposer of a pending action may call
 is false regardless of `approval_ttl`, and `expire` retires it with an
 `action_expired` event. `veto` emits `vetoed`.
 
+**Cancel.** `cancel(signer, id)` lets *any single signer* retire a pending
+action permanently (same rule as `veto_signer_change`): approvals are cleared,
+`approve`/`register_action` reject the id, and `is_approved`/`execute` stay
+false even if the same bytes are reused. Emits `cancelled`. `revoke` withdraws
+one's own approval; stale approvals past `approval_ttl` simply stop counting
+and re-approval starts a fresh clock.
+
 ```
 register ──approve──▶ Pending ──threshold──▶ is_approved ──execute/reset──▶ Executed/Reset
               │          │                        │
@@ -1112,3 +1119,12 @@ start, limit)` (paginated, `limit` capped at 50). Events:
   fall outside this pattern entirely — none of them are admin-gated to
   begin with, so there's no single-signature check for a `_via_multisig`
   variant to replace.
+
+## Determinism lint
+
+`cargo xtask check-determinism` (run in CI by the `clippy` job and by
+`cargo xtask ci`) fails on `f32`/`f64`, float literals, `std::time`,
+`std::env` and `HashMap`/`HashSet` in the non-test code of every contract
+crate, printing `file:line: construct`. Exempt: `test*.rs`, `*_test.rs`,
+`test_adversaries/`, `#[cfg(test)]` items, comments and string literals.
+Rules live in `xtask/src/determinism.rs`.

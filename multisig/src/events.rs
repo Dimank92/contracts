@@ -97,3 +97,10 @@ pub fn action_expired(env: &Env, action_id: BytesN<32>, execute_by: u64) {
     env.events()
         .publish((Symbol::new(env, "action_expired"), action_id), execute_by);
 }
+
+pub fn cancelled(env: &Env, signer: Address, action_id: BytesN<32>, description_hash: BytesN<32>) {
+    env.events().publish(
+        (Symbol::new(env, "cancelled"), signer, action_id),
+        description_hash,
+    );
+}

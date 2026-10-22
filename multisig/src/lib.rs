@@ -240,7 +240,12 @@ impl Multisig {
 
         let meta = match Self::get_action(env.clone(), action_id.clone()) {
             Some(meta) if meta.status == ActionStatus::Pending => meta,
-            Some(meta) if matches!(meta.status, ActionStatus::Executed | ActionStatus::Vetoed) => {
+            Some(meta)
+                if matches!(
+                    meta.status,
+                    ActionStatus::Executed | ActionStatus::Vetoed | ActionStatus::Cancelled
+                ) =>
+            {
                 panic_with_error!(&env, Error::ActionNotPending)
             }
             _ => Self::register(
@@ -370,7 +375,10 @@ impl Multisig {
         if let Some(meta) = Self::get_action(env.clone(), action_id.clone()) {
             if matches!(
                 meta.status,
-                ActionStatus::Pending | ActionStatus::Executed | ActionStatus::Vetoed
+                ActionStatus::Pending
+                    | ActionStatus::Executed
+                    | ActionStatus::Vetoed
+                    | ActionStatus::Cancelled
             ) {
                 panic_with_error!(&env, Error::ActionAlreadyRegistered);
             }
@@ -437,6 +445,22 @@ impl Multisig {
         Self::clear_approvals(&env, &action_id);
         let hash = Self::finish(&env, &action_id, ActionStatus::Vetoed);
         events::vetoed(&env, vetoer, action_id, hash);
+    }
+
+    /// Retires a pending action for good. Authorization rule: ANY single
+    /// signer may cancel (same as `veto_signer_change`), so one honest key
+    /// can stop an action it believes is wrong or was crafted under false
+    /// pretenses. Approvals are cleared and the id is terminal: `approve`
+    /// and `register_action` reject it, `is_approved` stays false, and a
+    /// later reuse of the same bytes can never become executable.
+    pub fn cancel(env: Env, signer: Address, action_id: BytesN<32>) {
+        ttl::extend_instance(&env);
+        signer.require_auth();
+        Self::require_signer(&env, &signer);
+        Self::require_pending(&env, &action_id);
+        Self::clear_approvals(&env, &action_id);
+        let hash = Self::finish(&env, &action_id, ActionStatus::Cancelled);
+        events::cancelled(&env, signer, action_id, hash);
     }
 
     /// Sets a hard deadline (ledger timestamp) after which `is_approved`

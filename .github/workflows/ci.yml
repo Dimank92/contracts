@@ -63,6 +63,7 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - run: cargo xtask check-imports
+      - run: cargo xtask check-determinism
       - run: cargo xtask clippy
 
   test:

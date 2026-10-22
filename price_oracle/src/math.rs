@@ -1,3 +1,10 @@
+//! Fixed-point conventions (enforced by `cargo xtask check-determinism`, which
+//! rejects f32/f64, float literals, and std time/env/HashMap in non-test
+//! contract code): prices are `i128` at PRICE_PRECISION (7 decimals);
+//! division truncates toward zero unless a function documents otherwise; all
+//! overflow is checked (`checked_*`, or `overflow-checks = true` in release
+//! so it panics rather than wraps).
+
 /// Caps how many feeders can be authorized at once, so aggregation (a
 /// simple O(n^2) sort over collected reports) stays bounded regardless of
 /// how many feeders the admin adds over the contract's lifetime.
