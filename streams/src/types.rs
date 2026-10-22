@@ -18,6 +18,9 @@ pub struct Stream {
     /// Set once cancelled. The stream is frozen at the amount streamed at
     /// cancellation: `total` is reduced to it and the rest refunded.
     pub canceled: bool,
+    /// Whether the sender may cancel this stream. Immutable after creation:
+    /// an irrevocable stream can only be clawed back by governance.
+    pub revocable: bool,
 }
 
 #[contracttype]

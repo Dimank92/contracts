@@ -11,6 +11,7 @@ pub enum Error {
     Unauthorized = 5,
     InsufficientBalance = 6,
     StreamCanceled = 7,
+    StreamNotRevocable = 8,
     // Schema migrations (zenith_common::migrations) — same codes in
     // every Zenith contract. See docs/migrations.md.
     SchemaVersionMismatch = 100,

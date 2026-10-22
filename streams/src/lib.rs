@@ -12,7 +12,9 @@
 //! The recipient withdraws at any time and may transfer the stream to a
 //! new recipient. The funder or governance can cancel: the recipient is
 //! paid everything accrued but not yet withdrawn, and the funder is
-//! refunded the unstreamed remainder.
+//! refunded the unstreamed remainder. Governance can also claw back a
+//! stream (e.g. compromised or migrated grants) via a separately
+//! authorized path that settles identically but emits a distinct event.
 
 use soroban_sdk::{contract, contractimpl, panic_with_error, token, Address, Env};
 
@@ -60,6 +62,32 @@ fn streamed_at(stream: &Stream, now: u64) -> i128 {
     )
 }
 
+/// Settles a stream: pays the recipient everything accrued but not yet
+/// withdrawn and refunds the unstreamed remainder to the funder. The
+/// stream is marked terminal in storage before any token transfer so a
+/// re-entrant call cannot double-settle. Reuses `streamed_at` so the
+/// split can never disagree with `withdraw` by a stroop.
+fn settle(env: &Env, stream_id: u64, stream: &mut Stream) -> (i128, i128) {
+    let streamed = streamed_at(stream, env.ledger().timestamp());
+    let to_recipient = streamed - stream.withdrawn;
+    let to_funder = stream.total - streamed;
+
+    stream.total = streamed;
+    stream.withdrawn = streamed;
+    stream.canceled = true;
+    save(env, stream_id, stream);
+
+    let token = token::Client::new(env, &stream.token);
+    let this = env.current_contract_address();
+    if to_recipient > 0 {
+        token.transfer(&this, &stream.recipient, &to_recipient);
+    }
+    if to_funder > 0 {
+        token.transfer(&this, &stream.funder, &to_funder);
+    }
+    (to_recipient, to_funder)
+}
+
 #[contractimpl]
 impl Streams {
     pub fn initialize(env: Env, governance: Address) {
@@ -80,7 +108,9 @@ impl Streams {
     /// Creates a stream and pulls `total` of `token` from `funder` upfront.
     /// `start` may be in the past (the elapsed portion is withdrawable
     /// immediately, subject to the cliff). Zero-duration streams
-    /// (`start == end`) are rejected.
+    /// (`start == end`) are rejected. `revocable` is immutable after
+    /// creation: an irrevocable stream can never be cancelled or clawed
+    /// back.
     #[allow(clippy::too_many_arguments)]
     pub fn create_stream(
         env: Env,
@@ -91,6 +121,7 @@ impl Streams {
         start: u64,
         cliff: u64,
         end: u64,
+        revocable: bool,
     ) -> u64 {
         funder.require_auth();
         migrations::require_current(&env);
@@ -125,6 +156,7 @@ impl Streams {
                 end,
                 withdrawn: 0,
                 canceled: false,
+                revocable,
             },
         );
         events::created(&env, stream_id, funder, recipient, total);
@@ -154,38 +186,43 @@ impl Streams {
         events::withdrawn(&env, stream_id, stream.recipient, amount);
     }
 
-    /// Funder or governance cancels. The recipient receives everything
-    /// accrued but not yet withdrawn (zero if still before the cliff) and
-    /// the funder is refunded the unstreamed remainder.
+    /// Sender (funder) cancels a revocable stream. The recipient receives
+    /// everything accrued but not yet withdrawn (zero if still before the
+    /// cliff) and the funder is refunded the unstreamed remainder.
     pub fn cancel(env: Env, caller: Address, stream_id: u64) {
         caller.require_auth();
         migrations::require_current(&env);
         let mut stream = load(&env, stream_id);
-        if caller != stream.funder && caller != Self::get_governance(env.clone()) {
+        if caller != stream.funder {
             panic_with_error!(&env, Error::Unauthorized);
+        }
+        if !stream.revocable {
+            panic_with_error!(&env, Error::Irrevocable);
         }
         if stream.canceled {
             panic_with_error!(&env, Error::StreamCanceled);
         }
 
-        let streamed = streamed_at(&stream, env.ledger().timestamp());
-        let to_recipient = streamed - stream.withdrawn;
-        let to_funder = stream.total - streamed;
-
-        stream.total = streamed;
-        stream.withdrawn = streamed;
-        stream.canceled = true;
-        save(&env, stream_id, &stream);
-
-        let token = token::Client::new(&env, &stream.token);
-        let this = env.current_contract_address();
-        if to_recipient > 0 {
-            token.transfer(&this, &stream.recipient, &to_recipient);
-        }
-        if to_funder > 0 {
-            token.transfer(&this, &stream.funder, &to_funder);
-        }
+        let (to_recipient, to_funder) = settle(&env, stream_id, &mut stream);
         events::canceled(&env, stream_id, to_recipient, to_funder);
+    }
+
+    /// Governance clawback for compromised or migrated streams. Behaves
+    /// identically to `cancel` but is separately authorized (governance
+    /// only) and emits a distinct event for indexers.
+    pub fn clawback(env: Env, stream_id: u64) {
+        migrations::require_current(&env);
+        Self::get_governance(env.clone()).require_auth();
+        let mut stream = load(&env, stream_id);
+        if !stream.revocable {
+            panic_with_error!(&env, Error::Irrevocable);
+        }
+        if stream.canceled {
+            panic_with_error!(&env, Error::StreamCanceled);
+        }
+
+        let (to_recipient, to_funder) = settle(&env, stream_id, &mut stream);
+        events::clawed_back(&env, stream_id, to_recipient, to_funder);
     }
 
     /// Recipient hands the stream (including any accrued, unwithdrawn
@@ -234,30 +271,5 @@ impl Streams {
 
     pub fn schema_version(env: Env) -> u32 {
         zenith_common::migrations::schema_version(&env)
-    }
-
-    /// `(target, cursor)` while a paginated migration is in progress.
-    pub fn migration_state(env: Env) -> Option<(u32, u32)> {
-        zenith_common::migrations::migration_state(&env)
-    }
-
-    /// `(recipient_withdrawable, funder_refundable)` as of now: what the
-    /// recipient could withdraw right now, and what the funder would get
-    /// back if the stream were cancelled right now.
-    pub fn balance_of(env: Env, stream_id: u64) -> (i128, i128) {
-        let stream = load(&env, stream_id);
-        let streamed = streamed_at(&stream, env.ledger().timestamp());
-        (streamed - stream.withdrawn, stream.total - streamed)
-    }
-
-    pub fn get_stream(env: Env, stream_id: u64) -> Option<Stream> {
-        env.storage().persistent().get(&DataKey::Stream(stream_id))
-    }
-
-    pub fn get_stream_count(env: Env) -> u64 {
-        env.storage()
-            .instance()
-            .get(&DataKey::StreamCounter)
-            .unwrap()
     }
 }

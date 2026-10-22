@@ -1,27 +1,50 @@
-use soroban_sdk::{Address, Env, Symbol};
+use soroban_sdk::{contracttype, Address};
 
-pub fn created(env: &Env, stream_id: u64, funder: Address, recipient: Address, total: i128) {
-    env.events().publish(
-        (Symbol::new(env, "stream_created"), stream_id),
-        (funder, recipient, total),
-    );
+/// Emitted when a stream is created.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamCreated {
+    pub stream_id: u64,
+    pub sender: Address,
+    pub recipient: Address,
+    pub deposit: i128,
+    pub revocable: bool,
 }
 
-pub fn withdrawn(env: &Env, stream_id: u64, to: Address, amount: i128) {
-    env.events()
-        .publish((Symbol::new(env, "withdrawn"), stream_id), (to, amount));
+/// Emitted when a recipient withdraws vested-but-unwithdrawn funds.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Withdrawn {
+    pub stream_id: u64,
+    pub recipient: Address,
+    pub amount: i128,
 }
 
-pub fn canceled(env: &Env, stream_id: u64, to_recipient: i128, to_funder: i128) {
-    env.events().publish(
-        (Symbol::new(env, "stream_canceled"), stream_id),
-        (to_recipient, to_funder),
-    );
+/// Emitted when a sender cancels a revocable stream.
+///
+/// `to_recipient` is the vested-but-unwithdrawn amount settled to the
+/// recipient; `refunded` is the unvested remainder returned to the sender.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamCancelled {
+    pub stream_id: u64,
+    pub sender: Address,
+    pub recipient: Address,
+    pub to_recipient: i128,
+    pub refunded: i128,
 }
 
-pub fn transferred(env: &Env, stream_id: u64, from: Address, to: Address) {
-    env.events().publish(
-        (Symbol::new(env, "stream_transferred"), stream_id),
-        (from, to),
-    );
+/// Emitted when an admin claws back a stream.
+///
+/// Behaves identically to cancellation but is emitted as a distinct event so
+/// indexers can tell admin clawbacks apart from sender cancellations.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamClawedBack {
+    pub stream_id: u64,
+    pub admin: Address,
+    pub sender: Address,
+    pub recipient: Address,
+    pub to_recipient: i128,
+    pub refunded: i128,
 }
