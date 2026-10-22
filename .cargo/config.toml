@@ -1,3 +1,14 @@
 [alias]
 # `cargo xtask <cmd>` — see xtask/src/main.rs or `cargo xtask help`.
 xtask = "run --quiet --package xtask --"
+
+[build]
+# Incremental artifacts are host/path dependent; never reuse them.
+incremental = false
+
+[target.wasm32-unknown-unknown]
+# Static, host-independent flags. Absolute-path remapping can't live here
+# (it needs the builder's paths), so scripts/reproducible-build/verify.sh
+# appends --remap-path-prefix via CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS,
+# which replaces this list — keep the two in sync.
+rustflags = ["-C", "debuginfo=0", "-C", "strip=symbols", "-C", "codegen-units=1"]

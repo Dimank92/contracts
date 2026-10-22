@@ -192,3 +192,21 @@ jobs:
           python3 scripts/resource-diff/resource_diff.py
           ${{ github.event_name == 'pull_request' && format('--base-ref origin/{0}', github.base_ref) || '' }}
           options_market
+
+  reproducible:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cargo.lock is committed
+        run: git ls-files --error-unmatch Cargo.lock
+      # rust-toolchain.toml selects the pinned rustc; cache the toolchain only.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.81.0
+          targets: wasm32-unknown-unknown
+      - name: Two clean builds hash identically
+        run: scripts/reproducible-build/verify.sh
+      - name: Gate detects injected drift
+        run: "! VERIFY_INJECT_DRIFT=1 scripts/reproducible-build/verify.sh"
+      - name: Cargo.lock unchanged by build
+        run: git diff --exit-code Cargo.lock

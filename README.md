@@ -124,6 +124,12 @@ in sync with the `contractimport!` paths. Each contract's wasm is built on
 its own so dev-dependency `testutils` never reaches a release build —
 `check-wasm` verifies that on the artifacts.
 
+### Reproducible builds
+
+The toolchain is pinned in `rust-toolchain.toml` and CI checks that two clean
+builds hash identically; see [`docs/reproducible-builds.md`](docs/reproducible-builds.md)
+to reproduce a published wasm hash.
+
 ### Wasm size budgets
 
 The CI `budgets` job builds every contract, optimizes it
