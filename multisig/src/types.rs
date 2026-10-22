@@ -47,6 +47,9 @@ pub enum DataKey {
     SignerChange(BytesN<32>),
     /// change_id -> timestamp at which a queued change becomes executable.
     SignerChangeReadyAt(BytesN<32>),
+    /// action class -> seconds of timelock layered on top of `is_approved`
+    /// before the action becomes executable. Absent means no timelock.
+    ClassTimelock(Symbol),
 }
 
 #[contracttype]
@@ -110,4 +113,13 @@ pub struct Proposal {
 pub struct ActionApprovals {
     pub bitmap: u32,
     pub timestamps: Vec<u64>,
+}
+
+/// Per-class timelock configuration read by `is_executable`. `delay` is in
+/// seconds and is measured from the moment the action reached threshold.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClassTimelock {
+    pub class: Symbol,
+    pub delay: u64,
 }

@@ -7,7 +7,8 @@ Soroban (Stellar smart contract) crates for the Zenith options protocol.
 - [`options_market/`](options_market) — European-style put/call options on
   XLM, BTC, ETH, and SOL. Premium is set by the admin (computed off-chain via
   Black-Scholes); writers lock collateral, buyers pay premium, settlement
-  happens at expiry against an oracle-reported price.
+  happens at expiry against an oracle-reported price. See
+  [docs/options_market.md](docs/options_market.md).
 - [`price_oracle/`](price_oracle) — the on-chain logic behind that
   oracle-reported price. options_market previously only ever trusted a
   bare `oracle: Address` with nothing backing it; this contract is a
@@ -19,7 +20,7 @@ Soroban (Stellar smart contract) crates for the Zenith options protocol.
   `options_market::set_settlement_price_from_oracle` cross-calls a live
   price_oracle deployment to settle a series permissionlessly, as an
   alternative to the original `set_settlement_price`'s trusted-oracle-
-  address flow.
+  address flow. See [docs/price_oracle.md](docs/price_oracle.md).
 - [`vault/`](vault) — a per-(token, tag) escrow ledger for any number of
   allowlisted tokens and integrator contracts,
   motivated by a gap discovered while testing options_market: that
@@ -32,9 +33,11 @@ Soroban (Stellar smart contract) crates for the Zenith options protocol.
   from other tags' deposits. `options_market::escrow_series_to_vault` /
   `claim_refund_from_vault` now wire this in for the specific gap it was
   built for — see "Known gaps" below for the scope of that integration.
+  See [docs/vault.md](docs/vault.md).
 - [`timelock/`](timelock) — a delayed-execution admin (proposer /
   executor / canceller roles, predecessor dependencies) meant to hold the
   admin role on the other contracts so users always get an exit window.
+  See [docs/timelock.md](docs/timelock.md).
 - [`lp_pool/`](lp_pool) — a liquidity-provider pool that writes options
   on `options_market` on behalf of its depositors, with epoch-queued
   deposits and withdrawals. See [docs/lp_pool.md](docs/lp_pool.md).
@@ -55,7 +58,8 @@ Soroban (Stellar smart contract) crates for the Zenith options protocol.
   per-class timelock on top of `is_approved` (see "Timelock tiers"
   below). It can also act as a Soroban **custom account**
   (`__check_auth`) — set its address as a plain `admin` anywhere and
-  authorize calls with M-of-N ed25519 signatures.
+  authorize calls with M-of-N ed25519 signatures. See
+  [docs/multisig.md](docs/multisig.md).
 - [`common/`](common) — `zenith-common`, a plain rlib (no `#[contract]`,
   no exported spec entries) shared by options_market, price_oracle and
   vault: `require_admin_or_multisig(env, admin_key, Auth, class, err)`
@@ -96,6 +100,10 @@ Soroban (Stellar smart contract) crates for the Zenith options protocol.
   `#[ignore]`'d with the issue title and un-ignored by the fix PRs.
   See [`test_adversaries/CATALOG.md`](test_adversaries/CATALOG.md) for the
   full adversary catalog with per-adversary documentation.
+- [`staking/`](staking) — staking for protocol participation. See
+  [docs/staking.md](docs/staking.md).
+- [`streams/`](streams) — token streaming (vesting / payment streams).
+  See [docs/streams.md](docs/streams.md).
 
 ## Building and testing
 

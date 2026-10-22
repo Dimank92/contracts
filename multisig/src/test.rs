@@ -1609,3 +1609,126 @@ fn more_than_32_signers_rejected() {
     let client = MultisigClient::new(&env, &env.register_contract(None, Multisig));
     assert!(client.try_initialize(&s, &2, &0).is_err());
 }
+
+// ─── query / introspection surface ──────────────────────────────────────────
+
+#[test]
+fn get_signers_returns_the_fixed_signer_set() {
+    let h = setup();
+    let signers = h.client.get_signers();
+    assert_eq!(signers.len(), 3);
+    for signer in &h.signers {
+        assert!(signers.contains(signer));
+    }
+}
+
+#[test]
+fn get_approval_count_is_zero_for_a_never_approved_action() {
+    let h = setup();
+    let id = aid(&h.env, 42);
+    assert_eq!(h.client.get_approval_count(&id), 0);
+    assert!(!h.client.is_approved(&id));
+    assert_eq!(h.client.get_approval_expiry(&id), 0);
+}
+
+#[test]
+fn get_approval_count_tracks_a_partial_approval() {
+    let h = setup();
+    let id = aid(&h.env, 42);
+    h.client.approve(&h.signers[0], &id);
+    assert_eq!(h.client.get_approval_count(&id), 1);
+    assert!(!h.client.is_approved(&id));
+}
+
+#[test]
+fn exactly_at_threshold_is_approved_and_counted() {
+    let h = setup();
+    let id = aid(&h.env, 42);
+    h.client.approve(&h.signers[0], &id);
+    h.client.approve(&h.signers[1], &id);
+    assert_eq!(h.client.get_approval_count(&id), 2);
+    assert!(h.client.is_approved(&id));
+}
+
+#[test]
+fn approval_expiry_is_reported_for_a_fresh_approval() {
+    let h = setup_with_ttl(3600);
+    set_time(&h.env, 1_000);
+    let id = aid(&h.env, 42);
+    h.client.approve(&h.signers[0], &id);
+    // The effective expiry is the approval timestamp plus the ttl.
+    assert_eq!(h.client.get_approval_expiry(&id), 1_000 + 3600);
+}
+
+#[test]
+fn approval_expiry_is_zero_when_ttl_is_zero() {
+    let h = setup_with_ttl(0);
+    set_time(&h.env, 1_000);
+    let id = aid(&h.env, 42);
+    h.client.approve(&h.signers[0], &id);
+    // ttl == 0 means approvals never expire, reported distinctly as 0.
+    assert_eq!(h.client.get_approval_expiry(&id), 0);
+    set_time(&h.env, 1_000_000_000);
+    assert!(h.client.has_approved(&id, &h.signers[0]));
+    assert_eq!(h.client.get_approval_count(&id), 1);
+}
+
+#[test]
+fn expired_after_ttl_reports_unapproved_and_zero_count() {
+    let h = setup_with_ttl(3600);
+    set_time(&h.env, 1_000);
+    let id = aid(&h.env, 42);
+    h.client.approve(&h.signers[0], &id);
+    h.client.approve(&h.signers[1], &id);
+    assert!(h.client.is_approved(&id));
+
+    set_time(&h.env, 1_000 + 3601);
+    assert!(!h.client.is_approved(&id));
+    assert_eq!(h.client.get_approval_count(&id), 0);
+    assert!(!h.client.has_approved(&id, &h.signers[0]));
+}
+
+#[test]
+fn unknown_action_id_returns_explicit_unapproved_results() {
+    let h = setup();
+    let unknown = aid(&h.env, 0xFF);
+    assert_eq!(h.client.get_approval_count(&unknown), 0);
+    assert!(!h.client.is_approved(&unknown));
+    assert_eq!(h.client.get_approval_expiry(&unknown), 0);
+    assert!(!h.client.has_approved(&unknown, &h.signers[0]));
+}
+
+#[test]
+fn is_executable_is_false_for_an_unapproved_action() {
+    let h = setup();
+    let id = aid(&h.env, 42);
+    assert!(!h.client.is_executable(&id, &0));
+}
+
+#[test]
+fn is_executable_is_true_once_approved_for_the_default_class() {
+    let h = setup();
+    let id = aid(&h.env, 42);
+    h.client.approve(&h.signers[0], &id);
+    h.client.approve(&h.signers[1], &id);
+    assert!(h.client.is_approved(&id));
+    assert!(h.client.is_executable(&id, &0));
+}
+
+#[test]
+fn is_executable_is_false_for_an_unknown_class() {
+    let h = setup();
+    let id = aid(&h.env, 42);
+    h.client.approve(&h.signers[0], &id);
+    h.client.approve(&h.signers[1], &id);
+    assert!(h.client.is_approved(&id));
+    // An unknown timelock class is never executable.
+    assert!(!h.client.is_executable(&id, &255));
+}
+
+#[test]
+fn is_executable_is_false_for_an_unknown_action_id() {
+    let h = setup();
+    let unknown = aid(&h.env, 0xFF);
+    assert!(!h.client.is_executable(&unknown, &0));
+}
