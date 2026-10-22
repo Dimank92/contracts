@@ -33,9 +33,14 @@ pub struct LpToken;
 
 #[contractimpl]
 impl LpToken {
-    /// Pins `pool` as the only address that may mint. Requires the
-    /// pool's own authorization so a front-runner can't claim a freshly
-    /// deployed token for a pool that never agreed to it.
+    /// Pins `pool` as the only address that may mint and burn, and sets
+    /// the token metadata. Requires the pool's own authorization so a
+    /// front-runner can't claim a freshly deployed token for a pool that
+    /// never agreed to it.
+    ///
+    /// Idempotent-safe: a second call fails with `AlreadyInitialized`
+    /// rather than resetting the pool pin. Rotating the pool requires the
+    /// explicit, admin-gated `set_pool` path.
     pub fn initialize(env: Env, pool: Address, decimal: u32, name: String, symbol: String) {
         if env.storage().instance().has(&DataKey::Pool) {
             panic_with_error!(&env, Error::AlreadyInitialized);
@@ -52,6 +57,18 @@ impl LpToken {
         instance.set(&DataKey::Symbol, &symbol);
     }
 
+    /// Rotates the pinned pool to `new_pool`. Admin-gated: the current
+    /// pool must authorize the rotation. This is the only way the pin can
+    /// change after `initialize`.
+    pub fn set_pool(env: Env, new_pool: Address) {
+        let current = Self::pool(env.clone());
+        current.require_auth();
+        storage::extend_instance(&env);
+        env.storage().instance().set(&DataKey::Pool, &new_pool);
+        env.events()
+            .publish((Symbol::new(&env, "set_pool"), current), new_pool);
+    }
+
     /// Mints `amount` new shares to `to`. Only the pinned pool.
     pub fn mint(env: Env, to: Address, amount: i128) {
         check_nonnegative(&env, amount);
@@ -61,6 +78,17 @@ impl LpToken {
         receive(&env, &to, amount);
         env.events()
             .publish((Symbol::new(&env, "mint"), pool, to), amount);
+    }
+
+    /// Burns `amount` shares from `from`. Only the pinned pool.
+    pub fn burn(env: Env, from: Address, amount: i128) {
+        check_nonnegative(&env, amount);
+        let pool = Self::pool(env.clone());
+        pool.require_auth();
+        storage::extend_instance(&env);
+        spend(&env, &from, amount);
+        env.events()
+            .publish((Symbol::new(&env, "burn"), pool, from), amount);
     }
 
     pub fn pool(env: Env) -> Address {
@@ -81,6 +109,7 @@ impl token::Interface for LpToken {
     fn approve(env: Env, from: Address, spender: Address, amount: i128, expiration_ledger: u32) {
         from.require_auth();
         check_nonnegative(&env, amount);
+        check_spender(&env, &spender);
         storage::extend_instance(&env);
         write_allowance(&env, &from, &spender, amount, expiration_ledger);
         env.events().publish(
@@ -98,8 +127,11 @@ impl token::Interface for LpToken {
         from.require_auth();
         check_nonnegative(&env, amount);
         storage::extend_instance(&env);
-        spend(&env, &from, amount);
-        receive(&env, &to, amount);
+        // A self-transfer is a no-op on balances but still emits the event.
+        if from != to {
+            spend(&env, &from, amount);
+            receive(&env, &to, amount);
+        }
         env.events()
             .publish((Symbol::new(&env, "transfer"), from, to), amount);
     }
@@ -108,9 +140,13 @@ impl token::Interface for LpToken {
         spender.require_auth();
         check_nonnegative(&env, amount);
         storage::extend_instance(&env);
+        // Consume the allowance first; an allowance exactly equal to the
+        // amount is sufficient and leaves a zero balance behind.
         spend_allowance(&env, &from, &spender, amount);
-        spend(&env, &from, amount);
-        receive(&env, &to, amount);
+        if from != to {
+            spend(&env, &from, amount);
+            receive(&env, &to, amount);
+        }
         env.events()
             .publish((Symbol::new(&env, "transfer"), from, to), amount);
     }
@@ -135,15 +171,27 @@ impl token::Interface for LpToken {
     }
 
     fn decimals(env: Env) -> u32 {
-        env.storage().instance().get(&DataKey::Decimals).unwrap()
+        storage::extend_instance(&env);
+        env.storage()
+            .instance()
+            .get(&DataKey::Decimals)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized))
     }
 
     fn name(env: Env) -> String {
-        env.storage().instance().get(&DataKey::Name).unwrap()
+        storage::extend_instance(&env);
+        env.storage()
+            .instance()
+            .get(&DataKey::Name)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized))
     }
 
     fn symbol(env: Env) -> String {
-        env.storage().instance().get(&DataKey::Symbol).unwrap()
+        storage::extend_instance(&env);
+        env.storage()
+            .instance()
+            .get(&DataKey::Symbol)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized))
     }
 }
 
@@ -212,6 +260,15 @@ fn write_allowance(
         env.storage()
             .temporary()
             .extend_ttl(&key, live_for, live_for);
+    }
+}
+
+/// Approving the zero address is rejected: a zero-address spender can
+/// never authorize a `transfer_from`, so the allowance would be dead
+/// weight and is almost always a caller bug.
+fn check_spender(env: &Env, spender: &Address) {
+    if *spender == Address::from_string(&String::from_str(env, "")) {
+        panic_with_error!(env, Error::InvalidSpender);
     }
 }
 

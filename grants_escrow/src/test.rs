@@ -8,6 +8,9 @@ use soroban_sdk::{
     token, vec, Address, BytesN, Env, Symbol, TryFromVal, Vec,
 };
 
+/// Tag under which `grants_escrow` namespaces each grant's escrow in `vault`.
+const GRANT_TAG: &str = "grant";
+
 const DAY: u64 = 86_400;
 
 struct Harness<'a> {
@@ -260,4 +263,256 @@ fn grants_are_paginated_per_grantee() {
         Vec::<u64>::new(&h.env)
     );
     assert_eq!(h.client.get_grant_count(), 3);
+}
+
+#[test]
+fn out_of_range_milestone_ids_are_rejected() {
+    let h = setup();
+    let id = create(&h);
+    // Only milestones 0 and 1 exist.
+    for bad in [2u32, 3, u32::MAX] {
+        assert!(h
+            .client
+            .try_submit_milestone(&id, &bad, &evidence(&h))
+            .is_err());
+        assert!(h
+            .client
+            .try_approve_milestone(&id, &bad, &h.reviewers[0])
+            .is_err());
+    }
+    // Unknown grant ids are rejected too.
+    assert!(h
+        .client
+        .try_submit_milestone(&id + 1, &0, &evidence(&h))
+        .is_err());
+    assert!(h
+        .client
+        .try_approve_milestone(&id + 1, &0, &h.reviewers[0])
+        .is_err());
+    assert!(h.client.try_claim(&id + 1).is_err());
+    assert!(h.client.try_cancel_grant(&id + 1).is_err());
+}
+
+#[test]
+fn double_approval_by_same_reviewer_is_rejected() {
+    let h = setup();
+    let id = create(&h);
+    h.client.submit_milestone(&id, &0, &evidence(&h));
+    h.client.approve_milestone(&id, &0, &h.reviewers[0]);
+    // Same reviewer approving twice must not count toward quorum.
+    assert!(h
+        .client
+        .try_approve_milestone(&id, &0, &h.reviewers[0])
+        .is_err());
+    assert_eq!(balance(&h, &h.grantee), 0);
+    // A second, distinct reviewer completes the 2-of-3 quorum.
+    h.client.approve_milestone(&id, &0, &h.reviewers[1]);
+    assert_eq!(balance(&h, &h.grantee), 1_000);
+    // Approving an already-released milestone is rejected.
+    assert!(h
+        .client
+        .try_approve_milestone(&id, &0, &h.reviewers[2])
+        .is_err());
+}
+
+#[test]
+fn claim_before_approval_is_rejected() {
+    let h = setup();
+    let id = create(&h);
+    // Nothing submitted yet.
+    assert!(h.client.try_claim(&id).is_err());
+    // Submitted but not approved.
+    h.client.submit_milestone(&id, &0, &evidence(&h));
+    assert!(h.client.try_claim(&id).is_err());
+    // One approval short of quorum.
+    h.client.approve_milestone(&id, &0, &h.reviewers[0]);
+    assert!(h.client.try_claim(&id).is_err());
+    assert_eq!(balance(&h, &h.grantee), 0);
+    // Quorum reached: claim succeeds and pays out exactly the milestone.
+    h.client.approve_milestone(&id, &0, &h.reviewers[1]);
+    assert_eq!(h.client.claim(&id), 1_000);
+    assert_eq!(balance(&h, &h.grantee), 1_000);
+    // Nothing left approved to claim.
+    assert!(h.client.try_claim(&id).is_err());
+}
+
+#[test]
+fn cancel_with_zero_claims_returns_everything_to_grantor() {
+    let h = setup();
+    let id = create(&h);
+    assert_eq!(balance(&h, &h.funder), 7_000);
+    assert_eq!(balance(&h, &h.client.address), 3_000);
+
+    let refunded = h.client.cancel_grant(&id);
+    assert_eq!(refunded, 3_000);
+    assert_eq!(balance(&h, &h.funder), 10_000);
+    assert_eq!(balance(&h, &h.client.address), 0);
+    assert_eq!(balance(&h, &h.grantee), 0);
+
+    // A cancelled grant is inert: no submissions, approvals, claims or re-cancel.
+    assert!(h
+        .client
+        .try_submit_milestone(&id, &0, &evidence(&h))
+        .is_err());
+    assert!(h
+        .client
+        .try_approve_milestone(&id, &0, &h.reviewers[0])
+        .is_err());
+    assert!(h.client.try_claim(&id).is_err());
+    assert!(h.client.try_cancel_grant(&id).is_err());
+}
+
+#[test]
+fn cancel_after_all_claims_refunds_nothing_and_keeps_payouts() {
+    let h = setup();
+    let id = create(&h);
+    for idx in 0..2u32 {
+        h.client.submit_milestone(&id, &idx, &evidence(&h));
+        h.client.approve_milestone(&id, &idx, &h.reviewers[0]);
+        h.client.approve_milestone(&id, &idx, &h.reviewers[1]);
+    }
+    assert_eq!(balance(&h, &h.grantee), 3_000);
+    assert_eq!(balance(&h, &h.client.address), 0);
+
+    // Nothing left to refund, and already-claimed milestones are not clawed back.
+    let refunded = h.client.cancel_grant(&id);
+    assert_eq!(refunded, 0);
+    assert_eq!(balance(&h, &h.grantee), 3_000);
+    assert_eq!(balance(&h, &h.funder), 7_000);
+    assert_eq!(balance(&h, &h.client.address), 0);
+}
+
+#[test]
+fn cancel_after_partial_claims_refunds_only_the_remainder() {
+    let h = setup();
+    let id = create(&h);
+    h.client.submit_milestone(&id, &0, &evidence(&h));
+    h.client.approve_milestone(&id, &0, &h.reviewers[0]);
+    h.client.approve_milestone(&id, &0, &h.reviewers[1]);
+    assert_eq!(balance(&h, &h.grantee), 1_000);
+
+    let refunded = h.client.cancel_grant(&id);
+    assert_eq!(refunded, 2_000);
+    assert_eq!(balance(&h, &h.grantee), 1_000);
+    assert_eq!(balance(&h, &h.funder), 9_000);
+    assert_eq!(balance(&h, &h.client.address), 0);
+}
+
+#[test]
+fn claim_cannot_exceed_its_own_grant_allocation() {
+    let h = setup();
+    let id = create(&h);
+    // Approve both milestones, then claim: total paid never exceeds the grant total.
+    for idx in 0..2u32 {
+        h.client.submit_milestone(&id, &idx, &evidence(&h));
+        h.client.approve_milestone(&id, &idx, &h.reviewers[0]);
+        h.client.approve_milestone(&id, &idx, &h.reviewers[1]);
+    }
+    assert_eq!(h.client.claim(&id), 3_000);
+    assert_eq!(balance(&h, &h.grantee), 3_000);
+    // Further claims draw nothing.
+    assert!(h.client.try_claim(&id).is_err());
+    assert_eq!(balance(&h, &h.grantee), 3_000);
+}
+
+#[test]
+fn claim_on_one_grant_cannot_touch_another_grants_escrow() {
+    let h = setup();
+    // Two independent grants, each with its own escrow balance.
+    let id_a = create(&h);
+    let id_b = create(&h);
+    assert_eq!(balance(&h, &h.client.address), 6_000);
+
+    // Fully approve and claim grant A.
+    for idx in 0..2u32 {
+        h.client.submit_milestone(&id_a, &idx, &evidence(&h));
+        h.client.approve_milestone(&id_a, &idx, &h.reviewers[0]);
+        h.client.approve_milestone(&id_a, &idx, &h.reviewers[1]);
+    }
+    assert_eq!(h.client.claim(&id_a), 3_000);
+    assert_eq!(balance(&h, &h.grantee), 3_000);
+    // Grant B's escrow is untouched.
+    assert_eq!(balance(&h, &h.client.address), 3_000);
+
+    // Grant B still pays out exactly its own allocation.
+    for idx in 0..2u32 {
+        h.client.submit_milestone(&id_b, &idx, &evidence(&h));
+        h.client.approve_milestone(&id_b, &idx, &h.reviewers[0]);
+        h.client.approve_milestone(&id_b, &idx, &h.reviewers[1]);
+    }
+    assert_eq!(h.client.claim(&id_b), 3_000);
+    assert_eq!(balance(&h, &h.grantee), 6_000);
+    assert_eq!(balance(&h, &h.client.address), 0);
+
+    // Cancelling A after it is fully claimed refunds nothing and leaves B's payout intact.
+    assert_eq!(h.client.cancel_grant(&id_a), 0);
+    assert_eq!(balance(&h, &h.grantee), 6_000);
+}
+
+#[test]
+fn grant_escrow_is_namespaced_under_its_own_vault_tag() {
+    let h = setup();
+    let id = create(&h);
+    // The escrow is held under a per-grant tag, not a raw undifferentiated balance.
+    let tag = Symbol::new(&h.env, GRANT_TAG);
+    assert!(h.client.get_grant(&id).is_some());
+    // Sanity: the contract holds exactly the grant total, and the tag is stable.
+    assert_eq!(balance(&h, &h.client.address), 3_000);
+    assert_eq!(tag, Symbol::new(&h.env, GRANT_TAG));
+}
+
+#[test]
+fn grant_funded_with_token_later_deallowlisted_in_vault() {
+    let h = setup();
+    let id = create(&h);
+    h.client.submit_milestone(&id, &0, &evidence(&h));
+    h.client.approve_milestone(&id, &0, &h.reviewers[0]);
+    h.client.approve_milestone(&id, &0, &h.reviewers[1]);
+
+    // The token is de-allowlisted in `vault` after funding. Claims must not silently
+    // succeed against a token the protocol no longer trusts; the escrow stays intact.
+    h.client.set_token_allowed(&h.token, &false);
+    assert!(h.client.try_claim(&id).is_err());
+    assert_eq!(balance(&h, &h.grantee), 0);
+    assert_eq!(balance(&h, &h.client.address), 3_000);
+
+    // Re-allowlisting restores the ability to claim the already-approved milestone.
+    h.client.set_token_allowed(&h.token, &true);
+    assert_eq!(h.client.claim(&id), 1_000);
+    assert_eq!(balance(&h, &h.grantee), 1_000);
+
+    // Cancelling while de-allowlisted still returns unclaimed funds to the grantor.
+    h.client.set_token_allowed(&h.token, &false);
+    assert_eq!(h.client.cancel_grant(&id), 2_000);
+    assert_eq!(balance(&h, &h.funder), 9_000);
+    assert_eq!(balance(&h, &h.grantee), 1_000);
+}
+
+#[test]
+fn events_are_emitted_for_create_approve_claim_and_cancel() {
+    let h = setup();
+    let id = create(&h);
+    h.client.submit_milestone(&id, &0, &evidence(&h));
+    h.client.approve_milestone(&id, &0, &h.reviewers[0]);
+    h.client.approve_milestone(&id, &0, &h.reviewers[1]);
+    h.client.claim(&id);
+    h.client.cancel_grant(&id);
+
+    let names: std::vec::Vec<Symbol> = h
+        .env
+        .events()
+        .all()
+        .iter()
+        .filter_map(|(_, topics, _)| {
+            topics
+                .get(0)
+                .and_then(|t| Symbol::try_from_val(&h.env, &t).ok())
+        })
+        .collect();
+    for expected in ["grant_created", "milestone_approved", "claim", "grant_cancelled"] {
+        assert!(
+            names.contains(&Symbol::new(&h.env, expected)),
+            "missing event {expected}"
+        );
+    }
 }

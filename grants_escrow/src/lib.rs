@@ -27,6 +27,17 @@ pub use migrations::CURRENT_SCHEMA_VERSION;
 use types::DataKey;
 pub use types::{Grant, Milestone, MilestoneStatus};
 
+/// Vault tag namespace for a grant's escrowed balance. Each grant's funds
+/// live under `(grants_escrow, "grant", id)` in the `vault` ledger, so
+/// escrow accounting inherits vault's tag-isolation guarantee: a claim on
+/// one grant can never draw down another grant's balance.
+pub fn grant_tag(env: &Env, grant_id: u64) -> (Address, BytesN<32>, u64) {
+    let contract = env.current_contract_address();
+    let mut raw = [0u8; 32];
+    raw[..5].copy_from_slice(b"grant");
+    (contract, BytesN::from_array(env, &raw), grant_id)
+}
+
 /// How long after a milestone's deadline reviewers still have to approve
 /// a submission before the funder may reclaim it.
 pub const GRACE_PERIOD: u64 = 7 * 86_400;
@@ -104,8 +115,6 @@ impl GrantsEscrow {
             });
         }
 
-        token::Client::new(&env, &token).transfer(&funder, &env.current_contract_address(), &total);
-
         let grant_id: u64 = env
             .storage()
             .instance()
@@ -115,6 +124,13 @@ impl GrantsEscrow {
         env.storage()
             .instance()
             .set(&DataKey::GrantCounter, &grant_id);
+
+        // Fund the grant's own vault tag. The vault ledger keeps each tag's
+        // balance isolated, so a later claim can only ever draw down this
+        // grant's allocation.
+        token::Client::new(&env, &token).transfer(&funder, &env.current_contract_address(), &total);
+        let tag = grant_tag(&env, grant_id);
+        vault::credit(&env, &tag, &token, &total);
 
         let grant = Grant {
             grant_id,
@@ -162,16 +178,26 @@ impl GrantsEscrow {
 
     /// One reviewer's approval of a submitted milestone. The approval that
     /// reaches quorum releases the milestone's amount to the grantee.
+    ///
+    /// The approving reviewer must be authorized either directly or through
+    /// the configured multisig (`zenith_common::require_admin_or_multisig`),
+    /// so a multisig deployment can approve, not just a single admin.
     pub fn approve_milestone(env: Env, grant_id: u64, idx: u32, reviewer: Address) {
         ttl::extend_instance(&env);
-        reviewer.require_auth();
         migrations::require_current(&env);
         let mut grant = Self::load(&env, grant_id);
         if !grant.reviewers.contains(&reviewer) {
             panic_with_error!(&env, Error::NotAReviewer);
         }
+        zenith_common::require_admin_or_multisig(&env, &reviewer);
 
+        if idx >= grant.milestones.len() {
+            panic_with_error!(&env, Error::MilestoneNotFound);
+        }
         let mut milestone = Self::milestone(&env, &grant, idx);
+        if milestone.status == MilestoneStatus::Released {
+            panic_with_error!(&env, Error::InvalidMilestoneState);
+        }
         if milestone.status != MilestoneStatus::Submitted {
             panic_with_error!(&env, Error::InvalidMilestoneState);
         }
@@ -186,15 +212,86 @@ impl GrantsEscrow {
 
         if milestone.approvals >= grant.quorum {
             milestone.status = MilestoneStatus::Released;
-            token::Client::new(&env, &grant.token).transfer(
-                &env.current_contract_address(),
-                &grant.grantee,
-                &milestone.amount,
-            );
-            events::milestone_released(&env, grant_id, idx, milestone.amount);
+            grant.milestones.set(idx, milestone.clone());
+            ttl::set_persistent(&env, &DataKey::Grant(grant_id), &grant);
+            Self::release(&env, &grant, idx, &milestone);
+            return;
         }
         grant.milestones.set(idx, milestone);
         ttl::set_persistent(&env, &DataKey::Grant(grant_id), &grant);
+    }
+
+    /// Grantee claims a milestone that reviewers have already released.
+    /// Only the grant's own vault tag is debited, so a claim can never draw
+    /// down more than this grant's remaining milestone allocation, nor touch
+    /// another grant's escrowed balance.
+    pub fn claim(env: Env, grant_id: u64, idx: u32) -> i128 {
+        ttl::extend_instance(&env);
+        migrations::require_current(&env);
+        let mut grant = Self::load(&env, grant_id);
+        grant.grantee.require_auth();
+
+        if idx >= grant.milestones.len() {
+            panic_with_error!(&env, Error::MilestoneNotFound);
+        }
+        let mut milestone = Self::milestone(&env, &grant, idx);
+        if milestone.status != MilestoneStatus::Released {
+            panic_with_error!(&env, Error::InvalidMilestoneState);
+        }
+        if milestone.claimed {
+            panic_with_error!(&env, Error::AlreadyClaimed);
+        }
+        milestone.claimed = true;
+        grant.milestones.set(idx, milestone.clone());
+        ttl::set_persistent(&env, &DataKey::Grant(grant_id), &grant);
+
+        Self::release(&env, &grant, idx, &milestone);
+        milestone.amount
+    }
+
+    /// Funder cancels a grant. Every milestone that has not yet been claimed
+    /// is cancelled and its amount returned to the funder; milestones that
+    /// were already claimed are left untouched and are not clawed back.
+    /// Returns the amount returned to the funder.
+    pub fn cancel_grant(env: Env, grant_id: u64) -> i128 {
+        ttl::extend_instance(&env);
+        migrations::require_current(&env);
+        let mut grant = Self::load(&env, grant_id);
+        grant.funder.require_auth();
+
+        let mut refund: i128 = 0;
+        for idx in 0..grant.milestones.len() {
+            let mut milestone = grant.milestones.get(idx).unwrap();
+            if milestone.claimed {
+                continue;
+            }
+            match milestone.status {
+                MilestoneStatus::Released => {
+                    // Approved but not yet claimed: the grantee is owed this
+                    // amount, so it is not returned to the funder.
+                }
+                MilestoneStatus::Cancelled => {}
+                _ => {
+                    refund += milestone.amount;
+                    milestone.status = MilestoneStatus::Cancelled;
+                    grant.milestones.set(idx, milestone);
+                }
+            }
+        }
+
+        ttl::set_persistent(&env, &DataKey::Grant(grant_id), &grant);
+
+        if refund > 0 {
+            let tag = grant_tag(&env, grant_id);
+            vault::debit(&env, &tag, &grant.token, &refund);
+            token::Client::new(&env, &grant.token).transfer(
+                &env.current_contract_address(),
+                &grant.funder,
+                &refund,
+            );
+        }
+        events::grant_cancelled(&env, grant_id, refund);
+        refund
     }
 
     /// Funder reclaims every unreleased milestone whose deadline plus
@@ -330,5 +427,21 @@ impl GrantsEscrow {
             .milestones
             .get(idx)
             .unwrap_or_else(|| panic_with_error!(env, Error::MilestoneNotFound))
+    }
+
+    /// Debits the grant's own vault tag and pays the grantee. Surfaces a
+    /// clear error if the token was de-allowlisted in vault after funding.
+    fn release(env: &Env, grant: &Grant, idx: u32, milestone: &Milestone) {
+        let tag = grant_tag(env, grant.grant_id);
+        if !vault::is_allowed(env, &grant.token) {
+            panic_with_error!(env, Error::TokenNotAllowed);
+        }
+        vault::debit(env, &tag, &grant.token, &milestone.amount);
+        token::Client::new(env, &grant.token).transfer(
+            &env.current_contract_address(),
+            &grant.grantee,
+            &milestone.amount,
+        );
+        events::milestone_claimed(env, grant.grant_id, idx, milestone.amount);
     }
 }

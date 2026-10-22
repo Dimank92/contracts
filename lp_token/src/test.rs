@@ -219,6 +219,121 @@ fn initialize_twice_fails() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #1)")] // AlreadyInitialized
+fn re_initialization_cannot_re_pin_the_pool() {
+    let (env, token, pool) = setup();
+    let attacker = Address::generate(&env);
+    // Attempt to re-pin to a different pool address; must fail and leave the pin intact.
+    let _ = token.try_initialize(
+        &attacker,
+        &7,
+        &String::from_str(&env, "n"),
+        &String::from_str(&env, "s"),
+    );
+    assert_eq!(token.pool(), pool);
+    token.initialize(
+        &attacker,
+        &7,
+        &String::from_str(&env, "n"),
+        &String::from_str(&env, "s"),
+    );
+}
+
+#[test]
+fn non_pool_caller_cannot_mint() {
+    let env = Env::default();
+    let pool = Address::generate(&env);
+    let token = LpTokenClient::new(&env, &env.register_contract(None, LpToken));
+    env.mock_all_auths();
+    token.initialize(
+        &pool,
+        &7,
+        &String::from_str(&env, "n"),
+        &String::from_str(&env, "s"),
+    );
+    let user = Address::generate(&env);
+    // Only the pinned pool may mint; a user's authorization is not enough.
+    env.set_auths(&[]);
+    let res = token.try_mint(&user, &1);
+    assert!(res.is_err());
+    assert_eq!(token.balance(&user), 0);
+}
+
+#[test]
+fn non_pool_caller_cannot_burn() {
+    let env = Env::default();
+    let pool = Address::generate(&env);
+    let token = LpTokenClient::new(&env, &env.register_contract(None, LpToken));
+    env.mock_all_auths();
+    token.initialize(
+        &pool,
+        &7,
+        &String::from_str(&env, "n"),
+        &String::from_str(&env, "s"),
+    );
+    let user = Address::generate(&env);
+    token.mint(&user, &100);
+    env.set_auths(&[]);
+    let res = token.try_burn(&user, &1);
+    assert!(res.is_err());
+    assert_eq!(token.balance(&user), 100);
+}
+
+#[test]
+fn self_transfer_is_a_noop_but_succeeds() {
+    let (env, token, _) = setup();
+    let a = Address::generate(&env);
+    token.mint(&a, &100);
+    token.transfer(&a, &a, &40);
+    assert_eq!(token.balance(&a), 100);
+    assert_eq!(last_event_topic(&env), symbol_short!("transfer"));
+}
+
+#[test]
+fn transfer_to_the_contract_address_succeeds() {
+    let (env, token, _) = setup();
+    let a = Address::generate(&env);
+    token.mint(&a, &100);
+    token.transfer(&a, &token.address, &25);
+    assert_eq!(token.balance(&a), 75);
+    assert_eq!(token.balance(&token.address), 25);
+}
+
+#[test]
+fn allowance_exactly_equal_to_the_amount_is_consumed_to_zero() {
+    let (env, token, _) = setup();
+    let a = Address::generate(&env);
+    let c = Address::generate(&env);
+    token.mint(&a, &100);
+    token.approve(&a, &c, &50, &1000);
+    token.transfer_from(&c, &a, &c, &50);
+    assert_eq!(token.balance(&a), 50);
+    assert_eq!(token.balance(&c), 50);
+    assert_eq!(token.allowance(&a, &c), 0);
+}
+
+#[test]
+fn approving_the_zero_address_is_allowed() {
+    let (env, token, _) = setup();
+    let a = Address::generate(&env);
+    let zero = Address::from_string(&String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+    token.approve(&a, &zero, &10, &1000);
+    assert_eq!(token.allowance(&a, &zero), 10);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")] // InsufficientBalance
+fn burning_more_than_the_caller_balance_fails() {
+    let (env, token, _) = setup();
+    let a = Address::generate(&env);
+    token.mint(&a, &100);
+    token.burn(&a, &101);
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #7)")] // InvalidDecimals
 fn decimals_must_fit_in_a_u8() {
     let env = Env::default();

@@ -1,0 +1,649 @@
+[package]
+name = "settlement-keeper"
+version = "0.1.0"
+edition = "2021"
+description = "Permissionless settlement keeper for options_market expiry settlement"
+license = "Apache-2.0"
+publish = false
+
+[[bin]]
+name = "settlement-keeper"
+path = "src/main.rs"
+
+[lib]
+name = "settlement_keeper"
+path = "src/lib.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+
+[dev-dependencies]
+```
+
+File: tools/settlement-keeper/src/lib.rs
+Current content:
+
+
+Change type: create
+Step: Create a new tools/settlement-keeper binary crate (Cargo.toml + src/main.rs + src/lib.rs) that lists option series approaching or past expiry, reads the price_oracle aggregate for the series' symbol (freshness and report count), and calls options_market::set_settlement_price_from_oracle when safe. Support --dry-run (print intended call and observed oracle state without submitting), --once, and a polling mode. Refuse to settle when the aggregate is stale, below min_reports, or the symbol is unregistered, exiting non-zero with a clear message. Read identity/key material from the environment or a CLI flag and never write it to disk or logs. Isolate the decision logic in a pure function taking the oracle snapshot and returning settle/skip plus a reason so it is unit-testable without a network. Trust ledger close time rather than local time, skip already-settled series, retry transient RPC failures with backoff, and never submit twice for the same series. Add unit tests for the decision function across fresh/stale/below-quorum/unregistered inputs.
+
+```rust
+//! Settlement keeper library.
+//!
+//! This crate exposes the pure decision logic used by the `settlement-keeper`
+//! binary so it can be unit-tested without a network. The binary wires this
+//! logic to RPC queries against `options_market` and `price_oracle` and to the
+//! `options_market::set_settlement_price_from_oracle` entrypoint.
+//!
+//! Design notes:
+//! - All time comparisons use the *ledger close time* reported by the chain,
+//!   never the local wall clock, so clock skew between the operator's machine
+//!   and the validator set cannot cause premature or missed settlements.
+//! - The decision function is pure: it takes an oracle snapshot plus the
+//!   series metadata and returns a [`Decision`] with a human-readable reason.
+//! - Key material is never persisted or logged; it is read from the
+//!   environment or a CLI flag and handed straight to the signer.
+
+use std::fmt;
+
+/// A single option series as observed from `options_market`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeriesInfo {
+    /// Stable identifier for the series (e.g. `"BTC-20240101-50000-C"`).
+    pub series_id: String,
+    /// The oracle symbol this series settles against.
+    pub symbol: String,
+    /// Ledger close time (seconds since epoch) at which the series expires.
+    pub expiry_ledger_time: i64,
+    /// Whether the series has already been settled on-chain.
+    pub settled: bool,
+}
+
+/// A snapshot of the `price_oracle` aggregate for a single symbol.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OracleSnapshot {
+    /// Whether the symbol is registered with `price_oracle`.
+    pub registered: bool,
+    /// Aggregate price, if one is available.
+    pub price: Option<i128>,
+    /// Ledger close time (seconds since epoch) of the most recent report
+    /// contributing to the aggregate.
+    pub last_report_ledger_time: Option<i64>,
+    /// Number of reports currently backing the aggregate.
+    pub report_count: u32,
+    /// Minimum number of reports required for a quorum.
+    pub min_reports: u32,
+    /// Maximum age (seconds) a report may have and still be considered fresh.
+    pub max_staleness_secs: i64,
+}
+
+/// Why a series should not be settled right now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkipReason {
+    /// The series has already been settled on-chain.
+    AlreadySettled,
+    /// The series has not yet reached its expiry ledger time.
+    NotYetExpired { seconds_until_expiry: i64 },
+    /// The symbol is not registered with `price_oracle`.
+    SymbolUnregistered,
+    /// The aggregate has fewer reports than `min_reports`.
+    BelowQuorum { report_count: u32, min_reports: u32 },
+    /// The most recent report is older than `max_staleness_secs`.
+    Stale { age_secs: i64, max_staleness_secs: i64 },
+    /// No report has ever been observed for the symbol.
+    NoReports,
+    /// No aggregate price is available.
+    NoPrice,
+}
+
+impl fmt::Display for SkipReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SkipReason::AlreadySettled => write!(f, "series already settled"),
+            SkipReason::NotYetExpired {
+                seconds_until_expiry,
+            } => write!(
+                f,
+                "series not yet expired ({}s until expiry by ledger time)",
+                seconds_until_expiry
+            ),
+            SkipReason::SymbolUnregistered => {
+                write!(f, "symbol is not registered with price_oracle")
+            }
+            SkipReason::BelowQuorum {
+                report_count,
+                min_reports,
+            } => write!(
+                f,
+                "aggregate below quorum: {} report(s) < min_reports {}",
+                report_count, min_reports
+            ),
+            SkipReason::Stale {
+                age_secs,
+                max_staleness_secs,
+            } => write!(
+                f,
+                "aggregate is stale: age {}s > max staleness {}s",
+                age_secs, max_staleness_secs
+            ),
+            SkipReason::NoReports => write!(f, "no reports observed for symbol"),
+            SkipReason::NoPrice => write!(f, "no aggregate price available"),
+        }
+    }
+}
+
+/// The outcome of evaluating a series for settlement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Decision {
+    /// Safe to settle; carries the price to submit.
+    Settle { price: i128 },
+    /// Do not settle; carries the reason.
+    Skip(SkipReason),
+}
+
+impl Decision {
+    /// Returns `true` if the decision is to settle.
+    pub fn is_settle(&self) -> bool {
+        matches!(self, Decision::Settle { .. })
+    }
+}
+
+/// Evaluate whether a series should be settled given the current oracle
+/// snapshot and the current ledger close time.
+///
+/// This function is pure and performs no I/O. It is the single source of
+/// truth for the keeper's settle/skip decision.
+///
+/// `ledger_time` is the current ledger close time in seconds since epoch, as
+/// reported by the chain. It is used for all freshness and expiry checks so
+/// that local clock skew cannot affect the decision.
+pub fn decide(series: &SeriesInfo, oracle: &OracleSnapshot, ledger_time: i64) -> Decision {
+    if series.settled {
+        return Decision::Skip(SkipReason::AlreadySettled);
+    }
+
+    if ledger_time < series.expiry_ledger_time {
+        return Decision::Skip(SkipReason::NotYetExpired {
+            seconds_until_expiry: series.expiry_ledger_time - ledger_time,
+        });
+    }
+
+    if !oracle.registered {
+        return Decision::Skip(SkipReason::SymbolUnregistered);
+    }
+
+    if oracle.report_count == 0 {
+        return Decision::Skip(SkipReason::NoReports);
+    }
+
+    if oracle.report_count < oracle.min_reports {
+        return Decision::Skip(SkipReason::BelowQuorum {
+            report_count: oracle.report_count,
+            min_reports: oracle.min_reports,
+        });
+    }
+
+    let last_report = match oracle.last_report_ledger_time {
+        Some(t) => t,
+        None => return Decision::Skip(SkipReason::NoReports),
+    };
+
+    // Guard against a report timestamped in the future relative to ledger
+    // time: treat it as fresh (age 0) rather than underflowing.
+    let age_secs = (ledger_time - last_report).max(0);
+    if age_secs > oracle.max_staleness_secs {
+        return Decision::Skip(SkipReason::Stale {
+            age_secs,
+            max_staleness_secs: oracle.max_staleness_secs,
+        });
+    }
+
+    match oracle.price {
+        Some(price) => Decision::Settle { price },
+        None => Decision::Skip(SkipReason::NoPrice),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn series(settled: bool, expiry: i64) -> SeriesInfo {
+        SeriesInfo {
+            series_id: "BTC-20240101-50000-C".to_string(),
+            symbol: "BTC/USD".to_string(),
+            expiry_ledger_time: expiry,
+            settled,
+        }
+    }
+
+    fn oracle() -> OracleSnapshot {
+        OracleSnapshot {
+            registered: true,
+            price: Some(50_000),
+            last_report_ledger_time: Some(1_000),
+            report_count: 5,
+            min_reports: 3,
+            max_staleness_secs: 60,
+        }
+    }
+
+    #[test]
+    fn settles_when_fresh_and_quorum() {
+        let s = series(false, 1_000);
+        let o = oracle();
+        // Ledger time is at expiry, report is 10s old.
+        let d = decide(&s, &o, 1_010);
+        assert_eq!(d, Decision::Settle { price: 50_000 });
+    }
+
+    #[test]
+    fn skips_already_settled() {
+        let s = series(true, 1_000);
+        let o = oracle();
+        let d = decide(&s, &o, 1_010);
+        assert_eq!(d, Decision::Skip(SkipReason::AlreadySettled));
+    }
+
+    #[test]
+    fn skips_not_yet_expired() {
+        let s = series(false, 2_000);
+        let o = oracle();
+        let d = decide(&s, &o, 1_010);
+        assert_eq!(
+            d,
+            Decision::Skip(SkipReason::NotYetExpired {
+                seconds_until_expiry: 990
+            })
+        );
+    }
+
+    #[test]
+    fn skips_unregistered_symbol() {
+        let s = series(false, 1_000);
+        let mut o = oracle();
+        o.registered = false;
+        let d = decide(&s, &o, 1_010);
+        assert_eq!(d, Decision::Skip(SkipReason::SymbolUnregistered));
+    }
+
+    #[test]
+    fn skips_below_quorum() {
+        let s = series(false, 1_000);
+        let mut o = oracle();
+        o.report_count = 2;
+        o.min_reports = 3;
+        let d = decide(&s, &o, 1_010);
+        assert_eq!(
+            d,
+            Decision::Skip(SkipReason::BelowQuorum {
+                report_count: 2,
+                min_reports: 3
+            })
+        );
+    }
+
+    #[test]
+    fn skips_stale_aggregate() {
+        let s = series(false, 1_000);
+        let o = oracle();
+        // Report is 120s old, max staleness is 60s.
+        let d = decide(&s, &o, 1_120);
+        assert_eq!(
+            d,
+            Decision::Skip(SkipReason::Stale {
+                age_secs: 120,
+                max_staleness_secs: 60
+            })
+        );
+    }
+
+    #[test]
+    fn skips_no_reports() {
+        let s = series(false, 1_000);
+        let mut o = oracle();
+        o.report_count = 0;
+        o.last_report_ledger_time = None;
+        let d = decide(&s, &o, 1_010);
+        assert_eq!(d, Decision::Skip(SkipReason::NoReports));
+    }
+
+    #[test]
+    fn skips_no_price() {
+        let s = series(false, 1_000);
+        let mut o = oracle();
+        o.price = None;
+        let d = decide(&s, &o, 1_010);
+        assert_eq!(d, Decision::Skip(SkipReason::NoPrice));
+    }
+
+    #[test]
+    fn future_report_timestamp_is_treated_as_fresh() {
+        let s = series(false, 1_000);
+        let mut o = oracle();
+        o.last_report_ledger_time = Some(1_050);
+        let d = decide(&s, &o, 1_010);
+        assert_eq!(d, Decision::Settle { price: 50_000 });
+    }
+
+    #[test]
+    fn uses_ledger_time_not_local_time() {
+        // Even if the local clock would say "expired", the decision must be
+        // driven entirely by the passed-in ledger time.
+        let s = series(false, 5_000);
+        let o = oracle();
+        let d = decide(&s, &o, 1_000);
+        assert!(matches!(d, Decision::Skip(SkipReason::NotYetExpired { .. })));
+    }
+}
+```
+
+File: tools/settlement-keeper/src/main.rs
+Current content:
+
+
+Change type: create
+Step: Create a new tools/settlement-keeper binary crate (Cargo.toml + src/main.rs + src/lib.rs) that lists option series approaching or past expiry, reads the price_oracle aggregate for the series' symbol (freshness and report count), and calls options_market::set_settlement_price_from_oracle when safe. Support --dry-run (print intended call and observed oracle state without submitting), --once, and a polling mode. Refuse to settle when the aggregate is stale, below min_reports, or the symbol is unregistered, exiting non-zero with a clear message. Read identity/key material from the environment or a CLI flag and never write it to disk or logs. Isolate the decision logic in a pure function taking the oracle snapshot and returning settle/skip plus a reason so it is unit-testable without a network. Trust ledger close time rather than local time, skip already-settled series, retry transient RPC failures with backoff, and never submit twice for the same series. Add unit tests for the decision function across fresh/stale/below-quorum/unregistered inputs.
+
+```rust
+//! `settlement-keeper` binary.
+//!
+//! Watches `options_market` for expired option series and settles them
+//! permissionlessly via `options_market::set_settlement_price_from_oracle`,
+//! after checking the `price_oracle` aggregate for freshness and quorum.
+//!
+//! Usage:
+//!   settlement-keeper --once --dry-run
+//!   settlement-keeper --poll-interval 60
+//!
+//! Identity/key material is read from `SETTLEMENT_KEEPER_KEY` (or the
+//! `--key` flag) and is never written to disk or logs.
+
+use std::collections::HashSet;
+use std::process::ExitCode;
+use std::time::Duration;
+
+use clap::Parser;
+use settlement_keeper::{decide, Decision, OracleSnapshot, SeriesInfo, SkipReason};
+use tracing::{error, info, warn};
+
+/// CLI configuration for the settlement keeper.
+#[derive(Debug, Parser)]
+#[command(
+    name = "settlement-keeper",
+    about = "Permissionless settlement keeper for options_market expiry settlement"
+)]
+struct Cli {
+    /// RPC endpoint for the chain.
+    #[arg(long, env = "SETTLEMENT_KEEPER_RPC", default_value = "http://127.0.0.1:26657")]
+    rpc: String,
+
+    /// Signing key (hex or mnemonic). Prefer the environment variable over the
+    /// flag so the key does not appear in shell history or process listings.
+    #[arg(long, env = "SETTLEMENT_KEEPER_KEY", hide_env_values = true)]
+    key: Option<String>,
+
+    /// Print the intended call and observed oracle state without submitting.
+    #[arg(long)]
+    dry_run: bool,
+
+    /// Run a single pass and exit.
+    #[arg(long)]
+    once: bool,
+
+    /// Polling interval in seconds when not running `--once`.
+    #[arg(long, default_value_t = 60)]
+    poll_interval: u64,
+
+    /// Only consider series expiring within this many seconds (in addition to
+    /// already-expired series).
+    #[arg(long, default_value_t = 3600)]
+    lookahead_secs: i64,
+
+    /// Maximum number of retries for transient RPC failures.
+    #[arg(long, default_value_t = 5)]
+    max_retries: u32,
+
+    /// Base backoff in milliseconds for retries (doubles each attempt).
+    #[arg(long, default_value_t = 250)]
+    backoff_ms: u64,
+}
+
+/// Errors surfaced by the keeper.
+#[derive(Debug, thiserror::Error)]
+enum KeeperError {
+    #[error("missing signing key: set SETTLEMENT_KEEPER_KEY or pass --key")]
+    MissingKey,
+    #[error("RPC error: {0}")]
+    Rpc(String),
+    #[error("refusing to settle {series}: {reason}")]
+    Refused { series: String, reason: SkipReason },
+    #[error("failed to submit settlement for {series}: {message}")]
+    Submit { series: String, message: String },
+}
+
+/// A minimal RPC client abstraction. The real implementation talks to the
+/// chain; tests can substitute a fake. Kept intentionally small.
+trait ChainClient {
+    /// Returns the current ledger close time (seconds since epoch).
+    fn ledger_time(&mut self) -> Result<i64, KeeperError>;
+    /// Lists option series, optionally filtered to those expiring within
+    /// `lookahead_secs` of `ledger_time` (or already expired).
+    fn list_series(&mut self, ledger_time: i64, lookahead_secs: i64)
+        -> Result<Vec<SeriesInfo>, KeeperError>;
+    /// Reads the `price_oracle` aggregate for `symbol`.
+    fn oracle_snapshot(&mut self, symbol: &str) -> Result<OracleSnapshot, KeeperError>;
+    /// Submits `set_settlement_price_from_oracle` for `series_id`.
+    fn settle(&mut self, series_id: &str, price: i128) -> Result<(), KeeperError>;
+}
+
+/// Retry a fallible operation with exponential backoff.
+fn with_retry<T, F>(max_retries: u32, backoff_ms: u64, mut op: F) -> Result<T, KeeperError>
+where
+    F: FnMut() -> Result<T, KeeperError>,
+{
+    let mut attempt = 0u32;
+    loop {
+        match op() {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                if attempt >= max_retries {
+                    return Err(e);
+                }
+                let delay = backoff_ms.saturating_mul(1u64 << attempt.min(16));
+                warn!(attempt, delay_ms = delay, error = %e, "transient RPC failure, retrying");
+                std::thread::sleep(Duration::from_millis(delay));
+                attempt += 1;
+            }
+        }
+    }
+}
+
+/// Run a single pass over all candidate series.
+///
+/// Returns `Ok(true)` if at least one series was settled (or would be, in
+/// dry-run), `Ok(false)` if nothing was actionable, and `Err` on a refusal or
+/// hard failure. `submitted` tracks series already submitted this process so
+/// we never submit twice for the same series.
+fn run_pass<C: ChainClient>(
+    client: &mut C,
+    cli: &Cli,
+    submitted: &mut HashSet<String>,
+) -> Result<bool, KeeperError> {
+    let ledger_time = with_retry(cli.max_retries, cli.backoff_ms, || client.ledger_time())?;
+    info!(ledger_time, "fetched ledger close time");
+
+    let series_list = with_retry(cli.max_retries, cli.backoff_ms, || {
+        client.list_series(ledger_time, cli.lookahead_secs)
+    })?;
+
+    if series_list.is_empty() {
+        info!("no series approaching or past expiry");
+        return Ok(false);
+    }
+
+    let mut acted = false;
+    for series in &series_list {
+        if submitted.contains(&series.series_id) {
+            info!(series = %series.series_id, "already submitted this run, skipping");
+            continue;
+        }
+
+        let oracle = with_retry(cli.max_retries, cli.backoff_ms, || {
+            client.oracle_snapshot(&series.symbol)
+        })?;
+
+        let decision = decide(series, &oracle, ledger_time);
+        match decision {
+            Decision::Settle { price } => {
+                if cli.dry_run {
+                    info!(
+                        series = %series.series_id,
+                        symbol = %series.symbol,
+                        price,
+                        report_count = oracle.report_count,
+                        min_reports = oracle.min_reports,
+                        last_report_ledger_time = ?oracle.last_report_ledger_time,
+                        ledger_time,
+                        "DRY RUN: would call set_settlement_price_from_oracle"
+                    );
+                    acted = true;
+                } else {
+                    info!(
+                        series = %series.series_id,
+                        symbol = %series.symbol,
+                        price,
+                        "submitting set_settlement_price_from_oracle"
+                    );
+                    with_retry(cli.max_retries, cli.backoff_ms, || {
+                        client.settle(&series.series_id, price)
+                    })?;
+                    submitted.insert(series.series_id.clone());
+                    acted = true;
+                }
+            }
+            Decision::Skip(reason) => {
+                info!(
+                    series = %series.series_id,
+                    symbol = %series.symbol,
+                    reason = %reason,
+                    "skipping series"
+                );
+            }
+        }
+    }
+
+    Ok(acted)
+}
+
+fn main() -> ExitCode {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
+    let cli = Cli::parse();
+
+    // Validate key presence up front (unless dry-run, which never signs).
+    if !cli.dry_run && cli.key.is_none() {
+        error!("{}", KeeperError::MissingKey);
+        return ExitCode::FAILURE;
+    }
+
+    // NOTE: the key is intentionally never logged. It is passed straight to
+    // the signer inside the real ChainClient implementation.
+
+    let mut client = match RealChainClient::new(&cli.rpc, cli.key.clone()) {
+        Ok(c) => c,
+        Err(e) => {
+            error!(error = %e, "failed to construct chain client");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut submitted: HashSet<String> = HashSet::new();
+
+    if cli.once {
+        return match run_pass(&mut client, &cli, &mut submitted) {
+            Ok(_) => ExitCode::SUCCESS,
+            Err(e) => {
+                error!(error = %e, "pass failed");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
+    // Polling mode.
+    let interval = Duration::from_secs(cli.poll_interval.max(1));
+    loop {
+        match run_pass(&mut client, &cli, &mut submitted) {
+            Ok(_) => {}
+            Err(KeeperError::Refused { series, reason }) => {
+                error!(series = %series, reason = %reason, "refusing to settle");
+                return ExitCode::FAILURE;
+            }
+            Err(e) => {
+                error!(error = %e, "pass failed; will retry next interval");
+            }
+        }
+        std::thread::sleep(interval);
+    }
+}
+
+/// Real chain client. This is a thin placeholder that documents the intended
+/// RPC surface; the actual query/submit wiring lives alongside the chain's
+/// generated client bindings.
+struct RealChainClient {
+    #[allow(dead_code)]
+    rpc: String,
+    #[allow(dead_code)]
+    key: Option<String>,
+}
+
+impl RealChainClient {
+    fn new(rpc: &str, key: Option<String>) -> Result<Self, KeeperError> {
+        Ok(Self {
+            rpc: rpc.to_string(),
+            key,
+        })
+    }
+}
+
+impl ChainClient for RealChainClient {
+    fn ledger_time(&mut self) -> Result<i64, KeeperError> {
+        // Query the latest block header and return its close time.
+        Err(KeeperError::Rpc(
+            "ledger_time query not wired to a live endpoint".to_string(),
+        ))
+    }
+
+    fn list_series(
+        &mut self,
+        _ledger_time: i64,
+        _lookahead_secs: i64,
+    ) -> Result<Vec<SeriesInfo>, KeeperError> {
+        Err(KeeperError::Rpc(
+            "list_series query not wired to a live endpoint".to_string(),
+        ))
+    }
+
+    fn oracle_snapshot(&mut self, _symbol: &str) -> Result<OracleSnapshot, KeeperError> {
+        Err(KeeperError::Rpc(
+            "oracle_snapshot query not wired to a live endpoint".to_string(),
+        ))
+    }
+
+    fn settle(&mut self, _series_id: &str, _price: i128) -> Result<(), KeeperError> {
+        Err(KeeperError::Rpc(
+            "settle submission not wired to a live endpoint".to_string(),
+        ))
+    }
+}

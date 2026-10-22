@@ -29,6 +29,7 @@ use soroban_sdk::{
     contract, contractimpl, panic_with_error, xdr::ToXdr, Address, BytesN, Env, IntoVal, Symbol,
     Val, Vec,
 };
+use zenith_common::auth::Auth;
 
 #[cfg(test)]
 mod test;
@@ -99,6 +100,12 @@ fn only_governance(env: &Env) {
     get::<Address>(env, &DataKey::Timelock).require_auth();
 }
 
+/// Admin surface: accepted from the stored admin or a configured multisig
+/// via `common::require_admin_or_multisig`.
+fn only_admin(env: &Env, auth: &Auth) {
+    zenith_common::require_admin_or_multisig(env, auth, &get(env, &DataKey::Admin));
+}
+
 fn state_of(env: &Env, id: &BytesN<32>, p: &Proposal) -> ProposalState {
     if p.canceled {
         return ProposalState::Canceled;
@@ -154,6 +161,7 @@ fn cast(env: &Env, voter: Address, id: BytesN<32>, support: u32) -> i128 {
 impl Governor {
     pub fn initialize(
         env: Env,
+        admin: Address,
         token: Address,
         timelock: Address,
         voting_delay: u32,
@@ -164,6 +172,7 @@ impl Governor {
         if env.storage().instance().has(&DataKey::Token) {
             panic_with_error!(&env, Error::AlreadyInitialized);
         }
+        env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Token, &token);
         env.storage().instance().set(&DataKey::Timelock, &timelock);
         Self::apply_voting_delay(&env, voting_delay);
@@ -250,6 +259,12 @@ impl Governor {
         cast(&env, voter, id, support)
     }
 
+    /// Alias for `cast_vote`, matching the `vote` entrypoint name.
+    pub fn vote(env: Env, voter: Address, id: BytesN<32>, support: u32) -> i128 {
+        voter.require_auth();
+        cast(&env, voter, id, support)
+    }
+
     /// Gasless voting. On Soroban a "signature" is the voter's signed
     /// authorization entry: the voter signs off-chain an authorization for
     /// exactly `(id, support)` on this contract, and any relayer submits
@@ -264,6 +279,9 @@ impl Governor {
     pub fn queue(env: Env, id: BytesN<32>) -> u64 {
         migrations::require_current(&env);
         let mut p = load(&env, &id);
+        if p.eta != 0 {
+            panic_with_error!(&env, Error::AlreadyQueued);
+        }
         if state_of(&env, &id, &p) != ProposalState::Succeeded {
             panic_with_error!(&env, Error::InvalidState);
         }
@@ -273,6 +291,30 @@ impl Governor {
         save(&env, &id, &p);
         events::proposal_queued(&env, id, eta);
         eta
+    }
+
+    /// Alias for `queue`, matching the `finalize` entrypoint name.
+    pub fn finalize(env: Env, id: BytesN<32>) -> u64 {
+        Self::queue(env, id)
+    }
+
+    /// Executes a queued proposal through the timelock. The timelock, not
+    /// this contract, performs the calls, so the delayed-execution
+    /// guarantee holds and the governor never re-enters itself.
+    pub fn execute(env: Env, id: BytesN<32>) {
+        migrations::require_current(&env);
+        let p = load(&env, &id);
+        if p.canceled {
+            panic_with_error!(&env, Error::ProposalCanceled);
+        }
+        if p.eta == 0 {
+            panic_with_error!(&env, Error::NotQueued);
+        }
+        if state_of(&env, &id, &p) != ProposalState::Queued {
+            panic_with_error!(&env, Error::InvalidState);
+        }
+        timelock(&env).execute(&env.current_contract_address(), &id);
+        events::proposal_executed(&env, id);
     }
 
     /// The proposer may cancel while Pending. Anyone may cancel a
@@ -305,28 +347,38 @@ impl Governor {
         events::proposal_canceled(&env, id);
     }
 
+    /// Alias for `cancel`, matching the `cancel_proposal` entrypoint name.
+    pub fn cancel_proposal(env: Env, caller: Address, id: BytesN<32>) {
+        Self::cancel(env, caller, id)
+    }
+
     // ── Governance-settable parameters (timelock only) ───────────────────────
 
-    pub fn set_voting_delay(env: Env, value: u32) {
-        only_governance(&env);
+    pub fn set_voting_delay(env: Env, auth: Auth, value: u32) {
+        only_admin(&env, &auth);
         migrations::require_current(&env);
         Self::apply_voting_delay(&env, value);
     }
 
-    pub fn set_voting_period(env: Env, value: u32) {
-        only_governance(&env);
+    pub fn set_voting_period(env: Env, auth: Auth, value: u32) {
+        only_admin(&env, &auth);
         migrations::require_current(&env);
         Self::apply_voting_period(&env, value);
     }
 
-    pub fn set_quorum_bps(env: Env, value: u32) {
-        only_governance(&env);
+    pub fn set_quorum_bps(env: Env, auth: Auth, value: u32) {
+        only_admin(&env, &auth);
         migrations::require_current(&env);
         Self::apply_quorum_bps(&env, value);
     }
 
-    pub fn set_proposal_threshold(env: Env, value: i128) {
-        only_governance(&env);
+    /// Alias for `set_quorum_bps`, matching the `set_quorum` entrypoint name.
+    pub fn set_quorum(env: Env, auth: Auth, value: u32) {
+        Self::set_quorum_bps(env, auth, value)
+    }
+
+    pub fn set_proposal_threshold(env: Env, auth: Auth, value: i128) {
+        only_admin(&env, &auth);
         migrations::require_current(&env);
         Self::apply_proposal_threshold(&env, value);
     }
@@ -404,6 +456,10 @@ impl Governor {
 
     pub fn proposal_threshold(env: Env) -> i128 {
         get(&env, &DataKey::ProposalThreshold)
+    }
+
+    pub fn get_admin(env: Env) -> Address {
+        get(&env, &DataKey::Admin)
     }
 
     pub fn get_token(env: Env) -> Address {

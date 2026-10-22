@@ -15,6 +15,15 @@ pub enum Error {
     NotAReviewer = 9,
     AlreadyApproved = 10,
     NothingToReclaim = 11,
+    // New grants_escrow paths.
+    Unauthorized = 12,
+    GrantCanceled = 13,
+    AlreadyClaimed = 14,
+    InsufficientEscrow = 15,
+    TokenNotAllowed = 16,
+    InvalidAmount = 17,
+    GrantNotActive = 18,
+    EscrowTagMismatch = 19,
     // Schema migrations (zenith_common::migrations) — same codes in
     // every Zenith contract. See docs/migrations.md.
     SchemaVersionMismatch = 100,

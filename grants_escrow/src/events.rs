@@ -28,6 +28,27 @@ pub fn milestone_released(env: &Env, grant_id: u64, idx: u32, amount: i128) {
     );
 }
 
+pub fn claim(env: &Env, grant_id: u64, idx: u32, grantee: Address, amount: i128) {
+    env.events().publish(
+        (Symbol::new(env, "claim"), grant_id, idx),
+        (grantee, amount),
+    );
+}
+
+pub fn grant_cancelled(env: &Env, grant_id: u64, grantor: Address, refunded: i128) {
+    env.events().publish(
+        (Symbol::new(env, "grant_cancelled"), grant_id),
+        (grantor, refunded),
+    );
+}
+
+pub fn cancel_grant(env: &Env, grant_id: u64, grantor: Address, refunded: i128) {
+    env.events().publish(
+        (Symbol::new(env, "cancel_grant"), grant_id),
+        (grantor, refunded),
+    );
+}
+
 pub fn funds_reclaimed(env: &Env, grant_id: u64, amount: i128) {
     env.events()
         .publish((Symbol::new(env, "funds_reclaimed"), grant_id), amount);

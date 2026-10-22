@@ -31,6 +31,12 @@ pub struct Grant {
     pub quorum: u32,
     pub milestones: Vec<Milestone>,
     pub created_at: u64,
+    /// Total amount funded into escrow at creation time.
+    pub total_amount: i128,
+    /// Amount still held in escrow (funded minus released minus reclaimed).
+    pub remaining: i128,
+    /// Whether the grant has been cancelled; once true no further claims.
+    pub cancelled: bool,
 }
 
 #[contracttype]
@@ -42,4 +48,10 @@ pub enum DataKey {
     Approval(u64, u32, Address),
     /// Every grant id ever created for a grantee, in creation order.
     GranteeGrants(Address),
+    /// Admin address used by `common::require_admin_or_multisig`.
+    Admin,
+    /// Vault tag under which a grant's escrow is accounted.
+    /// Derived from grant_id but stored explicitly so it can be looked up
+    /// without recomputing the tag encoding.
+    GrantTag(u64),
 }

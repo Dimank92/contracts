@@ -14,6 +14,11 @@ pub enum Error {
     InvalidSupport = 8,
     OutOfBounds = 9,
     Unauthorized = 10,
+    NotQueued = 11,
+    NotSucceeded = 12,
+    ProposalExpired = 13,
+    ProposalCanceled = 14,
+    ExecutionFailed = 15,
     // Schema migrations (zenith_common::migrations) — same codes in
     // every Zenith contract. See docs/migrations.md.
     SchemaVersionMismatch = 100,

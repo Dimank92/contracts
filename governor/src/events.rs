@@ -20,9 +20,23 @@ pub fn vote_cast(env: &Env, id: BytesN<32>, voter: Address, support: u32, weight
     );
 }
 
+pub fn proposal_finalized(env: &Env, id: BytesN<32>, for_votes: i128, against_votes: i128, queued: bool) {
+    env.events().publish(
+        (Symbol::new(env, "proposal_finalized"), id),
+        (for_votes, against_votes, queued),
+    );
+}
+
 pub fn proposal_queued(env: &Env, id: BytesN<32>, eta: u64) {
     env.events()
         .publish((Symbol::new(env, "proposal_queued"), id), eta);
+}
+
+pub fn proposal_executed(env: &Env, id: BytesN<32>, target: Address, eta: u64) {
+    env.events().publish(
+        (Symbol::new(env, "proposal_executed"), id),
+        (target, eta),
+    );
 }
 
 pub fn proposal_canceled(env: &Env, id: BytesN<32>) {

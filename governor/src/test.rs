@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use crate::{Governor, GovernorClient, ProposalState};
+use common::Auth;
 use soroban_sdk::{
     contract, contractimpl, contracttype,
     testutils::{Address as _, Ledger as _},
@@ -81,7 +82,9 @@ fn setup<'a>() -> Harness<'a> {
     let guardian = Address::generate(&env);
     tl.initialize(&gov_id, &guardian, &TL_DELAY, &TL_GRACE);
     let gov = GovernorClient::new(&env, &gov_id);
+    let admin = Address::generate(&env);
     gov.initialize(
+        &admin,
         &votes.address,
         &tl.address,
         &DELAY_LEDGERS,
@@ -157,6 +160,10 @@ impl Harness<'_> {
         self.gov.cast_vote(&self.alice, &id, &1);
         self.to_ended();
         id
+    }
+
+    fn admin(&self) -> Address {
+        self.gov.admin()
     }
 }
 
@@ -335,17 +342,93 @@ fn guardian_can_veto_queued_proposal() {
 #[test]
 fn params_only_via_governance_and_within_bounds() {
     let h = setup();
+    let auth = Auth::Admin(h.admin());
     h.env.set_auths(&[]);
-    assert!(h.gov.try_set_voting_period(&1_000).is_err());
+    assert!(h.gov.try_set_voting_period(&auth, &1_000).is_err());
     h.env.mock_all_auths();
-    assert!(h.gov.try_set_voting_period(&1).is_err());
+    assert!(h.gov.try_set_voting_period(&auth, &1).is_err());
     assert!(h
         .gov
-        .try_set_voting_delay(&(crate::MAX_VOTING_DELAY + 1))
+        .try_set_voting_delay(&auth, &(crate::MAX_VOTING_DELAY + 1))
         .is_err());
-    assert!(h.gov.try_set_quorum_bps(&50).is_err());
-    assert!(h.gov.try_set_quorum_bps(&10_001).is_err());
-    assert!(h.gov.try_set_proposal_threshold(&-1).is_err());
-    h.gov.set_voting_period(&1_000);
+    assert!(h.gov.try_set_quorum_bps(&auth, &50).is_err());
+    assert!(h.gov.try_set_quorum_bps(&auth, &10_001).is_err());
+    assert!(h.gov.try_set_proposal_threshold(&auth, &-1).is_err());
+    h.gov.set_voting_period(&auth, &1_000);
     assert_eq!(h.gov.voting_period(), 1_000);
+}
+
+#[test]
+fn admin_setters_reject_non_admin() {
+    let h = setup();
+    let stranger = Address::generate(&h.env);
+    let auth = Auth::Admin(stranger);
+    assert!(h.gov.try_set_voting_period(&auth, &1_000).is_err());
+    assert!(h.gov.try_set_quorum_bps(&auth, &500).is_err());
+    assert!(h.gov.try_set_voting_delay(&auth, &DELAY_LEDGERS).is_err());
+    assert!(h.gov.try_set_proposal_threshold(&auth, &THRESHOLD).is_err());
+}
+
+#[test]
+fn admin_can_cancel_proposal() {
+    let h = setup();
+    let id = h.propose_quorum(500);
+    let auth = Auth::Admin(h.admin());
+    h.gov.cancel_proposal(&auth, &id);
+    assert_eq!(h.gov.state(&id), ProposalState::Canceled);
+    assert!(h.gov.try_cast_vote(&h.alice, &id, &1).is_err());
+}
+
+#[test]
+fn execute_after_cancel_rejected() {
+    let h = setup();
+    let id = h.passed();
+    h.gov.queue(&id);
+    let auth = Auth::Admin(h.admin());
+    h.gov.cancel_proposal(&auth, &id);
+    assert_eq!(h.gov.state(&id), ProposalState::Canceled);
+    h.warp(TL_DELAY);
+    assert!(h.gov.try_execute(&id).is_err());
+    assert!(h.tl.try_execute(&id).is_err());
+}
+
+#[test]
+fn early_execute_rejected() {
+    let h = setup();
+    let id = h.passed();
+    assert!(h.gov.try_execute(&id).is_err()); // not queued yet
+    h.gov.queue(&id);
+    assert!(h.gov.try_execute(&id).is_err()); // timelock delay not elapsed
+    h.warp(TL_DELAY);
+    h.gov.execute(&id);
+    assert_eq!(h.gov.state(&id), ProposalState::Executed);
+}
+
+#[test]
+fn re_finalize_rejected() {
+    let h = setup();
+    let id = h.passed();
+    h.gov.queue(&id);
+    assert!(h.gov.try_queue(&id).is_err());
+}
+
+#[test]
+fn proposal_id_reuse_rejected() {
+    let h = setup();
+    let id = h.passed();
+    h.gov.queue(&id);
+    h.warp(TL_DELAY);
+    h.gov.execute(&id);
+    assert_eq!(h.gov.state(&id), ProposalState::Executed);
+    let (t, f, a) = h.quorum_action(600);
+    assert!(h
+        .gov
+        .try_propose(
+            &h.proposer,
+            &t,
+            &f,
+            &a,
+            &BytesN::from_array(&h.env, &[7; 32]),
+        )
+        .is_err());
 }

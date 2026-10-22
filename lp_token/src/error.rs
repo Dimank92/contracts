@@ -12,4 +12,8 @@ pub enum Error {
     InvalidExpiration = 6,
     InvalidDecimals = 7,
     Overflow = 8,
+    Unauthorized = 9,
+    ZeroAddress = 10,
+    PoolAlreadySet = 11,
+    InvalidPool = 12,
 }
