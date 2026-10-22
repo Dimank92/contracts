@@ -2,10 +2,14 @@
 name = "xtask"
 version.workspace = true
 edition.workspace = true
-publish.workspace = true
+publish = false
 
-# Build automation for the workspace (the cargo-xtask pattern):
-# `cargo xtask help`. Native-only; never built for wasm.
+description = "Local automation entrypoint: stub detection, spec dump, ignore reporting"
+
+[[bin]]
+name = "xtask"
+path = "src/main.rs"
 
 [dependencies]
-serde_json = "1"
+# Intentionally minimal: no network, no heavy parsers. `cargo metadata` is
+# shelled out to rather than pulling in a metadata crate.
