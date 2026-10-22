@@ -19,6 +19,11 @@ pub fn get_series(env: &Env, series_id: u64) -> Option<Series> {
     series
 }
 
+/// Read a series record without extending its TTL (pure view helper).
+pub fn read_series(env: &Env, series_id: u64) -> Option<Series> {
+    env.storage().persistent().get(&DataKey::Series(series_id))
+}
+
 /// Persist a series record and extend its TTL.
 pub fn set_series(env: &Env, series_id: u64, series: &Series) {
     let key = DataKey::Series(series_id);
@@ -38,6 +43,13 @@ pub fn get_position(env: &Env, series_id: u64, writer: &Address) -> Option<Posit
             .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL);
     }
     position
+}
+
+/// Read a writer position without extending its TTL (pure view helper).
+pub fn read_position(env: &Env, series_id: u64, writer: &Address) -> Option<Position> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Position(series_id, writer.clone()))
 }
 
 /// Persist a writer position and extend its TTL.

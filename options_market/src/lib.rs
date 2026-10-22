@@ -30,6 +30,10 @@ use storage::{
 };
 use types::{DataKey, OptionPosition, OptionSeries, OptionType, PositionSide, SeriesState};
 
+/// Maximum number of series ids a single `list_series` page may return.
+/// Caps the page size in code so a caller cannot exhaust the resource budget.
+const MAX_SERIES_PAGE: u32 = 50;
+
 #[contract]
 pub struct OptionsMarket;
 
@@ -219,6 +223,86 @@ impl OptionsMarket {
         env.storage()
             .persistent()
             .get(&DataKey::WriterPosition(series_id, writer))
+    }
+
+    /// Read a single series configuration and state.
+    ///
+    /// Returns `None` for ids that were never allocated. Pure read: no auth,
+    /// no TTL extension, no cross-contract calls.
+    pub fn get_series(env: Env, series_id: u64) -> Option<OptionSeries> {
+        env.storage().persistent().get(&DataKey::Series(series_id))
+    }
+
+    /// Enumerate allocated series ids in `[start, start + limit)`.
+    ///
+    /// `limit` is capped at `MAX_SERIES_PAGE` in code so a large series count
+    /// cannot exhaust the resource budget. Ids that were never allocated are
+    /// skipped; the returned vector is bounded by the effective page size.
+    pub fn list_series(env: Env, start: u64, limit: u32) -> Vec<u64> {
+        let mut ids = Vec::new(&env);
+        let effective = if limit > MAX_SERIES_PAGE {
+            MAX_SERIES_PAGE
+        } else {
+            limit
+        };
+        let mut id = start;
+        let mut scanned: u32 = 0;
+        while scanned < effective {
+            if env
+                .storage()
+                .persistent()
+                .has(&DataKey::Series(id))
+            {
+                ids.push_back(id);
+            }
+            id = match id.checked_add(1) {
+                Some(next) => next,
+                None => break,
+            };
+            scanned += 1;
+        }
+        ids
+    }
+
+    /// Read the settlement price for a series.
+    ///
+    /// Returns `None` if the series has not been settled yet.
+    pub fn get_settlement_price(env: Env, series_id: u64) -> Option<i128> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::SettlementPrice(series_id))
+    }
+
+    /// Read whether a series has been settled.
+    pub fn is_settled(env: Env, series_id: u64) -> bool {
+        env.storage()
+            .persistent()
+            .has(&DataKey::SettlementPrice(series_id))
+    }
+
+    /// Read whether a writer position has been claimed after settlement.
+    pub fn is_writer_claimed(env: Env, series_id: u64, writer: Address) -> bool {
+        env.storage()
+            .persistent()
+            .has(&DataKey::WriterClaimed(series_id, writer))
+    }
+
+    /// Read whether a buyer position has been claimed after settlement.
+    pub fn is_buyer_claimed(env: Env, series_id: u64, buyer: Address) -> bool {
+        env.storage()
+            .persistent()
+            .has(&DataKey::BuyerClaimed(series_id, buyer))
+    }
+
+    /// Read a buyer position record.
+    pub fn get_buyer_position(
+        env: Env,
+        series_id: u64,
+        buyer: Address,
+    ) -> Option<OptionPosition> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::BuyerPosition(series_id, buyer))
     }
 
     fn series_tag(env: &Env, series_id: u64) -> Vec<Symbol> {
