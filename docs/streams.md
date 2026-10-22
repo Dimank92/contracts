@@ -27,8 +27,26 @@ schedules.
 | `withdraw(id, amount)` | recipient | `amount` can be at most the accrued balance. |
 | `cancel(caller, id)` | funder or governance | Pays the recipient what has accrued and not been withdrawn (nothing before the cliff), and refunds the rest to the funder. The stream is then frozen. |
 | `transfer(id, new_recipient)` | recipient | Unwithdrawn accruals move with the stream. |
+| `set_funding_delegate(id, delegate)` | funder | Lets `delegate` (or nobody, with `None`) call the three funding entrypoints below. |
+| `top_up(caller, id, amount)` | funder or delegate | Pulls `amount` from `caller` and extends `end` at the current rate: `end += amount × remaining_time ÷ remaining_total`, floored, so the rate can only round up. |
+| `extend_duration(caller, id, extra_time)` | funder or delegate | Pushes `end` out by `extra_time` seconds with no new funds; the unvested remainder is re-spread (lower rate). |
+| `increase_rate(caller, id, new_rate)` | funder or delegate | Raises the rate to `new_rate` tokens/second over the remaining time and pulls the difference from `caller`. `new_rate` must exceed the current rate. |
 | `balance_of(id) -> (recipient, funder)` | view | What the recipient could withdraw now, and what the funder would get back if the stream were cancelled now. |
 | `get_stream(id)`, `get_stream_count()` | view | |
+
+## Funding operations
+
+`top_up`, `extend_duration` and `increase_rate` rebase the schedule at a
+checkpoint `(anchor, base)` kept in its own storage entry: whatever has
+vested at `max(now, start)` is frozen into `base`, and only the unvested
+remainder is re-spread between `anchor` and the new `end`. The recipient
+is therefore never owed less than before the call, and withdrawals are
+always computed from the schedule, never from token balances. They fail
+with `StreamCanceled` on a cancelled stream and `StreamCompleted` once
+`end` has passed or everything is withdrawn. Every pull (including
+`create_stream`) checks the contract's balance grew by the full amount and
+otherwise reverts with `TransferShortfall`, so fee-on-transfer or no-op
+tokens can't leave a stream over-credited.
 
 ## Example
 

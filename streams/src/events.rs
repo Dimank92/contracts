@@ -25,3 +25,22 @@ pub fn transferred(env: &Env, stream_id: u64, from: Address, to: Address) {
         (from, to),
     );
 }
+
+pub fn topped_up(env: &Env, stream_id: u64, from: Address, amount: i128, new_end: u64) {
+    env.events().publish(
+        (Symbol::new(env, "topped_up"), stream_id),
+        (from, amount, new_end),
+    );
+}
+
+pub fn duration_extended(env: &Env, stream_id: u64, new_end: u64) {
+    env.events()
+        .publish((Symbol::new(env, "duration_extended"), stream_id), new_end);
+}
+
+pub fn rate_changed(env: &Env, stream_id: u64, from: Address, added: i128, new_rate: i128) {
+    env.events().publish(
+        (Symbol::new(env, "rate_changed"), stream_id),
+        (from, added, new_rate),
+    );
+}

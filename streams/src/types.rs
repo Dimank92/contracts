@@ -27,4 +27,10 @@ pub enum DataKey {
     Governance,
     StreamCounter,
     Stream(u64),
+    /// `(anchor, base)` once a funding operation has rebased the schedule:
+    /// `base` was already vested at `anchor`, and the rest streams linearly
+    /// from `anchor` to `end`. Absent means `(start, 0)`.
+    Checkpoint(u64),
+    /// Address the funder allowed to top up / extend this stream.
+    Delegate(u64),
 }

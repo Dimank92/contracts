@@ -9,7 +9,11 @@
 //! that milestone's amount is released. A milestone still unreleased
 //! `GRACE_PERIOD` after its deadline can be reclaimed by the funder.
 //! Partial milestone approval is not supported — a milestone pays out in
-//! full or not at all. See docs/grants_escrow.md for operations.
+//! full or not at all. A funder or grantee can dispute a submitted
+//! milestone; the arbiter set at `initialize` then releases, rejects
+//! (refund) or splits it. See docs/grants_escrow.md for operations.
+
+use zenith_common::{require_admin_or_multisig, ActionClass, Auth};
 
 use soroban_sdk::{contract, contractimpl, panic_with_error, token, Address, BytesN, Env, Vec};
 
@@ -25,7 +29,7 @@ mod types;
 use error::Error;
 pub use migrations::CURRENT_SCHEMA_VERSION;
 use types::DataKey;
-pub use types::{Grant, Milestone, MilestoneStatus};
+pub use types::{Dispute, DisputeOutcome, Grant, Milestone, MilestoneStatus};
 
 /// How long after a milestone's deadline reviewers still have to approve
 /// a submission before the funder may reclaim it.
@@ -33,6 +37,7 @@ pub const GRACE_PERIOD: u64 = 7 * 86_400;
 pub const MAX_MILESTONES: u32 = 20;
 pub const MAX_REVIEWERS: u32 = 20;
 pub const MAX_PAGE_SIZE: u32 = 50;
+pub const BPS: i128 = 10_000;
 
 #[contract]
 pub struct GrantsEscrow;
@@ -234,6 +239,93 @@ impl GrantsEscrow {
         total
     }
 
+    // ── Disputes ────────────────────────────────────────────────────────────
+
+    /// One-time: sets the arbiter allowed to resolve disputes.
+    pub fn initialize(env: Env, arbiter: Address) {
+        ttl::extend_instance(&env);
+        if env.storage().instance().has(&DataKey::Arbiter) {
+            panic_with_error!(&env, Error::AlreadyInitialized);
+        }
+        env.storage().instance().set(&DataKey::Arbiter, &arbiter);
+    }
+
+    /// Funder or grantee freezes a milestone under review (`Submitted`)
+    /// pending the arbiter. A second open is rejected with
+    /// `DisputeAlreadyOpen`; a milestone in any other state with
+    /// `InvalidMilestoneState`.
+    pub fn open_dispute(env: Env, grant_id: u64, idx: u32, caller: Address) {
+        ttl::extend_instance(&env);
+        caller.require_auth();
+        migrations::require_current(&env);
+        let mut grant = Self::load(&env, grant_id);
+        if caller != grant.funder && caller != grant.grantee {
+            panic_with_error!(&env, Error::NotDisputeParty);
+        }
+        let mut milestone = Self::milestone(&env, &grant, idx);
+        match milestone.status {
+            MilestoneStatus::Submitted => {}
+            MilestoneStatus::Disputed => panic_with_error!(&env, Error::DisputeAlreadyOpen),
+            _ => panic_with_error!(&env, Error::InvalidMilestoneState),
+        }
+        milestone.status = MilestoneStatus::Disputed;
+        grant.milestones.set(idx, milestone);
+        ttl::set_persistent(&env, &DataKey::Grant(grant_id), &grant);
+        ttl::set_persistent(
+            &env,
+            &DataKey::Dispute(grant_id, idx),
+            &Dispute {
+                opened_by: caller.clone(),
+                opened_at: env.ledger().timestamp(),
+                resolved: false,
+                outcome: DisputeOutcome::Reject,
+                split_bps: 0,
+            },
+        );
+        events::dispute_opened(&env, grant_id, idx, caller);
+    }
+
+    /// Arbiter resolves a disputed milestone. `Release` pays the grantee,
+    /// `Reject` refunds the funder (the grant's other milestones continue
+    /// unchanged), `Split` pays `split_bps` (exclusive 0..10_000) to the
+    /// grantee, floored, and the remainder to the funder. `split_bps` must
+    /// be 0 for the other outcomes. Reverts if the arbiter is the funder
+    /// or grantee.
+    pub fn resolve_dispute(
+        env: Env,
+        grant_id: u64,
+        idx: u32,
+        outcome: DisputeOutcome,
+        split_bps: u32,
+    ) {
+        Self::resolve_inner(&env, Auth::Admin, grant_id, idx, outcome, split_bps);
+    }
+
+    /// `resolve_dispute` authorized by an executable multisig action
+    /// instead of the arbiter's signature.
+    pub fn resolve_dispute_via_multisig(
+        env: Env,
+        multisig: Address,
+        action_id: u64,
+        grant_id: u64,
+        idx: u32,
+        outcome: DisputeOutcome,
+        split_bps: u32,
+    ) {
+        let auth = Auth::Multisig(multisig, action_id);
+        Self::resolve_inner(&env, auth, grant_id, idx, outcome, split_bps);
+    }
+
+    pub fn get_dispute(env: Env, grant_id: u64, idx: u32) -> Option<Dispute> {
+        ttl::extend_instance(&env);
+        ttl::get_persistent(&env, &DataKey::Dispute(grant_id, idx))
+    }
+
+    pub fn get_arbiter(env: Env) -> Option<Address> {
+        ttl::extend_instance(&env);
+        env.storage().instance().get(&DataKey::Arbiter)
+    }
+
     // ── Schema migrations (docs/migrations.md) ──────────────────────────────
 
     /// Runs the registered steps `from+1 ..= to`. Returns the version
@@ -320,6 +412,85 @@ impl GrantsEscrow {
 }
 
 impl GrantsEscrow {
+    fn resolve_inner(
+        env: &Env,
+        auth: Auth,
+        grant_id: u64,
+        idx: u32,
+        outcome: DisputeOutcome,
+        split_bps: u32,
+    ) {
+        ttl::extend_instance(env);
+        migrations::require_current(env);
+        let arbiter: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Arbiter)
+            .unwrap_or_else(|| panic_with_error!(env, Error::ArbiterNotSet));
+        require_admin_or_multisig(
+            env,
+            &DataKey::Arbiter,
+            &auth,
+            ActionClass::Standard,
+            Error::NotArbiter,
+        );
+
+        let mut grant = Self::load(env, grant_id);
+        if matches!(auth, Auth::Admin) && (arbiter == grant.funder || arbiter == grant.grantee) {
+            panic_with_error!(env, Error::ArbiterConflict);
+        }
+        let split_ok = match &outcome {
+            DisputeOutcome::Split => split_bps > 0 && (split_bps as i128) < BPS,
+            _ => split_bps == 0,
+        };
+        if !split_ok {
+            panic_with_error!(env, Error::InvalidSplit);
+        }
+        let mut milestone = Self::milestone(env, &grant, idx);
+        if milestone.status != MilestoneStatus::Disputed {
+            panic_with_error!(env, Error::InvalidMilestoneState);
+        }
+
+        let (to_grantee, to_funder) = match &outcome {
+            DisputeOutcome::Release => (milestone.amount, 0),
+            DisputeOutcome::Reject => (0, milestone.amount),
+            DisputeOutcome::Split => {
+                let share = milestone
+                    .amount
+                    .checked_mul(split_bps as i128)
+                    .unwrap_or_else(|| panic_with_error!(env, Error::InvalidSplit))
+                    / BPS;
+                (share, milestone.amount - share)
+            }
+        };
+        milestone.status = if outcome == DisputeOutcome::Reject {
+            MilestoneStatus::Refunded
+        } else {
+            MilestoneStatus::Released
+        };
+        let amount = milestone.amount;
+        grant.milestones.set(idx, milestone);
+        ttl::set_persistent(env, &DataKey::Grant(grant_id), &grant);
+        let key = DataKey::Dispute(grant_id, idx);
+        let mut dispute: Dispute = ttl::get_persistent(env, &key).unwrap();
+        dispute.resolved = true;
+        dispute.outcome = outcome.clone();
+        dispute.split_bps = split_bps;
+        ttl::set_persistent(env, &key, &dispute);
+
+        let token = token::Client::new(env, &grant.token);
+        let this = env.current_contract_address();
+        if to_grantee > 0 {
+            token.transfer(&this, &grant.grantee, &to_grantee);
+        }
+        if to_funder > 0 {
+            token.transfer(&this, &grant.funder, &to_funder);
+            events::refunded(env, grant_id, idx, to_funder);
+        }
+        debug_assert_eq!(to_grantee + to_funder, amount);
+        events::dispute_resolved(env, grant_id, idx, outcome, to_grantee, to_funder);
+    }
+
     fn load(env: &Env, grant_id: u64) -> Grant {
         ttl::get_persistent(env, &DataKey::Grant(grant_id))
             .unwrap_or_else(|| panic_with_error!(env, Error::GrantNotFound))

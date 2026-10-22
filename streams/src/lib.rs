@@ -9,6 +9,13 @@
 //! `streamed(now) − withdrawn`, the total paid out can never exceed the
 //! deposit (see the property tests in test.rs).
 //!
+//! Funding operations (`top_up`, `extend_duration`, `increase_rate`) rebase
+//! the schedule at a checkpoint `(anchor, base)`: what is vested at the
+//! anchor is frozen into `base` and only the remainder is re-spread, so the
+//! recipient is never owed less than before the call. Dust from the integer
+//! division when extending `end` is floored, which rounds the new rate up
+//! (never down) in the recipient's favour.
+//!
 //! The recipient withdraws at any time and may transfer the stream to a
 //! new recipient. The funder or governance can cancel: the recipient is
 //! paid everything accrued but not yet withdrawn, and the funder is
@@ -45,19 +52,79 @@ fn save(env: &Env, stream_id: u64, stream: &Stream) {
         .set(&DataKey::Stream(stream_id), stream);
 }
 
+fn checkpoint(env: &Env, stream_id: u64, stream: &Stream) -> (u64, i128) {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Checkpoint(stream_id))
+        .unwrap_or((stream.start, 0))
+}
+
 /// Amount streamed to the recipient as of `now`, in `[0, total]`.
-fn streamed_at(stream: &Stream, now: u64) -> i128 {
+fn streamed_at(env: &Env, stream_id: u64, stream: &Stream, now: u64) -> i128 {
     if stream.canceled || now >= stream.end {
         return stream.total;
     }
-    if now < stream.cliff || now <= stream.start {
+    let (anchor, base) = checkpoint(env, stream_id, stream);
+    if now < stream.cliff {
         return 0;
     }
-    math::mul_div_floor(
-        stream.total,
-        (now - stream.start) as i128,
-        (stream.end - stream.start) as i128,
+    if now <= anchor {
+        return base;
+    }
+    base + math::mul_div_floor(
+        stream.total - base,
+        (now - anchor) as i128,
+        (stream.end - anchor) as i128,
     )
+}
+
+/// Loads a stream that can still be funded: not cancelled, not yet ended.
+fn load_fundable(env: &Env, caller: &Address, stream_id: u64) -> Stream {
+    caller.require_auth();
+    migrations::require_current(env);
+    let stream = load(env, stream_id);
+    if *caller != stream.funder
+        && Some(caller.clone())
+            != env
+                .storage()
+                .persistent()
+                .get::<_, Address>(&DataKey::Delegate(stream_id))
+    {
+        panic_with_error!(env, Error::Unauthorized);
+    }
+    if stream.canceled {
+        panic_with_error!(env, Error::StreamCanceled);
+    }
+    if env.ledger().timestamp() >= stream.end || stream.withdrawn == stream.total {
+        panic_with_error!(env, Error::StreamCompleted);
+    }
+    stream
+}
+
+/// Freezes what has vested by `max(now, start)` into the checkpoint and
+/// returns `(anchor, vested, remaining_total)`.
+fn rebase(env: &Env, stream_id: u64, stream: &Stream) -> (u64, i128, i128) {
+    let anchor = env.ledger().timestamp().max(stream.start);
+    let vested = streamed_at(env, stream_id, stream, anchor);
+    env.storage()
+        .persistent()
+        .set(&DataKey::Checkpoint(stream_id), &(anchor, vested));
+    (anchor, vested, stream.total - vested)
+}
+
+/// Pulls `amount` from `from` and reverts with `TransferShortfall` unless
+/// the contract's balance grew by at least that much, so a fee-on-transfer,
+/// no-op or lying token can never leave a stream credited for tokens that
+/// did not arrive.
+fn pull(env: &Env, token: &Address, from: &Address, amount: i128) {
+    let client = token::Client::new(env, token);
+    let this = env.current_contract_address();
+    let before = client.balance(&this);
+    client.transfer(from, &this, &amount);
+    match client.balance(&this).checked_sub(before) {
+        Some(received) if received >= amount => {}
+        _ => panic_with_error!(env, Error::TransferShortfall),
+    }
 }
 
 #[contractimpl]
@@ -101,7 +168,7 @@ impl Streams {
             panic_with_error!(&env, Error::InvalidSchedule);
         }
 
-        token::Client::new(&env, &token).transfer(&funder, &env.current_contract_address(), &total);
+        pull(&env, &token, &funder, total);
 
         let stream_id: u64 = env
             .storage()
@@ -139,7 +206,8 @@ impl Streams {
         if amount <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
         }
-        let available = streamed_at(&stream, env.ledger().timestamp()) - stream.withdrawn;
+        let available =
+            streamed_at(&env, stream_id, &stream, env.ledger().timestamp()) - stream.withdrawn;
         if amount > available {
             panic_with_error!(&env, Error::InsufficientBalance);
         }
@@ -152,6 +220,85 @@ impl Streams {
             &amount,
         );
         events::withdrawn(&env, stream_id, stream.recipient, amount);
+    }
+
+    // ── Funding operations ──────────────────────────────────────────────────
+
+    /// Funder lets `delegate` (or nobody, with `None`) top up and extend
+    /// this stream. The delegate pays from their own balance.
+    pub fn set_funding_delegate(env: Env, stream_id: u64, delegate: Option<Address>) {
+        let stream = load(&env, stream_id);
+        stream.funder.require_auth();
+        migrations::require_current(&env);
+        let key = DataKey::Delegate(stream_id);
+        match delegate {
+            Some(d) => env.storage().persistent().set(&key, &d),
+            None => env.storage().persistent().remove(&key),
+        }
+    }
+
+    /// Adds `amount` from `caller` (the funder or their delegate) at the
+    /// stream's current rate, extending `end` by `amount × remaining
+    /// duration ÷ remaining total` (floored, so the rate never drops).
+    pub fn top_up(env: Env, caller: Address, stream_id: u64, amount: i128) {
+        let mut stream = load_fundable(&env, &caller, stream_id);
+        if amount <= 0 {
+            panic_with_error!(&env, Error::InvalidAmount);
+        }
+        let (anchor, _, remaining) = rebase(&env, stream_id, &stream);
+        let extension = amount
+            .checked_mul((stream.end - anchor) as i128)
+            .map(|n| n / remaining)
+            .and_then(|e| u64::try_from(e).ok())
+            .and_then(|e| stream.end.checked_add(e))
+            .unwrap_or_else(|| panic_with_error!(&env, Error::Overflow));
+        let new_total = stream
+            .total
+            .checked_add(amount)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::Overflow));
+
+        pull(&env, &stream.token, &caller, amount);
+        stream.total = new_total;
+        stream.end = extension;
+        save(&env, stream_id, &stream);
+        events::topped_up(&env, stream_id, caller, amount, stream.end);
+    }
+
+    /// Pushes `end` out by `extra_time` seconds with no new funds; the
+    /// unvested remainder is re-spread over the longer period (lower rate).
+    pub fn extend_duration(env: Env, caller: Address, stream_id: u64, extra_time: u64) {
+        let mut stream = load_fundable(&env, &caller, stream_id);
+        if extra_time == 0 {
+            panic_with_error!(&env, Error::InvalidSchedule);
+        }
+        let new_end = stream
+            .end
+            .checked_add(extra_time)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::Overflow));
+        rebase(&env, stream_id, &stream);
+        stream.end = new_end;
+        save(&env, stream_id, &stream);
+        events::duration_extended(&env, stream_id, new_end);
+    }
+
+    /// Raises the rate to `new_rate` tokens per second over the remaining
+    /// duration, pulling the difference from `caller`. Must exceed the
+    /// current rate (`remaining ÷ duration`).
+    pub fn increase_rate(env: Env, caller: Address, stream_id: u64, new_rate: i128) {
+        let mut stream = load_fundable(&env, &caller, stream_id);
+        let (anchor, _, remaining) = rebase(&env, stream_id, &stream);
+        let needed = new_rate
+            .checked_mul((stream.end - anchor) as i128)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::Overflow));
+        if new_rate <= 0 || needed <= remaining {
+            panic_with_error!(&env, Error::InvalidRate);
+        }
+        let added = needed - remaining;
+
+        pull(&env, &stream.token, &caller, added);
+        stream.total += added;
+        save(&env, stream_id, &stream);
+        events::rate_changed(&env, stream_id, caller, added, new_rate);
     }
 
     /// Funder or governance cancels. The recipient receives everything
@@ -168,7 +315,7 @@ impl Streams {
             panic_with_error!(&env, Error::StreamCanceled);
         }
 
-        let streamed = streamed_at(&stream, env.ledger().timestamp());
+        let streamed = streamed_at(&env, stream_id, &stream, env.ledger().timestamp());
         let to_recipient = streamed - stream.withdrawn;
         let to_funder = stream.total - streamed;
 
@@ -246,7 +393,7 @@ impl Streams {
     /// back if the stream were cancelled right now.
     pub fn balance_of(env: Env, stream_id: u64) -> (i128, i128) {
         let stream = load(&env, stream_id);
-        let streamed = streamed_at(&stream, env.ledger().timestamp());
+        let streamed = streamed_at(&env, stream_id, &stream, env.ledger().timestamp());
         (streamed - stream.withdrawn, stream.total - streamed)
     }
 

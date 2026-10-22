@@ -18,11 +18,13 @@ codegen-units = 1
 
 [dependencies]
 soroban-sdk = { version = "21.0.0" }
+zenith-common = { workspace = true }
 
 [dev-dependencies]
 soroban-sdk = { version = "21.0.0", features = ["testutils"] }
 # Property-based tests for the math modules (see README "Property tests").
 proptest = "1"
+test_adversaries = { package = "zenith-test-adversaries", path = "../test_adversaries" }
 
 [features]
 testutils = ["soroban-sdk/testutils"]

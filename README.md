@@ -584,7 +584,7 @@ owner is the admin at `initialize` time (fixed, so a later
 | `withdraw(token, tag, to, amount)` | Pays `amount` of `(token, tag)`'s escrow to `to`. Requires the tag owner. Panics with `InsufficientEscrowBalance` if the tag doesn't have that much earmarked, and `InsufficientVaultBalance` (instead of a token error) if the vault's actual balance can't cover it. Emits `shortfall_detected` if the ledger is under-backed. |
 | `withdraw_via_multisig(multisig_contract, action_id, token, tag, to, amount)` | Permissionless alternative to `withdraw`: cross-calls a deployed `multisig` and checks `is_executable(action_id, class)` instead of requiring the admin's own signature. Meant for manual recovery/migration when the calling contract itself can't produce that signature. Still enforces `InsufficientEscrowBalance`. |
 | `sweep_untagged(token, to)` / `sweep_untagged_via_multisig(multisig_contract, action_id, token, to)` | Recovers `token` that landed on the vault directly, bypassing `deposit`: the actual balance minus `get_total_escrowed(token)`. Panics with `NoUntaggedFunds` if there's nothing to recover — including when there is a shortfall instead. |
-| `transfer_tag(token, from_tag, to_tag, amount)` | Reassigns escrow between tags with no token movement — meant for the roll_position case. Requires `from_tag`'s owner, and `to_tag`'s owner too if different. `TotalEscrowed` is unaffected. |
+| `transfer_tag(token, from_tag, to_tag, amount)` | Reassigns escrow between two tags of the **same owner** with no token movement and no cross-contract call. Requires the owner's signature and a registered integrator; reverts with distinct errors `InsufficientEscrowBalance`, `UnregisteredIntegrator`, `UnknownTag`, `SameTag`, `CrossOwnerTransfer`. `TotalEscrowed` is unaffected. |
 | `transfer_tag_via_multisig(multisig_contract, action_id, token, from_tag, to_tag, amount)` | Permissionless alternative to `transfer_tag`: cross-calls a deployed `multisig` and checks `is_executable(action_id, class)` instead of requiring the admin's own signature. A new `to_tag` is recorded as owned by `to_tag.owner`. |
 | `withdraw_batch(ops: Vec<(token, tag, to, amount)>)` | Batched `withdraw`: one admin auth check, up to `MAX_BATCH` (50) entries, every entry validated against in-flight balances (the same tag may repeat) before anything is written, one token transfer per distinct recipient, all-or-nothing. One `withdrawn` event per entry. ~4x cheaper than sequential calls (10 entries: 0.92M vs 3.80M CPU instructions, 175KB vs 844KB memory). |
 | `transfer_tag_batch(ops: Vec<(token, from_tag, to_tag, amount)>)` | Batched `transfer_tag`, same validation and all-or-nothing semantics. One `tag_transferred` event per entry. |
@@ -688,6 +688,10 @@ data `amount`), and the token-scoped ones:
 | 7 | `TokenNotAllowed` |
 | 8 | `UnregisteredIntegrator` |
 | 9 | `InsufficientVaultBalance` |
+| 10 | `TokenDeltaMismatch` |
+| 11 | `UnknownTag` |
+| 12 | `SameTag` |
+| 13 | `CrossOwnerTransfer` |
 
 ## `multisig` reference
 

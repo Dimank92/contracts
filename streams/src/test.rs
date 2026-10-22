@@ -236,3 +236,292 @@ fn prop_withdrawn_never_exceeds_deposit() {
         assert_eq!(h.token.balance(&h.client.address), 0);
     }
 }
+
+// ── Funding operations ──────────────────────────────────────────────────────
+
+#[test]
+fn top_up_extends_end_at_current_rate_and_keeps_vested() {
+    let h = setup();
+    let id = h.create(1_000, 1_000, 1_000, 2_000); // 1 token / s
+    h.warp(1_400);
+    h.client.withdraw(&id, &100);
+    h.client.top_up(&h.funder, &id, &600);
+    let s = h.client.get_stream(&id).unwrap();
+    assert_eq!((s.total, s.end), (1_600, 3_000 - 400)); // rate 1/s over 1_600s
+    assert_eq!(h.token.balance(&h.client.address), 1_500);
+    // accrued before the call is untouched, then the rate is unchanged
+    assert_eq!(h.client.balance_of(&id), (300, 1_200));
+    h.warp(1_500);
+    assert_eq!(h.client.balance_of(&id), (400, 1_100));
+    h.warp(2_600);
+    h.client.withdraw(&id, &1_500);
+    assert_eq!(h.token.balance(&h.recipient), 1_600);
+    assert_eq!(h.token.balance(&h.client.address), 0);
+}
+
+#[test]
+fn extend_duration_respreads_remainder_without_reducing_vested() {
+    let h = setup();
+    let id = h.create(1_000, 1_000, 1_000, 2_000);
+    h.warp(1_500);
+    h.client.extend_duration(&h.funder, &id, &500);
+    assert_eq!(h.client.get_stream(&id).unwrap().end, 2_500);
+    assert_eq!(h.client.balance_of(&id), (500, 500));
+    h.warp(2_000); // 500 left over 1_000s → +250
+    assert_eq!(h.client.balance_of(&id), (750, 250));
+    h.warp(2_500);
+    assert_eq!(h.client.balance_of(&id), (1_000, 0));
+    assert!(h.client.try_extend_duration(&h.funder, &id, &0).is_err());
+}
+
+#[test]
+fn increase_rate_pulls_difference_for_remaining_duration() {
+    let h = setup();
+    let id = h.create(1_000, 1_000, 1_000, 2_000);
+    h.warp(1_500); // 500 vested, 500 remaining over 500s
+    let before = h.token.balance(&h.funder);
+    h.client.increase_rate(&h.funder, &id, &3);
+    assert_eq!(before - h.token.balance(&h.funder), 1_000); // 3×500 − 500
+    assert_eq!(h.client.balance_of(&id), (500, 1_500));
+    h.warp(1_600);
+    assert_eq!(h.client.balance_of(&id), (800, 1_200));
+    // not an increase / non-positive
+    assert!(h.client.try_increase_rate(&h.funder, &id, &1).is_err());
+    assert!(h.client.try_increase_rate(&h.funder, &id, &0).is_err());
+    h.warp(2_000);
+    h.client.withdraw(&id, &2_000);
+    assert_eq!(h.token.balance(&h.client.address), 0);
+}
+
+#[test]
+fn funding_is_limited_to_funder_and_delegate() {
+    let h = setup();
+    let id = h.create(1_000, 1_000, 1_000, 2_000);
+    let delegate = Address::generate(&h.env);
+    token::StellarAssetClient::new(&h.env, &h.token.address).mint(&delegate, &500);
+    assert!(h.client.try_top_up(&delegate, &id, &100).is_err());
+    h.client.set_funding_delegate(&id, &Some(delegate.clone()));
+    h.client.top_up(&delegate, &id, &100);
+    assert_eq!(h.token.balance(&delegate), 400);
+    assert!(h.client.try_top_up(&h.recipient, &id, &100).is_err());
+    h.client.set_funding_delegate(&id, &None);
+    assert!(h.client.try_extend_duration(&delegate, &id, &10).is_err());
+}
+
+#[test]
+fn funding_rejects_canceled_and_completed_streams() {
+    let h = setup();
+    let canceled = h.create(1_000, 1_000, 1_000, 2_000);
+    h.client.cancel(&h.funder, &canceled);
+    assert!(h.client.try_top_up(&h.funder, &canceled, &1).is_err());
+    assert!(h
+        .client
+        .try_extend_duration(&h.funder, &canceled, &1)
+        .is_err());
+    assert!(h
+        .client
+        .try_increase_rate(&h.funder, &canceled, &9)
+        .is_err());
+
+    let ended = h.create(1_000, 1_000, 1_000, 2_000);
+    h.warp(2_000);
+    assert!(h.client.try_top_up(&h.funder, &ended, &1).is_err());
+    assert!(h.client.try_extend_duration(&h.funder, &ended, &1).is_err());
+    assert!(h.client.try_increase_rate(&h.funder, &ended, &9).is_err());
+}
+
+#[test]
+fn failed_funding_transfer_leaves_stream_untouched() {
+    let h = setup();
+    let id = h.create(1_000, 1_000, 1_000, 2_000);
+    h.warp(1_500);
+    let before = h.client.get_stream(&id).unwrap();
+    // funder holds far less than this
+    assert!(h.client.try_top_up(&h.funder, &id, &2_000_000_000).is_err());
+    assert_eq!(h.client.get_stream(&id).unwrap(), before);
+    assert_eq!(h.client.balance_of(&id), (500, 500));
+}
+
+#[test]
+fn top_up_before_start_and_overflow_are_handled() {
+    let h = setup();
+    let id = h.create(1_000, 2_000, 2_000, 3_000); // not started
+    h.client.top_up(&h.funder, &id, &1_000);
+    let s = h.client.get_stream(&id).unwrap();
+    assert_eq!((s.total, s.end), (2_000, 4_000));
+    assert_eq!(h.client.balance_of(&id), (0, 2_000));
+    assert!(h
+        .client
+        .try_extend_duration(&h.funder, &id, &u64::MAX)
+        .is_err());
+}
+
+/// Whatever the call ordering, vested never decreases across a funding call
+/// and the payouts always sum to exactly the funded total.
+#[test]
+fn prop_vested_is_monotonic_across_funding_calls() {
+    let h = setup();
+    h.env.budget().reset_unlimited();
+    let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut next = |m: u64| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed % m
+    };
+    for _ in 0..20 {
+        let now = h.env.ledger().timestamp();
+        let id = h.create(1 + next(100_000) as i128, now, now, now + 1 + next(5_000));
+        for _ in 0..10 {
+            h.warp(h.env.ledger().timestamp() + next(500));
+            let s = h.client.get_stream(&id).unwrap();
+            if h.env.ledger().timestamp() >= s.end {
+                break;
+            }
+            let (before, _) = h.client.balance_of(&id);
+            match next(3) {
+                0 => h.client.top_up(&h.funder, &id, &(1 + next(50_000) as i128)),
+                1 => h.client.extend_duration(&h.funder, &id, &(1 + next(2_000))),
+                _ => {
+                    let s = h.client.get_stream(&id).unwrap();
+                    let rate = s.total / (s.end - h.env.ledger().timestamp()) as i128;
+                    h.client
+                        .increase_rate(&h.funder, &id, &(rate + 1 + next(3) as i128));
+                }
+            }
+            let (after, _) = h.client.balance_of(&id);
+            assert!(after >= before);
+            if next(2) == 0 && after > 0 {
+                h.client.withdraw(&id, &after);
+            }
+        }
+        h.warp(h.client.get_stream(&id).unwrap().end);
+        let s = h.client.get_stream(&id).unwrap();
+        let (avail, _) = h.client.balance_of(&id);
+        assert_eq!(s.withdrawn + avail, s.total);
+        if avail > 0 {
+            h.client.withdraw(&id, &avail);
+        }
+    }
+}
+
+// ── Adversarial tokens (#264) ───────────────────────────────────────────────
+
+mod adversarial {
+    use super::*;
+    use crate::error::Error;
+    use soroban_sdk::{vec, IntoVal, Symbol};
+    use test_adversaries::tokens::{
+        BlacklistToken, BlacklistTokenClient, FeeOnTransferToken, NoMoveToken, ReentrantToken,
+        ReentrantTokenClient, RevertOnTransferToken, ZeroBalanceToken,
+    };
+
+    fn fresh<'a>() -> (Env, StreamsClient<'a>, Address, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000);
+        let client = StreamsClient::new(&env, &env.register_contract(None, Streams));
+        client.initialize(&Address::generate(&env));
+        let (funder, recipient) = (Address::generate(&env), Address::generate(&env));
+        (env, client, funder, recipient)
+    }
+
+    fn expect_err<T: core::fmt::Debug, E: core::fmt::Debug>(
+        res: Result<T, Result<soroban_sdk::Error, E>>,
+        e: Error,
+    ) {
+        match res {
+            Err(Ok(got)) => assert_eq!(got, soroban_sdk::Error::from(e)),
+            other => panic!("expected {e:?}, got {other:?}"),
+        }
+    }
+
+    /// A token that delivers less than asked (or nothing) must never leave
+    /// a stream credited: create_stream fails closed and records nothing.
+    #[test]
+    fn short_delivering_tokens_cannot_fund_a_stream() {
+        let (env, client, funder, recipient) = fresh();
+        for token in [
+            env.register_contract(None, FeeOnTransferToken),
+            env.register_contract(None, NoMoveToken),
+            env.register_contract(None, ZeroBalanceToken),
+        ] {
+            env.invoke_contract::<()>(
+                &token,
+                &Symbol::new(&env, "mint"),
+                vec![&env, funder.into_val(&env), 10_000i128.into_val(&env)],
+            );
+            expect_err(
+                client
+                    .try_create_stream(&funder, &recipient, &token, &1_000, &1_000, &1_000, &2_000),
+                Error::TransferShortfall,
+            );
+            assert_eq!(client.get_stream_count(), 0);
+        }
+    }
+
+    #[test]
+    fn panicking_token_cannot_fund_a_stream() {
+        let (env, client, funder, recipient) = fresh();
+        let token = env.register_contract(None, RevertOnTransferToken);
+        assert!(client
+            .try_create_stream(&funder, &recipient, &token, &1_000, &1_000, &1_000, &2_000)
+            .is_err());
+        assert_eq!(client.get_stream_count(), 0);
+    }
+
+    /// Top-ups and withdrawals against a token that turns hostile after
+    /// funding: every call reverts and the recorded stream is unchanged.
+    #[test]
+    fn blacklisted_party_cannot_corrupt_a_stream() {
+        let (env, client, funder, recipient) = fresh();
+        let token = env.register_contract(None, BlacklistToken);
+        let tc = BlacklistTokenClient::new(&env, &token);
+        tc.mint(&funder, &10_000);
+        let id = client.create_stream(&funder, &recipient, &token, &1_000, &1_000, &1_000, &2_000);
+        env.ledger().set_timestamp(1_500);
+        let snapshot = client.get_stream(&id).unwrap();
+
+        // funder blacklisted: top-up / rate increase pull nothing
+        tc.set_blacklisted(&funder, &true);
+        assert!(client.try_top_up(&funder, &id, &500).is_err());
+        assert!(client.try_increase_rate(&funder, &id, &5).is_err());
+        assert_eq!(client.get_stream(&id).unwrap(), snapshot);
+
+        // recipient blacklisted: withdraw and cancel revert atomically
+        tc.set_blacklisted(&recipient, &true);
+        assert!(client.try_withdraw(&id, &100).is_err());
+        assert!(client.try_cancel(&funder, &id).is_err());
+        assert_eq!(client.get_stream(&id).unwrap(), snapshot);
+        assert_eq!(client.balance_of(&id), (500, 500));
+        assert_eq!(tc.balance(&client.address), 1_000);
+
+        // once cleared, the schedule pays out exactly what was recorded
+        tc.set_blacklisted(&recipient, &false);
+        client.withdraw(&id, &500);
+        assert_eq!(tc.balance(&recipient), 500);
+        assert_eq!(client.get_stream(&id).unwrap().withdrawn, 500);
+    }
+
+    /// Soroban's host forbids a contract re-entering one already on the
+    /// call stack, so a token calling back into streams mid-transfer is
+    /// rejected by construction; the withdraw still pays exactly once.
+    #[test]
+    fn reentrant_token_cannot_reenter_streams() {
+        let (env, client, funder, recipient) = fresh();
+        let token = env.register_contract(None, ReentrantToken);
+        let tc = ReentrantTokenClient::new(&env, &token);
+        tc.mint(&funder, &10_000);
+        let id = client.create_stream(&funder, &recipient, &token, &1_000, &1_000, &1_000, &2_000);
+
+        tc.set_reentry_target(&client.address, &Symbol::new(&env, "withdraw"));
+        tc.set_reentry_args(&vec![&env, id.into_val(&env), 100i128.into_val(&env)]);
+        env.ledger().set_timestamp(1_500);
+        client.withdraw(&id, &100);
+
+        assert_eq!(tc.reentry_succeeded(), Some(false));
+        assert_eq!(tc.balance(&recipient), 100);
+        assert_eq!(client.get_stream(&id).unwrap().withdrawn, 100);
+        assert_eq!(client.balance_of(&id), (400, 500));
+    }
+}

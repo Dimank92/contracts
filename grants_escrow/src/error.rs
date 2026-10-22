@@ -15,6 +15,13 @@ pub enum Error {
     NotAReviewer = 9,
     AlreadyApproved = 10,
     NothingToReclaim = 11,
+    AlreadyInitialized = 12,
+    ArbiterNotSet = 13,
+    NotArbiter = 14,
+    NotDisputeParty = 15,
+    DisputeAlreadyOpen = 16,
+    ArbiterConflict = 17,
+    InvalidSplit = 18,
     // Schema migrations (zenith_common::migrations) — same codes in
     // every Zenith contract. See docs/migrations.md.
     SchemaVersionMismatch = 100,

@@ -1,5 +1,3 @@
-#![no_std]
-
 use soroban_sdk::{token, Address, Env};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -31,7 +29,9 @@ impl TokenTransferGuard {
         client.transfer(from, recipient, &amount);
 
         let after_bal = client.balance(recipient);
-        let received = after_bal.checked_sub(before_bal).ok_or(TokenError::DeltaMismatch)?;
+        let received = after_bal
+            .checked_sub(before_bal)
+            .ok_or(TokenError::DeltaMismatch)?;
 
         if received < amount {
             return Err(TokenError::DeltaMismatch);
