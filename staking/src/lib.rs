@@ -29,6 +29,7 @@ mod types;
 
 use error::Error;
 pub use migrations::CURRENT_SCHEMA_VERSION;
+pub use types::{Position, RewardConfig};
 use types::{DataKey, PendingUnstake};
 
 /// Scale of RewardPerToken. 1e18 keeps a 1-base-unit reward over a
@@ -39,6 +40,9 @@ pub const ACC_PRECISION: i128 = 1_000_000_000_000_000_000;
 
 /// Caps per-user update cost, which iterates every reward token.
 pub const MAX_REWARD_TOKENS: u32 = 10;
+
+/// Hard maximum page size for `list_positions`.
+pub const MAX_PAGE_SIZE: u32 = 50;
 
 #[contract]
 pub struct Staking;
@@ -65,6 +69,23 @@ fn reward_tokens(env: &Env) -> Vec<Address> {
         .unwrap_or(Vec::new(env))
 }
 
+/// Total `user` has accrued in `token` but not yet claimed, evaluated at
+/// the current accumulator: the already-settled `Owed` balance plus the
+/// unsettled delta since `UserPaid`. Pure read; shared by `earned`,
+/// `get_accrued_rewards`, and `claim_rewards` so the query and the
+/// mutation cannot diverge.
+fn accrued(env: &Env, user: &Address, token: &Address) -> i128 {
+    let stake = get_i128(env, &DataKey::Stake(user.clone()));
+    let rpt = get_i128(env, &DataKey::RewardPerToken(token.clone()));
+    let paid = get_i128(env, &DataKey::UserPaid(user.clone(), token.clone()));
+    let pending = if stake > 0 && rpt > paid {
+        stake.checked_mul(rpt - paid).unwrap() / ACC_PRECISION
+    } else {
+        0
+    };
+    get_i128(env, &DataKey::Owed(user.clone(), token.clone())) + pending
+}
+
 /// Settles `user`'s accrual in every reward token up to the current
 /// accumulator. Must run before any change to the user's stake.
 fn update_user(env: &Env, user: &Address) {
@@ -81,6 +102,60 @@ fn update_user(env: &Env, user: &Address) {
             }
             set_i128(env, &paid_key, rpt);
         }
+    }
+}
+
+/// Records `user` in the staker index the first time they stake, so
+/// `list_positions` can enumerate without replaying events.
+fn index_staker(env: &Env, user: &Address) {
+    let mut stakers: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Stakers)
+        .unwrap_or(Vec::new(env));
+    if !stakers.contains(user) {
+        stakers.push_back(user.clone());
+        env.storage().persistent().set(&DataKey::Stakers, &stakers);
+        let count: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::StakerCount)
+            .unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&DataKey::StakerCount, &(count + 1));
+    }
+}
+
+/// Reads a persistent key, extending its TTL per the workspace policy.
+fn get_persistent<V: soroban_sdk::TryFromVal<Env, soroban_sdk::Val>>(
+    env: &Env,
+    key: &DataKey,
+) -> Option<V> {
+    let storage = env.storage().persistent();
+    let value = storage.get(key);
+    if value.is_some() {
+        storage.extend_ttl(key, zenith_common::ttl::THRESHOLD, zenith_common::ttl::EXTEND);
+    }
+    value
+}
+
+/// Builds a `Position` for `user` from stored principal and pending
+/// unstake state. Unknown stakers get an all-zero position.
+fn position_of(env: &Env, user: &Address) -> Position {
+    let staked = get_i128(env, &DataKey::Stake(user.clone()));
+    let pending: Option<PendingUnstake> = get_persistent(env, &DataKey::PendingUnstake(user.clone()));
+    match pending {
+        Some(p) => Position {
+            staked,
+            pending_unstake: p.amount,
+            unlock_at: p.unlock_at,
+        },
+        None => Position {
+            staked,
+            pending_unstake: 0,
+            unlock_at: 0,
+        },
     }
 }
 
@@ -132,6 +207,7 @@ impl Staking {
         );
 
         let was_empty = total_staked(&env) == 0;
+        index_staker(&env, &user);
         let key = DataKey::Stake(user.clone());
         set_i128(&env, &key, get_i128(&env, &key) + amount);
         env.storage()
@@ -211,7 +287,7 @@ impl Staking {
         update_user(&env, &user);
         for token in reward_tokens(&env).iter() {
             let owed_key = DataKey::Owed(user.clone(), token.clone());
-            let owed = get_i128(&env, &owed_key);
+            let owed = accrued(&env, &user, &token);
             if owed > 0 {
                 set_i128(&env, &owed_key, 0);
                 token::Client::new(&env, &token).transfer(
@@ -296,41 +372,109 @@ impl Staking {
 
     // ── Views ────────────────────────────────────────────────────────────────
 
+    /// Rewards `user` has accrued in `token` but not yet claimed, evaluated
+    /// at the current accumulator. Read-only.
     pub fn earned(env: Env, user: Address, token: Address) -> i128 {
-        let stake = get_i128(&env, &DataKey::Stake(user.clone()));
-        let rpt = get_i128(&env, &DataKey::RewardPerToken(token.clone()));
-        let paid = get_i128(&env, &DataKey::UserPaid(user.clone(), token.clone()));
-        get_i128(&env, &DataKey::Owed(user, token))
-            + stake.checked_mul(rpt - paid).unwrap() / ACC_PRECISION
+        accrued(&env, &user, &token)
     }
 
+    /// `user`'s currently earning stake. Zero for unknown stakers.
     pub fn staked_of(env: Env, user: Address) -> i128 {
         get_i128(&env, &DataKey::Stake(user))
     }
 
+    /// Sum of every staker's earning stake.
     pub fn total_staked(env: Env) -> i128 {
         total_staked(&env)
     }
 
+    /// `user`'s pending unstake, if any.
     pub fn pending_unstake(env: Env, user: Address) -> Option<PendingUnstake> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::PendingUnstake(user))
+        get_persistent(&env, &DataKey::PendingUnstake(user))
     }
 
+    /// Every reward token currently registered.
     pub fn reward_tokens(env: Env) -> Vec<Address> {
         reward_tokens(&env)
     }
 
+    /// Rewards carried over because nothing was staked when they arrived.
     pub fn undistributed(env: Env, token: Address) -> i128 {
         get_i128(&env, &DataKey::Undistributed(token))
     }
 
+    /// The pinned fee splitter allowed to call `notify_reward`.
     pub fn get_splitter(env: Env) -> Address {
         env.storage().instance().get(&DataKey::Splitter).unwrap()
     }
 
+    /// Unstake cooldown in seconds.
     pub fn get_cooldown(env: Env) -> u64 {
         env.storage().instance().get(&DataKey::Cooldown).unwrap()
+    }
+
+    /// `user`'s full position: earning stake plus any pending unstake and
+    /// its unlock time. Unknown stakers get an all-zero position rather
+    /// than an error. Read-only.
+    pub fn get_position(env: Env, user: Address) -> Position {
+        position_of(&env, &user)
+    }
+
+    /// Every reward token with the amount `user` has accrued but not yet
+    /// claimed, computed at the current ledger timestamp without mutating
+    /// state. Tokens with zero accrual are included with a zero amount.
+    pub fn get_accrued_rewards(env: Env, user: Address) -> Vec<(Address, i128)> {
+        let mut out = Vec::new(&env);
+        for token in reward_tokens(&env).iter() {
+            let amount = accrued(&env, &user, &token);
+            out.push_back((token, amount));
+        }
+        out
+    }
+
+    /// Sum of every staker's earning stake. Alias of `total_staked` for
+    /// the query surface.
+    pub fn get_total_staked(env: Env) -> i128 {
+        total_staked(&env)
+    }
+
+    /// The contract's current reward configuration: stake token, splitter,
+    /// cooldown, and registered reward tokens. Read-only.
+    pub fn get_reward_config(env: Env) -> RewardConfig {
+        RewardConfig {
+            stake_token: env.storage().instance().get(&DataKey::StakeToken).unwrap(),
+            splitter: env.storage().instance().get(&DataKey::Splitter).unwrap(),
+            cooldown: env.storage().instance().get(&DataKey::Cooldown).unwrap(),
+            reward_tokens: reward_tokens(&env),
+        }
+    }
+
+    /// Bounded enumeration of staker positions, in first-stake order.
+    /// `limit` must be in `1 ..= MAX_PAGE_SIZE`; an offset past the end
+    /// yields an empty vector. Read-only.
+    pub fn list_positions(env: Env, offset: u32, limit: u32) -> Vec<(Address, Position)> {
+        if limit == 0 {
+            panic_with_error!(&env, Error::InvalidPageLimit);
+        }
+        if limit > MAX_PAGE_SIZE {
+            panic_with_error!(&env, Error::PageLimitTooLarge);
+        }
+        let mut out = Vec::new(&env);
+        let stakers: Vec<Address> = match get_persistent(&env, &DataKey::Stakers) {
+            Some(s) => s,
+            None => return out,
+        };
+        let len = stakers.len();
+        if offset >= len {
+            return out;
+        }
+        let end = core::cmp::min(offset.saturating_add(limit), len);
+        let mut i = offset;
+        while i < end {
+            let user = stakers.get_unchecked(i);
+            out.push_back((user.clone(), position_of(&env, &user)));
+            i += 1;
+        }
+        out
     }
 }

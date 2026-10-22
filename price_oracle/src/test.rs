@@ -8,6 +8,7 @@ use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger},
     Address, BytesN, Env, Symbol, TryFromVal,
 };
+use zenith_common::testutils::advance_timestamp;
 
 struct Harness<'a> {
     env: Env,
@@ -216,9 +217,7 @@ fn get_price_ignores_a_stale_report() {
     h.client.add_feeder(&stale_feeder);
     h.client.report_price(&stale_feeder, &xlm, &999_999_999); // way off, but will go stale
 
-    h.env
-        .ledger()
-        .set_timestamp(h.env.ledger().timestamp() + h.client.get_max_staleness() + 1);
+    advance_timestamp(&h.env, h.client.get_max_staleness() + 1);
 
     let fresh_feeder = Address::generate(&h.env);
     h.client.add_feeder(&fresh_feeder);
@@ -328,9 +327,7 @@ fn a_feeder_going_stale_can_drop_below_the_quorum() {
     assert!(h.client.get_price(&xlm).is_some());
 
     // feeder_a's report ages out; only feeder_b stays fresh, below quorum.
-    h.env
-        .ledger()
-        .set_timestamp(h.env.ledger().timestamp() + h.client.get_max_staleness() + 1);
+    advance_timestamp(&h.env, h.client.get_max_staleness() + 1);
     h.client.report_price(&feeder_b, &xlm, &1_100_000);
 
     assert!(h.client.get_price(&xlm).is_none());

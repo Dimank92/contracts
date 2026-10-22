@@ -1,6 +1,60 @@
+use crate::types::Schedule;
+
 /// floor(a × b / c) for non-negative operands. Panics on overflow or c == 0.
 pub fn mul_div_floor(a: i128, b: i128, c: i128) -> i128 {
     a.checked_mul(b).unwrap().checked_div(c).unwrap()
+}
+
+/// Amount withdrawable at ledger timestamp `now` for `schedule`.
+///
+/// Pure function of its arguments (no storage access), so it is safe to expose
+/// as a view entrypoint. Never decreases as `now` increases.
+///
+/// - `Linear`: pro-rata from `start` to `end`.
+/// - `LinearWithCliff`: zero before `cliff`, then pro-rata from `start` (not
+///   from the cliff) to `end`.
+/// - `Stepped`: the cumulative amount of the last checkpoint at or before
+///   `now`, or zero before the first checkpoint.
+pub fn withdrawable_at(
+    schedule: &Schedule,
+    start: u64,
+    end: u64,
+    total: i128,
+    now: u64,
+) -> i128 {
+    match schedule {
+        Schedule::Linear => linear_at(start, end, total, now),
+        Schedule::LinearWithCliff { cliff } => {
+            if now < *cliff {
+                0
+            } else {
+                linear_at(start, end, total, now)
+            }
+        }
+        Schedule::Stepped { checkpoints } => {
+            let mut amount = 0;
+            for (ts, cumulative) in checkpoints.iter() {
+                if now < ts {
+                    break;
+                }
+                amount = cumulative;
+            }
+            amount
+        }
+    }
+}
+
+/// Continuous pro-rata amount from `start` to `end`, clamped to `[0, total]`.
+fn linear_at(start: u64, end: u64, total: i128, now: u64) -> i128 {
+    if now <= start {
+        return 0;
+    }
+    if now >= end {
+        return total;
+    }
+    let elapsed = (now - start) as i128;
+    let duration = (end - start) as i128;
+    mul_div_floor(total, elapsed, duration)
 }
 
 /// Property-based tests; see README "Property tests".

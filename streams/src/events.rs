@@ -7,9 +7,11 @@ pub fn created(env: &Env, stream_id: u64, funder: Address, recipient: Address, t
     );
 }
 
-pub fn withdrawn(env: &Env, stream_id: u64, to: Address, amount: i128) {
-    env.events()
-        .publish((Symbol::new(env, "withdrawn"), stream_id), (to, amount));
+pub fn withdrawn(env: &Env, stream_id: u64, to: Address, amount: i128, variant_tag: u32) {
+    env.events().publish(
+        (Symbol::new(env, "withdrawn"), stream_id),
+        (to, amount, variant_tag),
+    );
 }
 
 pub fn canceled(env: &Env, stream_id: u64, to_recipient: i128, to_funder: i128) {

@@ -11,6 +11,10 @@ pub enum Error {
     Unauthorized = 5,
     InsufficientBalance = 6,
     StreamCanceled = 7,
+    // Schedule validation (cliff and stepped vesting).
+    InvalidCheckpoints = 8,
+    TooManyCheckpoints = 9,
+    CliffAfterEnd = 10,
     // Schema migrations (zenith_common::migrations) — same codes in
     // every Zenith contract. See docs/migrations.md.
     SchemaVersionMismatch = 100,

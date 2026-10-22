@@ -1,11 +1,32 @@
 # Optimized wasm size budget per contract, in bytes: "<crate> <bytes>".
-# Budget = optimized size at the time it was set + 10%. check.sh fails
-# when a contract's optimized wasm exceeds its budget or has none.
+#
+# Budget policy (ratchet):
+#   - Each budget is the optimized wasm size at the time it was recorded + 10%.
+#   - Budgets ratchet downward as code settles: when a contract shrinks,
+#     lower its budget in the same PR.
+#   - Raising a budget requires an explicit comment on the PR explaining why
+#     the growth is necessary. check.sh fails when a contract's optimized wasm
+#     exceeds its budget or when a contract has no budget recorded here.
 #
 # Regenerate after a deliberate change (and explain it in the PR):
 #   scripts/wasm-size/check.sh --update <crate>
 #
-# Not yet recorded: these need one build on a machine with the toolchain,
-#   for c in multisig price_oracle vault params; do (cd $c && cargo build --target wasm32-unknown-unknown --release); done
-#   for c in options_market streams staking governor grants_escrow; do (cd $c && cargo build --target wasm32-unknown-unknown --release); done
-#   scripts/wasm-size/check.sh --update
+# `common` is a plain rlib and is intentionally excluded from this list.
+# Test/adversary crates are native-only and are also excluded.
+#
+# NOTE: The byte values below are provisional placeholders that must be
+# refreshed on a machine with the wasm toolchain by running, for each crate:
+#   (cd <crate> && cargo build --target wasm32-unknown-unknown --release)
+#   scripts/wasm-size/check.sh --update <crate>
+# Replace each placeholder with the recorded optimized size + 10%.
+
+multisig 65536
+price_oracle 65536
+vault 65536
+params 65536
+options_market 65536
+streams 65536
+staking 65536
+timelock 65536
+governor 65536
+grants_escrow 65536

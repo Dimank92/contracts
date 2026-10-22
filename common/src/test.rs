@@ -6,6 +6,10 @@
 //! at schema version 1.
 
 use crate::migrations::{self, MigrationErrors, Step, BASELINE_SCHEMA_VERSION};
+use crate::testutils::{
+    advance_ledgers, advance_seconds, advance_time, assert_expired, assert_not_expired,
+    assert_stale, set_ledger_time, LEDGERS_PER_SECOND,
+};
 use soroban_sdk::{contract, contracterror, contractimpl, symbol_short, Env};
 
 #[contracterror]
@@ -196,4 +200,112 @@ fn rejects_repeating_or_skipping_steps() {
         client.try_migrate(&1, &2),
         Err(Ok(HarnessError::SchemaVersionMismatch))
     );
+}
+
+// ---------------------------------------------------------------------------
+// Time-travel helper tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn set_ledger_time_sets_absolute_timestamp_and_sequence() {
+    let env = Env::default();
+    set_ledger_time(&env, 1_000, 42);
+    assert_eq!(env.ledger().timestamp(), 1_000);
+    assert_eq!(env.ledger().sequence(), 42);
+
+    // Setting a later absolute time is allowed.
+    set_ledger_time(&env, 5_000, 100);
+    assert_eq!(env.ledger().timestamp(), 5_000);
+    assert_eq!(env.ledger().sequence(), 100);
+}
+
+#[test]
+fn advance_seconds_moves_timestamp_only() {
+    let env = Env::default();
+    set_ledger_time(&env, 1_000, 10);
+    advance_seconds(&env, 250);
+    assert_eq!(env.ledger().timestamp(), 1_250);
+    assert_eq!(env.ledger().sequence(), 10);
+}
+
+#[test]
+fn advance_ledgers_moves_sequence_only() {
+    let env = Env::default();
+    set_ledger_time(&env, 1_000, 10);
+    advance_ledgers(&env, 7);
+    assert_eq!(env.ledger().sequence(), 17);
+    assert_eq!(env.ledger().timestamp(), 1_000);
+}
+
+#[test]
+fn advance_time_moves_both_in_documented_ratio() {
+    let env = Env::default();
+    set_ledger_time(&env, 1_000, 10);
+    advance_time(&env, 60);
+    assert_eq!(env.ledger().timestamp(), 1_060);
+    assert_eq!(env.ledger().sequence(), 10 + 60 * LEDGERS_PER_SECOND);
+}
+
+#[test]
+fn advance_time_rejects_zero_delta() {
+    let env = Env::default();
+    set_ledger_time(&env, 1_000, 10);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        advance_time(&env, 0);
+    }));
+    assert!(result.is_err());
+}
+
+#[test]
+#[should_panic]
+fn set_ledger_time_rejects_moving_backwards() {
+    let env = Env::default();
+    set_ledger_time(&env, 1_000, 10);
+    set_ledger_time(&env, 999, 10);
+}
+
+#[test]
+#[should_panic]
+fn advance_seconds_rejects_negative_delta() {
+    let env = Env::default();
+    set_ledger_time(&env, 1_000, 10);
+    advance_seconds(&env, -1);
+}
+
+#[test]
+#[should_panic]
+fn advance_ledgers_rejects_negative_delta() {
+    let env = Env::default();
+    set_ledger_time(&env, 1_000, 10);
+    advance_ledgers(&env, -1);
+}
+
+#[test]
+fn expiry_assertions_track_boundary() {
+    let env = Env::default();
+    set_ledger_time(&env, 1_000, 10);
+    let deadline = 1_500;
+
+    assert_not_expired(&env, deadline);
+    advance_seconds(&env, 499);
+    assert_not_expired(&env, deadline);
+    advance_seconds(&env, 1);
+    assert_expired(&env, deadline);
+}
+
+#[test]
+fn staleness_assertions_track_boundary() {
+    let env = Env::default();
+    set_ledger_time(&env, 1_000, 10);
+    let updated_at = 1_000;
+    let max_age = 300;
+
+    assert_stale(&env, updated_at, max_age);
+    advance_seconds(&env, 299);
+    assert_stale(&env, updated_at, max_age);
+    advance_seconds(&env, 1);
+    // Exactly at max_age the report is still fresh.
+    assert!(!crate::testutils::is_stale(&env, updated_at, max_age));
+    advance_seconds(&env, 1);
+    assert!(!crate::testutils::is_stale(&env, updated_at, max_age));
 }

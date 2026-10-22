@@ -14,7 +14,7 @@
 //! paid everything accrued but not yet withdrawn, and the funder is
 //! refunded the unstreamed remainder.
 
-use soroban_sdk::{contract, contractimpl, panic_with_error, token, Address, Env};
+use soroban_sdk::{contract, contractimpl, panic_with_error, token, Address, Env, Vec};
 
 #[cfg(test)]
 mod test;
@@ -27,7 +27,10 @@ mod types;
 
 use error::Error;
 pub use migrations::CURRENT_SCHEMA_VERSION;
-use types::{DataKey, Stream};
+use types::{DataKey, Schedule, Stream};
+
+/// Maximum number of checkpoints a `Stepped` schedule may carry.
+pub const MAX_CHECKPOINTS: u32 = 64;
 
 #[contract]
 pub struct Streams;
@@ -50,7 +53,41 @@ fn streamed_at(stream: &Stream, now: u64) -> i128 {
     if stream.canceled || now >= stream.end {
         return stream.total;
     }
-    if now < stream.cliff || now <= stream.start {
+    withdrawable_at(stream, now)
+}
+
+/// Pure function of the ledger timestamp and the schedule: the cumulative
+/// amount vested as of `now`, in `[0, total]`. Never decreases with time.
+fn withdrawable_at(stream: &Stream, now: u64) -> i128 {
+    if stream.canceled || now >= stream.end {
+        return stream.total;
+    }
+    match &stream.schedule {
+        Schedule::Linear => linear_at(stream, now),
+        Schedule::LinearWithCliff { cliff } => {
+            if now < *cliff {
+                0
+            } else {
+                linear_at(stream, now)
+            }
+        }
+        Schedule::Stepped { checkpoints } => {
+            let mut vested = 0i128;
+            for (ts, cumulative) in checkpoints.iter() {
+                if now >= ts {
+                    vested = cumulative;
+                } else {
+                    break;
+                }
+            }
+            vested
+        }
+    }
+}
+
+/// Continuous linear accrual from `start` (not from the cliff), floored.
+fn linear_at(stream: &Stream, now: u64) -> i128 {
+    if now <= stream.start {
         return 0;
     }
     math::mul_div_floor(
@@ -58,6 +95,39 @@ fn streamed_at(stream: &Stream, now: u64) -> i128 {
         (now - stream.start) as i128,
         (stream.end - stream.start) as i128,
     )
+}
+
+/// Validates a schedule against the stream bounds and total, panicking with
+/// a typed error on any violation.
+fn validate_schedule(env: &Env, schedule: &Schedule, total: i128, start: u64, end: u64) {
+    match schedule {
+        Schedule::Linear => {}
+        Schedule::LinearWithCliff { cliff } => {
+            if *cliff < start || *cliff > end {
+                panic_with_error!(env, Error::InvalidSchedule);
+            }
+        }
+        Schedule::Stepped { checkpoints } => {
+            if checkpoints.len() > MAX_CHECKPOINTS {
+                panic_with_error!(env, Error::TooManyCheckpoints);
+            }
+            if checkpoints.is_empty() {
+                panic_with_error!(env, Error::InvalidSchedule);
+            }
+            let mut prev_ts = start;
+            let mut prev_cum = 0i128;
+            for (ts, cumulative) in checkpoints.iter() {
+                if ts <= prev_ts || cumulative <= prev_cum || ts > end {
+                    panic_with_error!(env, Error::InvalidSchedule);
+                }
+                prev_ts = ts;
+                prev_cum = cumulative;
+            }
+            if prev_cum != total {
+                panic_with_error!(env, Error::InvalidSchedule);
+            }
+        }
+    }
 }
 
 #[contractimpl]
@@ -81,6 +151,9 @@ impl Streams {
     /// `start` may be in the past (the elapsed portion is withdrawable
     /// immediately, subject to the cliff). Zero-duration streams
     /// (`start == end`) are rejected.
+    ///
+    /// Backward-compatible entrypoint: builds a `LinearWithCliff` schedule
+    /// (or plain `Linear` when `cliff == start`).
     #[allow(clippy::too_many_arguments)]
     pub fn create_stream(
         env: Env,
@@ -92,14 +165,39 @@ impl Streams {
         cliff: u64,
         end: u64,
     ) -> u64 {
+        let schedule = if cliff == start {
+            Schedule::Linear
+        } else {
+            Schedule::LinearWithCliff { cliff }
+        };
+        Self::create_stream_with_schedule(
+            env, funder, recipient, token, total, start, end, schedule,
+        )
+    }
+
+    /// Creates a stream with an explicit schedule variant, selected at
+    /// creation time. The schedule is validated once here rather than on
+    /// every read.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_stream_with_schedule(
+        env: Env,
+        funder: Address,
+        recipient: Address,
+        token: Address,
+        total: i128,
+        start: u64,
+        end: u64,
+        schedule: Schedule,
+    ) -> u64 {
         funder.require_auth();
         migrations::require_current(&env);
         if total <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
         }
-        if start >= end || cliff < start || cliff > end {
+        if start >= end {
             panic_with_error!(&env, Error::InvalidSchedule);
         }
+        validate_schedule(&env, &schedule, total, start, end);
 
         token::Client::new(&env, &token).transfer(&funder, &env.current_contract_address(), &total);
 
@@ -121,8 +219,8 @@ impl Streams {
                 token,
                 total,
                 start,
-                cliff,
                 end,
+                schedule,
                 withdrawn: 0,
                 canceled: false,
             },
@@ -151,7 +249,7 @@ impl Streams {
             &stream.recipient,
             &amount,
         );
-        events::withdrawn(&env, stream_id, stream.recipient, amount);
+        events::withdrawn(&env, stream_id, stream.recipient, amount, &stream.schedule);
     }
 
     /// Funder or governance cancels. The recipient receives everything
@@ -250,6 +348,13 @@ impl Streams {
         (streamed - stream.withdrawn, stream.total - streamed)
     }
 
+    /// Cumulative amount vested as of now, per the stream's schedule. Pure
+    /// function of the ledger timestamp and the schedule.
+    pub fn withdrawable(env: Env, stream_id: u64) -> i128 {
+        let stream = load(&env, stream_id);
+        withdrawable_at(&stream, env.ledger().timestamp())
+    }
+
     pub fn get_stream(env: Env, stream_id: u64) -> Option<Stream> {
         env.storage().persistent().get(&DataKey::Stream(stream_id))
     }
@@ -260,4 +365,9 @@ impl Streams {
             .get(&DataKey::StreamCounter)
             .unwrap()
     }
+}
+
+/// Convenience constructor for a `Stepped` schedule from parallel arrays.
+pub fn stepped_schedule(checkpoints: Vec<(u64, i128)>) -> Schedule {
+    Schedule::Stepped { checkpoints }
 }

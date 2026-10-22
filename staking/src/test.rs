@@ -6,6 +6,12 @@ use soroban_sdk::{
     token, Address, Env,
 };
 
+/// Advance the test ledger's timestamp by `delta` seconds.
+fn advance_time(env: &Env, delta: u64) {
+    let now = env.ledger().timestamp();
+    env.ledger().set_timestamp(now + delta);
+}
+
 const COOLDOWN: u64 = 7 * 86_400;
 
 struct Harness<'a> {
@@ -215,4 +221,111 @@ fn prop_no_staker_claims_more_than_share() {
         assert!(accounted <= notified);
         assert!(h.usdc.balance(&h.client.address) >= notified - accounted);
     }
+}
+
+#[test]
+fn query_empty_state() {
+    let h = setup();
+    let unknown = Address::generate(&h.env);
+
+    let pos = h.client.get_position(&unknown);
+    assert_eq!(pos.staked, 0);
+    assert_eq!(pos.pending_unstake, 0);
+    assert_eq!(pos.unstake_ready_at, 0);
+    assert_eq!(h.client.earned(&unknown, &h.usdc.address), 0);
+    assert_eq!(h.client.total_staked(), 0);
+
+    let page = h.client.list_positions(&0, &10);
+    assert_eq!(page.len(), 0);
+}
+
+#[test]
+fn query_single_and_multiple_stakers() {
+    let h = setup();
+    let a = h.staker(100);
+    let b = h.staker(250);
+
+    let pos_a = h.client.get_position(&a);
+    assert_eq!(pos_a.staked, 100);
+    assert_eq!(pos_a.pending_unstake, 0);
+    assert_eq!(h.client.get_position(&b).staked, 250);
+    assert_eq!(h.client.total_staked(), 350);
+
+    let page = h.client.list_positions(&0, &10);
+    assert_eq!(page.len(), 2);
+    let mut seen = 0i128;
+    for entry in page.iter() {
+        seen += entry.position.staked;
+    }
+    assert_eq!(seen, 350);
+}
+
+#[test]
+fn query_accrued_rewards_before_and_after_time_advance() {
+    let h = setup();
+    let a = h.staker(100);
+    let b = h.staker(300);
+    h.client.notify_reward(&h.usdc.address, &1_000);
+
+    assert_eq!(h.client.earned(&a, &h.usdc.address), 250);
+    assert_eq!(h.client.earned(&b, &h.usdc.address), 750);
+
+    advance_time(&h.env, 1_000);
+    // Accrual is driven by the reward accumulator, not elapsed time, so the
+    // computed view is stable across ledger-time advancement.
+    assert_eq!(h.client.earned(&a, &h.usdc.address), 250);
+    assert_eq!(h.client.earned(&b, &h.usdc.address), 750);
+}
+
+#[test]
+fn query_claim_then_earned_is_zero() {
+    let h = setup();
+    let a = h.staker(100);
+    h.client.notify_reward(&h.usdc.address, &1_000);
+    assert_eq!(h.client.earned(&a, &h.usdc.address), 1_000);
+
+    h.client.claim_rewards(&a);
+    assert_eq!(h.client.earned(&a, &h.usdc.address), 0);
+    assert_eq!(h.usdc.balance(&a), 1_000);
+    // Position is unchanged by claiming.
+    assert_eq!(h.client.get_position(&a).staked, 100);
+}
+
+#[test]
+fn query_reward_config() {
+    let h = setup();
+    let cfg = h.client.reward_config();
+    assert_eq!(cfg.cooldown, COOLDOWN);
+    assert_eq!(cfg.splitter, h.splitter);
+}
+
+#[test]
+fn query_pagination_boundaries() {
+    let h = setup();
+    for _ in 0..5 {
+        h.staker(10);
+    }
+
+    let first = h.client.list_positions(&0, &2);
+    assert_eq!(first.len(), 2);
+
+    let last = h.client.list_positions(&4, &2);
+    assert_eq!(last.len(), 1);
+
+    let past = h.client.list_positions(&5, &2);
+    assert_eq!(past.len(), 0);
+
+    let past_far = h.client.list_positions(&1_000, &2);
+    assert_eq!(past_far.len(), 0);
+}
+
+#[test]
+fn query_pagination_rejects_bad_limits() {
+    let h = setup();
+    h.staker(10);
+    assert!(h.client.try_list_positions(&0, &0).is_err());
+    assert!(h
+        .client
+        .try_list_positions(&0, &(crate::MAX_PAGE_SIZE + 1))
+        .is_err());
 }

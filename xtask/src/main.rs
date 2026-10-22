@@ -59,8 +59,11 @@ Commands:
   check-imports  Verify every contractimport! is declared in wasm-deps and
                  points at the shared target/ directory.
   check-wasm     Inspect built wasm for linked-in testutils/host code.
+  wasm-size      Build contract wasm and enforce per-crate size budgets from
+                 scripts/wasm-size/budgets.txt.
   graph          Print the wasm build order and each crate's wasm needs.
-  ci             fmt --check, check-imports, build, check-wasm, clippy, test.
+  ci             fmt --check, check-imports, build, check-wasm, wasm-size,
+                 clippy, test.
 
 <crate> is a package name (zenith-vault) or directory (vault). Default: all.
 ";
@@ -92,6 +95,7 @@ fn run() -> Result<()> {
         "fmt" => fmt(&ws, &opts),
         "check-imports" => check_imports(&ws),
         "check-wasm" => check_wasm(&ws, &opts),
+        "wasm-size" => wasm_size(&ws, &opts),
         "graph" => graph(&ws),
         "ci" => ci(&ws),
         other => Err(format!("unknown command `{other}`\n\n{USAGE}")),
@@ -833,17 +837,112 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }
 
+/// Path (relative to the workspace root) of the checked-in size budgets.
+const BUDGETS_FILE: &str = "scripts/wasm-size/budgets.txt";
+
+/// Parses `scripts/wasm-size/budgets.txt`: one `<crate> <bytes>` per line,
+/// `#` comments and blank lines ignored. Keys are package names.
+fn parse_budgets(text: &str) -> Result<BTreeMap<String, u64>> {
+    let mut budgets = BTreeMap::new();
+    for (i, line) in text.lines().enumerate() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.split_whitespace();
+        let name = parts
+            .next()
+            .ok_or_else(|| format!("{BUDGETS_FILE}:{}: missing crate name", i + 1))?;
+        let size = parts
+            .next()
+            .ok_or_else(|| format!("{BUDGETS_FILE}:{}: missing budget for `{name}`", i + 1))?;
+        if parts.next().is_some() {
+            return Err(format!(
+                "{BUDGETS_FILE}:{}: expected `<crate> <bytes>`, got `{line}`",
+                i + 1
+            ));
+        }
+        let size: u64 = size.parse().map_err(|e| {
+            format!("{BUDGETS_FILE}:{}: bad byte count `{size}`: {e}", i + 1)
+        })?;
+        if budgets.insert(name.to_string(), size).is_some() {
+            return Err(format!(
+                "{BUDGETS_FILE}:{}: duplicate budget for `{name}`",
+                i + 1
+            ));
+        }
+    }
+    Ok(budgets)
+}
+
+fn wasm_size(ws: &Workspace, opts: &Opts) -> Result<()> {
+    // Only `#[contract]` crates produce deployable wasm; `common` is a plain
+    // rlib and test/adversary crates are native-only, so both are excluded
+    // by the `is_contract` (cdylib) filter.
+    let contracts: Vec<String> = if opts.packages.is_empty() {
+        ws.contracts()
+    } else {
+        ws.selection(&opts.packages)?
+            .into_iter()
+            .filter(|n| ws.packages[n].is_contract)
+            .collect()
+    };
+
+    let budgets_path = ws.root.join(BUDGETS_FILE);
+    let text = fs::read_to_string(&budgets_path)
+        .map_err(|e| format!("reading {}: {e}", budgets_path.display()))?;
+    let budgets = parse_budgets(&text)?;
+
+    // Build every contract's wasm (release, wasm32) in dependency order.
+    ws.build_wasm(&contracts.iter().cloned().collect())?;
+
+    let mut errors = Vec::new();
+    for name in &contracts {
+        let Some(&budget) = budgets.get(name) else {
+            errors.push(format!("{name}: no size budget in {BUDGETS_FILE}"));
+            continue;
+        };
+        let path = ws.wasm_path(name)?;
+        let size = fs::metadata(&path)
+            .map_err(|e| format!("{name}: can't stat {} ({e})", path.display()))?
+            .len();
+        if size > budget {
+            let over = size - budget;
+            errors.push(format!(
+                "{name}: wasm is {size} bytes, budget {budget} bytes (+{over} over budget)"
+            ));
+        } else {
+            let under = budget - size;
+            eprintln!("xtask: {name}: {size} bytes (budget {budget}, {under} to spare)");
+        }
+    }
+    for name in budgets.keys() {
+        if !contracts.contains(name) {
+            errors.push(format!(
+                "{name}: budget listed in {BUDGETS_FILE} but not a contract crate"
+            ));
+        }
+    }
+    if errors.is_empty() {
+        eprintln!("xtask: {} contracts within size budget", contracts.len());
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
+}
+
 fn ci(ws: &Workspace) -> Result<()> {
     let all = Opts::default();
     let check = Opts {
         check: true,
         ..Opts::default()
     };
-    let steps: [(&str, &dyn Fn() -> Result<()>); 6] = [
+    let steps: [(&str, &dyn Fn() -> Result<()>); 7] = [
         ("fmt --check", &|| fmt(ws, &check)),
         ("check-imports", &|| check_imports(ws)),
         ("build", &|| build(ws, &all)),
         ("check-wasm", &|| check_wasm(ws, &all)),
+        ("wasm-size", &|| wasm_size(ws, &all)),
         ("clippy", &|| clippy(ws, &all)),
         ("test", &|| test(ws, &all)),
     ];

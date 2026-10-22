@@ -10,6 +10,9 @@ pub enum Error {
     NothingToWithdraw = 4,
     CooldownActive = 5,
     TooManyRewardTokens = 6,
+    // Query surface: pagination bounds.
+    InvalidPageLimit = 7,
+    PageLimitTooLarge = 8,
     // Schema migrations (zenith_common::migrations) — same codes in
     // every Zenith contract. See docs/migrations.md.
     SchemaVersionMismatch = 100,
