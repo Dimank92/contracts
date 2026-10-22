@@ -90,6 +90,9 @@ pub fn set_admin<K: IntoVal<Env, Val>>(env: &Env, admin_key: &K, new_admin: &Add
     old
 }
 
+/// Reads the pause flag in a single instance-storage read (hot path).
+/// Missing key means "not paused", so a freshly deployed contract is
+/// live without an extra init write.
 pub fn is_paused<K: IntoVal<Env, Val>>(env: &Env, paused_key: &K) -> bool {
     env.storage().instance().get(paused_key).unwrap_or(false)
 }
@@ -99,6 +102,12 @@ pub fn set_paused<K: IntoVal<Env, Val>>(env: &Env, paused_key: &K, paused: bool)
 }
 
 /// Panics with `err` if the contract is paused.
+///
+/// This is the single shared guard every state-mutating entrypoint that
+/// creates new exposure must call (series creation, purchase, vault
+/// deposit, LP deposit, feeder reports). Withdrawal / settlement / claim
+/// / exit paths must NOT call it — pausing stops new risk, never the
+/// user's exit window.
 pub fn require_not_paused<K, E>(env: &Env, paused_key: &K, err: E)
 where
     K: IntoVal<Env, Val>,
@@ -107,4 +116,28 @@ where
     if is_paused(env, paused_key) {
         panic_with_error!(env, err);
     }
+}
+
+/// Admin-gated pause/unpause routed through the shared helper.
+///
+/// `auth` is validated with `require_admin_or_multisig` (so the same
+/// path serves both the direct-admin and multisig entrypoints), then
+/// the flag is written via `set_paused`. Pausing is idempotent and
+/// deterministic even with a pending timelock admin action: the flag
+/// flips immediately, and any queued action still executes against the
+/// current admin when its delay elapses.
+pub fn set_paused_admin<K, E>(
+    env: &Env,
+    admin_key: &K,
+    paused_key: &K,
+    auth: &Auth,
+    class: ActionClass,
+    paused: bool,
+    unauthorized: E,
+) where
+    K: IntoVal<Env, Val>,
+    E: Into<soroban_sdk::Error> + Copy,
+{
+    require_admin_or_multisig(env, admin_key, auth, class, unauthorized);
+    set_paused(env, paused_key, paused);
 }
