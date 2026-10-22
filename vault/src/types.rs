@@ -53,6 +53,19 @@ impl Tag {
             id,
         })
     }
+
+    /// Validate the tag shape without consulting the integrator allowlist.
+    ///
+    /// Read-only query entrypoints use this so that introspection never
+    /// depends on (or mutates) allowlist state: an unknown or disallowed
+    /// integrator simply reports a zero recorded balance rather than
+    /// panicking.
+    pub fn validate_shape(&self) -> Result<(), TagError> {
+        validate_component(&self.integrator)?;
+        validate_component(&self.scope)?;
+        validate_component(&self.id)?;
+        Ok(())
+    }
 }
 
 /// Errors produced by tag validation.

@@ -16,6 +16,8 @@ pub enum DataKey {
     Admin,
     /// Allowlisted integrator identity for the tag namespace.
     Integrator(u32),
+    /// Recorded accounting balance for a `(token, tag)` pair.
+    TagBalance(Address, u32),
 }
 
 /// Maximum number of entries accepted by a single batch call.
@@ -115,6 +117,25 @@ pub fn when_not_paused(env: &Env) {
     if is_paused(env) {
         panic!("vault is paused");
     }
+}
+
+/// Single typed-storage accessor for a `(token, tag)` recorded balance.
+///
+/// Both the mutation paths (deposit/withdraw) and the read-only query
+/// entrypoints go through this helper so query results can never diverge
+/// from mutation accounting. Missing key reads as zero.
+pub fn tag_balance(env: &Env, token: &Address, tag: u32) -> i128 {
+    env.storage()
+        .persistent()
+        .get::<DataKey, i128>(&DataKey::TagBalance(token.clone(), tag))
+        .unwrap_or(0)
+}
+
+/// Records a new `(token, tag)` balance through the shared accessor key.
+fn set_tag_balance(env: &Env, token: &Address, tag: u32, amount: i128) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::TagBalance(token.clone(), tag), &amount);
 }
 
 fn require_admin(env: &Env, caller: &Address) {
@@ -249,44 +270,47 @@ impl VaultContract {
         Self::withdraw(env, to, amount);
     }
 
+    /// Read-only: recorded balance for a `(token, tag)` pair.
+    ///
+    /// Returns only the vault's recorded accounting for that tag — never the
+    /// raw token balance. Unknown tags read as zero without panicking. The
+    /// tag shape is validated consistently with the mutation paths so an
+    /// invalid tag is rejected rather than silently reported as zero.
+    ///
+    /// Side-effect free: performs a single persistent read and writes nothing.
+    pub fn balance(env: Env, token: Address, integrator: u32, scope: u32, id: u32) -> i128 {
+        Tag::new(&env, integrator, scope, id);
+        tag_balance(&env, &token, id)
+    }
+
+    /// Read-only: aggregate recorded balance across a set of tags for one
+    /// token.
+    ///
+    /// Sums the recorded accounting for each supplied tag id, bounded by
+    /// `MAX_BATCH_SIZE` so large aggregates stay within resource limits.
+    /// Unknown tags contribute zero. Side-effect free.
+    pub fn balance_aggregate(
+        env: Env,
+        token: Address,
+        integrator: u32,
+        scope: u32,
+        ids: Vec<u32>,
+    ) -> i128 {
+        let len = ids.len();
+        if len > MAX_BATCH_SIZE {
+            panic!("aggregate exceeds max size");
+        }
+        let mut total: i128 = 0;
+        for i in 0..len {
+            let id = ids.get(i).unwrap();
+            Tag::new(&env, integrator, scope, id);
+            total += tag_balance(&env, &token, id);
+        }
+        total
+    }
+
     /// Batch deposit: escrows collateral for many `(token, tag)` entries in
     /// one call. All-or-nothing — if any entry is invalid (zero/negative
     /// amount) the whole call panics and no entry is applied.
     ///
-    /// Reuses the single-tag `deposit` path per entry so accounting is
-    /// identical to the single-entry surface. Pause-gated like `deposit`.
-    pub fn deposit_batch(env: Env, from: Address, entries: Vec<BatchEntry>) {
-        when_not_paused(&env);
-        validate_batch(&entries);
-        from.require_auth();
-        for entry in entries.iter() {
-            if entry.amount <= 0 {
-                panic!("amount must be positive");
-            }
-            // Shared single-tag accounting path.
-            Self::deposit(env.clone(), from.clone(), entry.amount);
-        }
-    }
-
-    /// Batch withdraw: releases collateral for many `(token, tag)` entries in
-    /// one call. All-or-nothing — if any entry would over-withdraw its tag
-    /// (or has a non-positive amount) the whole call panics and no entry is
-    /// applied, so a failing tag can never partially drain the others.
-    ///
-    /// Reuses the single-tag `withdraw` path per entry so per-tag invariants
-    /// hold exactly as the single-entry surface. Exempt from pause.
-    pub fn withdraw_batch(env: Env, to: Address, entries: Vec<BatchEntry>) {
-        validate_batch(&entries);
-        to.require_auth();
-        for entry in entries.iter() {
-            if entry.amount <= 0 {
-                panic!("amount must be positive");
-            }
-            // Shared single-tag accounting path (enforces per-tag invariant).
-            Self::withdraw(env.clone(), to.clone(), entry.amount);
-        }
-    }
-}
-
-#[cfg(test)]
-mod test_adversaries;
+    /// Reuses the single-tag `deposit` path per entry so a
