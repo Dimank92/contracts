@@ -9,3 +9,5 @@ publish.workspace = true
 
 [dependencies]
 serde_json = "1"
+soroban-spec = "=21.7.7"
+stellar-xdr = { version = "=21.2.0", features = ["curr", "std"] }

@@ -124,6 +124,18 @@ in sync with the `contractimport!` paths. Each contract's wasm is built on
 its own so dev-dependency `testutils` never reaches a release build —
 `check-wasm` verifies that on the artifacts.
 
+### Docs-vs-spec check
+
+`cargo xtask doc-spec-check` (after `cargo xtask build`) diffs each contract's
+built-wasm spec against the function tables in its `` ## `<dir>` reference ``
+README section and `docs/<dir>.md`. It lists documented-but-missing,
+implemented-but-undocumented and argument-name drift, and exits non-zero on
+any not recorded in `xtask/doc-spec-allow.txt` (stale entries fail too, so the
+list only shrinks). Convention: a table row's first cell holds
+`` `name(arg, arg: Type)` `` code spans (`` `name(...)` `` skips the argument
+check); a contract whose docs yield no such rows fails unless allowlisted
+as `<dir> no-docs`.
+
 ### Wasm size budgets
 
 The CI `budgets` job builds every contract, optimizes it
@@ -977,8 +989,17 @@ through a delayed operation.
 **Events:** `scheduled`, `executed`, `cancelled`, `min_delay_changed`, `role_changed`.
 
 **Errors:** 1 `AlreadyInitialized`, 2 `Unauthorized`, 3 `InsufficientDelay`,
-4 `AlreadyScheduled`, 5 `NotReady`, 6 `PredecessorNotDone`, 7 `NotPending`,
-8 `UnknownSelfCall`, 9 `EmptyOperation`.
+4 `AlreadyScheduled`, 5 `NotReady`, 6 `PredecessorNotExecuted`, 7 `NotPending`,
+8 `UnknownSelfCall`, 9 `EmptyOperation`, 10 `ActionNotFound`,
+11 `PredecessorCancelled`, 12 `PredecessorCycle`, 13 `PredecessorChainTooDeep`,
+100–104 migration errors.
+
+**Predecessors.** `schedule` rejects an unknown predecessor (`ActionNotFound`),
+a cancelled one (`PredecessorCancelled`) and any chain that loops back to the
+new operation (`PredecessorCycle`). Chains are walked at most
+`MAX_CHAIN_DEPTH` (8) nodes deep; longer ones fail with
+`PredecessorChainTooDeep`. `execute` re-walks the chain, so cancelling a
+predecessor makes its dependents fail with `PredecessorCancelled`.
 
 ### Operations guide
 

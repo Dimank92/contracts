@@ -1,0 +1,12 @@
+[package]
+name = "vault-ops"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# Read-only operations CLI for a deployed vault: tag listing, ledger
+# reconciliation and per-tag event audits. Native-only; never built for
+# wasm and holds no keys. See README.md in this directory.
+
+[dependencies]
+serde_json = "1"

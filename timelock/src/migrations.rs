@@ -12,24 +12,12 @@
 //! a wasm swap only takes effect once the invocation that made it
 //! returns, so a `migrate` self-call in the same `execute` would still run
 //! the old code.
-//!
-//! NOTE: this crate's lib.rs, error.rs, events.rs, types.rs and
-//! Cargo.toml are empty on main (emptied by #148). Once they're restored:
-//! add `zenith-common = { path = "../common" }` to Cargo.toml,
-//! `mod migrations;` to lib.rs, the migration error variants (codes
-//! 100–104) to `Error`, `init_schema` to `initialize`, and in `self_call`:
-//!
-//! ```ignore
-//! } else if *func == symbol_short!("migrate") {
-//!     migrations::self_migrate(env, arg(env, args, 0), arg(env, args, 1));
-//! }
-//! ```
 
 use soroban_sdk::{contractimpl, panic_with_error, Env};
 use zenith_common::migrations::{self, MigrationErrors, Step};
 
 use crate::error::Error;
-use crate::Timelock;
+use crate::{Timelock, TimelockClient};
 
 /// The layout this wasm reads and writes. Raise it by one in the same PR
 /// that adds the matching arm to `step`.

@@ -21,6 +21,8 @@
 //! workspace member's features (in particular dev-dependency `testutils`)
 //! are unified into it; `check-wasm` verifies that on the actual artifacts.
 
+mod doc_spec;
+
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -59,8 +61,11 @@ Commands:
   check-imports  Verify every contractimport! is declared in wasm-deps and
                  points at the shared target/ directory.
   check-wasm     Inspect built wasm for linked-in testutils/host code.
+  doc-spec-check Diff each contract's wasm spec against its README/docs
+                 function tables (needs `build` first); see xtask/src/doc_spec.rs.
   graph          Print the wasm build order and each crate's wasm needs.
-  ci             fmt --check, check-imports, build, check-wasm, clippy, test.
+  ci             fmt --check, check-imports, build, check-wasm, doc-spec-check,
+                 clippy, test.
 
 <crate> is a package name (zenith-vault) or directory (vault). Default: all.
 ";
@@ -92,6 +97,7 @@ fn run() -> Result<()> {
         "fmt" => fmt(&ws, &opts),
         "check-imports" => check_imports(&ws),
         "check-wasm" => check_wasm(&ws, &opts),
+        "doc-spec-check" => doc_spec_check(&ws, &opts),
         "graph" => graph(&ws),
         "ci" => ci(&ws),
         other => Err(format!("unknown command `{other}`\n\n{USAGE}")),
@@ -763,6 +769,114 @@ fn check_wasm(ws: &Workspace, opts: &Opts) -> Result<()> {
     }
 }
 
+/// Function name -> argument names, from the contract spec in built wasm.
+fn wasm_spec(path: &Path) -> Result<doc_spec::Sigs> {
+    use stellar_xdr::curr::ScSpecEntry;
+    let bytes = fs::read(path).map_err(|e| {
+        format!(
+            "can't read {} ({e}); run `cargo xtask build` first",
+            path.display()
+        )
+    })?;
+    let entries = soroban_spec::read::from_wasm(&bytes)
+        .map_err(|e| format!("{}: can't read contract spec: {e:?}", path.display()))?;
+    Ok(entries
+        .into_iter()
+        .filter_map(|e| match e {
+            ScSpecEntry::FunctionV0(f) => Some((
+                f.name.0.to_utf8_string_lossy(),
+                f.inputs
+                    .iter()
+                    .map(|i| i.name.to_utf8_string_lossy())
+                    .collect(),
+            )),
+            _ => None,
+        })
+        .collect())
+}
+
+fn doc_spec_check(ws: &Workspace, opts: &Opts) -> Result<()> {
+    let contracts: Vec<String> = if opts.packages.is_empty() {
+        ws.contracts()
+    } else {
+        ws.selection(&opts.packages)?
+            .into_iter()
+            .filter(|n| ws.packages[n].is_contract)
+            .collect()
+    };
+    let readme = fs::read_to_string(ws.root.join("README.md"))
+        .map_err(|e| format!("can't read README.md: {e}"))?;
+    let allow_path = ws.root.join("xtask/doc-spec-allow.txt");
+    let allow = doc_spec::parse_allowlist(&fs::read_to_string(&allow_path).unwrap_or_default());
+    let (mut errors, mut used) = (Vec::new(), BTreeSet::new());
+    for name in &contracts {
+        let dir = ws.packages[name]
+            .dir
+            .file_name()
+            .and_then(|d| d.to_str())
+            .ok_or("package directory without a name")?
+            .to_string();
+        let mut text = doc_spec::readme_section(&readme, &dir).unwrap_or_default();
+        let file = ws.root.join("docs").join(format!("{dir}.md"));
+        if file.exists() {
+            text.push_str(
+                &fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?,
+            );
+        }
+        let doc = doc_spec::parse_doc(&text);
+        if doc.is_empty() {
+            let key = format!("{dir} no-docs");
+            if allow.contains(&key) {
+                used.insert(key);
+            } else {
+                errors.push(format!(
+                    "{dir}: no function tables found in its README section or docs/{dir}.md"
+                ));
+            }
+            continue;
+        }
+        let spec = match wasm_spec(&ws.wasm_path(name)?) {
+            Ok(spec) => spec,
+            Err(e) => {
+                let key = format!("{dir} no-spec");
+                if allow.contains(&key) {
+                    used.insert(key);
+                } else {
+                    errors.push(format!("{dir}: {e}"));
+                }
+                continue;
+            }
+        };
+        for d in doc_spec::diff(&spec, &doc) {
+            let key = d.key(&dir);
+            if allow.contains(&key) {
+                used.insert(key);
+            } else {
+                errors.push(format!("{dir}: {}", d.describe()));
+            }
+        }
+    }
+    // An entry for a crate outside this run's selection can't be judged.
+    let scoped: BTreeSet<String> = contracts
+        .iter()
+        .filter_map(|n| ws.packages[n].dir.file_name()?.to_str().map(String::from))
+        .collect();
+    for stale in allow.difference(&used) {
+        if scoped.contains(stale.split(' ').next().unwrap_or("")) {
+            errors.push(format!("stale allowlist entry (no longer drifts): {stale}"));
+        }
+    }
+    if errors.is_empty() {
+        eprintln!(
+            "xtask: doc-spec-check: {} contracts match their docs",
+            contracts.len()
+        );
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
+}
+
 #[derive(Default)]
 struct WasmModule<'a> {
     exports: Vec<String>,
@@ -839,11 +953,12 @@ fn ci(ws: &Workspace) -> Result<()> {
         check: true,
         ..Opts::default()
     };
-    let steps: [(&str, &dyn Fn() -> Result<()>); 6] = [
+    let steps: [(&str, &dyn Fn() -> Result<()>); 7] = [
         ("fmt --check", &|| fmt(ws, &check)),
         ("check-imports", &|| check_imports(ws)),
         ("build", &|| build(ws, &all)),
         ("check-wasm", &|| check_wasm(ws, &all)),
+        ("doc-spec-check", &|| doc_spec_check(ws, &all)),
         ("clippy", &|| clippy(ws, &all)),
         ("test", &|| test(ws, &all)),
     ];
