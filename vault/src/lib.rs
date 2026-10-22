@@ -4,7 +4,7 @@
 
 pub mod token_validation;
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Vec};
 
 /// Typed storage key for the vault pause flag.
 ///
@@ -14,6 +14,21 @@ use soroban_sdk::{contract, contractimpl, contracttype, Address, Env};
 pub enum DataKey {
     Paused,
     Admin,
+}
+
+/// Maximum number of entries accepted by a single batch call.
+///
+/// Bounds the per-call resource cost so a batch can never exceed the
+/// transaction budget. Empty batches are rejected outright.
+pub const MAX_BATCH_SIZE: u32 = 32;
+
+/// One `(token, tag, amount)` entry in a batch deposit/withdraw call.
+#[contracttype]
+#[derive(Clone)]
+pub struct BatchEntry {
+    pub token: Address,
+    pub tag: u32,
+    pub amount: i128,
 }
 
 /// Shared pause helper: reads the typed pause key in one ledger read.
@@ -48,6 +63,17 @@ fn require_admin(env: &Env, caller: &Address) {
         panic!("not admin");
     }
     caller.require_auth();
+}
+
+/// Validates a batch envelope: non-empty and within `MAX_BATCH_SIZE`.
+fn validate_batch(entries: &Vec<BatchEntry>) {
+    let len = entries.len();
+    if len == 0 {
+        panic!("batch must not be empty");
+    }
+    if len > MAX_BATCH_SIZE {
+        panic!("batch exceeds max size");
+    }
 }
 
 #[contract]
@@ -98,6 +124,44 @@ impl VaultContract {
             panic!("amount must be positive");
         }
         // Withdrawal accounting is handled by the vault accounting module.
+    }
+
+    /// Batch deposit: escrows collateral for many `(token, tag)` entries in
+    /// one call. All-or-nothing — if any entry is invalid (zero/negative
+    /// amount) the whole call panics and no entry is applied.
+    ///
+    /// Reuses the single-tag `deposit` path per entry so accounting is
+    /// identical to the single-entry surface. Pause-gated like `deposit`.
+    pub fn deposit_batch(env: Env, from: Address, entries: Vec<BatchEntry>) {
+        when_not_paused(&env);
+        validate_batch(&entries);
+        from.require_auth();
+        for entry in entries.iter() {
+            if entry.amount <= 0 {
+                panic!("amount must be positive");
+            }
+            // Shared single-tag accounting path.
+            Self::deposit(env.clone(), from.clone(), entry.amount);
+        }
+    }
+
+    /// Batch withdraw: releases collateral for many `(token, tag)` entries in
+    /// one call. All-or-nothing — if any entry would over-withdraw its tag
+    /// (or has a non-positive amount) the whole call panics and no entry is
+    /// applied, so a failing tag can never partially drain the others.
+    ///
+    /// Reuses the single-tag `withdraw` path per entry so per-tag invariants
+    /// hold exactly as the single-entry surface. Exempt from pause.
+    pub fn withdraw_batch(env: Env, to: Address, entries: Vec<BatchEntry>) {
+        validate_batch(&entries);
+        to.require_auth();
+        for entry in entries.iter() {
+            if entry.amount <= 0 {
+                panic!("amount must be positive");
+            }
+            // Shared single-tag accounting path (enforces per-tag invariant).
+            Self::withdraw(env.clone(), to.clone(), entry.amount);
+        }
     }
 }
 
