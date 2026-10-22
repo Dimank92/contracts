@@ -1,21 +1,20 @@
 [package]
-name = "zenith-governor"
-version.workspace = true
+name = "governor"
+version = "0.1.0"
 edition.workspace = true
-publish.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 soroban-sdk = { workspace = true }
-zenith-common = { path = "../common" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
-# Dev/test-only: a REAL timelock instance for lifecycle tests. Production
-# code calls it through the interface in src/interfaces.rs instead.
-timelock = { workspace = true, features = ["testutils"] }
 
 [features]
 testutils = ["soroban-sdk/testutils"]
