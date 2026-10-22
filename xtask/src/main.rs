@@ -60,7 +60,8 @@ Commands:
                  points at the shared target/ directory.
   check-wasm     Inspect built wasm for linked-in testutils/host code.
   graph          Print the wasm build order and each crate's wasm needs.
-  ci             fmt --check, check-imports, build, check-wasm, clippy, test.
+  check-layering Verify crate Cargo dependencies match xtask/layering.json.
+  ci             fmt --check, check-imports, check-layering, build, check-wasm, clippy, test.
 
 <crate> is a package name (zenith-vault) or directory (vault). Default: all.
 ";
@@ -93,6 +94,7 @@ fn run() -> Result<()> {
         "check-imports" => check_imports(&ws),
         "check-wasm" => check_wasm(&ws, &opts),
         "graph" => graph(&ws),
+        "check-layering" => check_layering(&ws),
         "ci" => ci(&ws),
         other => Err(format!("unknown command `{other}`\n\n{USAGE}")),
     }
@@ -140,7 +142,8 @@ struct Package {
     /// Has a cdylib target, i.e. produces a deployable wasm.
     is_contract: bool,
     wasm_deps: Vec<String>,
-    /// Workspace crates this one links as source: (package name, dev-only).
+    /// Path crates this one links as source: (package name, dev-only).
+    /// Target-specific and build dependencies count as normal ones.
     path_deps: Vec<(String, bool)>,
     extra_test: Option<ExtraTest>,
 }
@@ -632,6 +635,106 @@ fn check_imports(ws: &Workspace) -> Result<()> {
     }
 }
 
+/// Allowed Rust-library dependency graph, from `xtask/layering.json`.
+struct Layering {
+    /// Crates any contract may link (only `zenith-common`).
+    shared: BTreeSet<String>,
+    /// Crate -> crates it may depend on as a (non-dev) library.
+    allowed: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl Layering {
+    fn parse(src: &str) -> Result<Layering> {
+        let v: Value = serde_json::from_str(src).map_err(|e| format!("bad layering.json: {e}"))?;
+        let set = |v: &Value| strings(v).into_iter().collect::<BTreeSet<_>>();
+        let allowed = v["allowed"]
+            .as_object()
+            .ok_or("layering.json: missing `allowed` object")?
+            .iter()
+            .map(|(k, v)| (k.clone(), set(v)))
+            .collect();
+        Ok(Layering {
+            shared: set(&v["shared"]),
+            allowed,
+        })
+    }
+}
+
+/// Pure layering check over `(crate, dependency)` normal-dependency edges,
+/// so it can be tested against synthetic manifests. Dev-dependencies are
+/// excluded by the caller.
+fn layering_errors(
+    decl: &Layering,
+    contracts: &BTreeSet<String>,
+    members: &BTreeSet<String>,
+    edges: &[(String, String)],
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    // A stale declaration must fail loudly rather than skip crates.
+    for name in contracts {
+        if !decl.allowed.contains_key(name) {
+            errors.push(format!(
+                "{name}: contract crate is not declared in xtask/layering.json `allowed`"
+            ));
+        }
+    }
+    for name in decl.allowed.keys() {
+        if !members.contains(name) {
+            errors.push(format!("layering.json: `{name}` is not a workspace member"));
+        }
+    }
+    let mut dependents: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for (krate, dep) in edges {
+        if !decl.allowed.get(krate).is_some_and(|a| a.contains(dep)) {
+            errors.push(format!(
+                "{krate}: depends on `{dep}` as a Rust library, which is not allowed by \
+                 xtask/layering.json (call contracts via contractimport!/env.invoke_contract; \
+                 see docs/crate-layering.md)"
+            ));
+        }
+        if contracts.contains(krate) {
+            dependents.entry(dep).or_default().insert(krate);
+        }
+    }
+    for (dep, users) in dependents {
+        if users.len() > 1 && !decl.shared.contains(dep) {
+            let users: Vec<_> = users.into_iter().collect();
+            errors.push(format!(
+                "`{dep}` is a non-shared library depended on by multiple contracts ({}); \
+                 only {} may be shared",
+                users.join(", "),
+                decl.shared.iter().cloned().collect::<Vec<_>>().join(", ")
+            ));
+        }
+    }
+    errors
+}
+
+fn check_layering(ws: &Workspace) -> Result<()> {
+    let src = fs::read_to_string(ws.root.join("xtask/layering.json"))
+        .map_err(|e| format!("reading xtask/layering.json: {e}"))?;
+    let decl = Layering::parse(&src)?;
+    let contracts: BTreeSet<_> = ws.contracts().into_iter().collect();
+    let members: BTreeSet<_> = ws.packages.keys().cloned().collect();
+    let edges: Vec<_> = ws
+        .packages
+        .iter()
+        .flat_map(|(name, p)| {
+            p.path_deps
+                .iter()
+                .filter(|(_, dev)| !dev)
+                .map(move |(dep, _)| (name.clone(), dep.clone()))
+        })
+        .collect();
+    let errors = layering_errors(&decl, &contracts, &members, &edges);
+    if errors.is_empty() {
+        eprintln!("xtask: crate dependency layering matches xtask/layering.json");
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
+}
+
 fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Ok(());
@@ -839,9 +942,10 @@ fn ci(ws: &Workspace) -> Result<()> {
         check: true,
         ..Opts::default()
     };
-    let steps: [(&str, &dyn Fn() -> Result<()>); 6] = [
+    let steps: [(&str, &dyn Fn() -> Result<()>); 7] = [
         ("fmt --check", &|| fmt(ws, &check)),
         ("check-imports", &|| check_imports(ws)),
+        ("check-layering", &|| check_layering(ws)),
         ("build", &|| build(ws, &all)),
         ("check-wasm", &|| check_wasm(ws, &all)),
         ("clippy", &|| clippy(ws, &all)),
@@ -869,4 +973,75 @@ fn print_timings(timings: &[(&str, Duration)], total: Duration) {
         eprintln!("  {name:<14} {:>7.1}s", d.as_secs_f64());
     }
     eprintln!("  {:<14} {:>7.1}s", "total", total.as_secs_f64());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DECL: &str = r#"{
+        "shared": ["zenith-common"],
+        "allowed": {
+            "zenith-vault": ["zenith-common"],
+            "zenith-options-market": ["zenith-common"]
+        }
+    }"#;
+
+    fn set(names: &[&str]) -> BTreeSet<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn edge(a: &str, b: &str) -> (String, String) {
+        (a.into(), b.into())
+    }
+
+    fn run(edges: &[(String, String)]) -> Vec<String> {
+        let names = ["zenith-vault", "zenith-options-market"];
+        layering_errors(
+            &Layering::parse(DECL).unwrap(),
+            &set(&names),
+            &set(&names),
+            edges,
+        )
+    }
+
+    #[test]
+    fn declared_edges_pass() {
+        let e = [
+            edge("zenith-vault", "zenith-common"),
+            edge("zenith-options-market", "zenith-common"),
+        ];
+        assert!(run(&e).is_empty());
+    }
+
+    #[test]
+    fn sibling_contract_dependency_is_rejected() {
+        let errs = run(&[edge("zenith-options-market", "zenith-vault")]);
+        assert_eq!(errs.len(), 1);
+        assert!(errs[0].contains("zenith-options-market") && errs[0].contains("zenith-vault"));
+    }
+
+    #[test]
+    fn undeclared_contract_is_rejected() {
+        let decl = Layering::parse(DECL).unwrap();
+        let all = set(&["zenith-vault", "zenith-options-market", "zenith-new"]);
+        let errs = layering_errors(&decl, &set(&["zenith-new"]), &all, &[]);
+        assert!(errs[0].contains("zenith-new"));
+    }
+
+    #[test]
+    fn non_shared_rlib_used_by_two_contracts_is_rejected() {
+        let decl = Layering::parse(
+            r#"{"shared": [], "allowed": {"zenith-vault": ["zenith-x"], "zenith-options-market": ["zenith-x"]}}"#,
+        )
+        .unwrap();
+        let names = set(&["zenith-vault", "zenith-options-market"]);
+        let edges = [
+            edge("zenith-vault", "zenith-x"),
+            edge("zenith-options-market", "zenith-x"),
+        ];
+        let errs = layering_errors(&decl, &names, &names, &edges);
+        assert_eq!(errs.len(), 1);
+        assert!(errs[0].contains("zenith-x"));
+    }
 }
