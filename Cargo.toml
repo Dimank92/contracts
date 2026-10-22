@@ -54,3 +54,14 @@ strip = "symbols"
 debug-assertions = false
 panic = "abort"
 codegen-units = 1
+
+# Coverage instrumentation for the CI coverage gate (issue #221).
+# `cargo llvm-cov` reads this profile; keeping it in the workspace root means
+# the per-crate thresholds in `.github/coverage-thresholds.toml` are measured
+# against a stable, reproducible build. `debug = 1` keeps line tables so
+# llvm-cov can map regions back to source without bloating artifacts.
+[profile.coverage]
+inherits = "dev"
+opt-level = 0
+debug = 1
+incremental = false
