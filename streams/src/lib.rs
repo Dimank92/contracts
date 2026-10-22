@@ -235,29 +235,4 @@ impl Streams {
     pub fn schema_version(env: Env) -> u32 {
         zenith_common::migrations::schema_version(&env)
     }
-
-    /// `(target, cursor)` while a paginated migration is in progress.
-    pub fn migration_state(env: Env) -> Option<(u32, u32)> {
-        zenith_common::migrations::migration_state(&env)
-    }
-
-    /// `(recipient_withdrawable, funder_refundable)` as of now: what the
-    /// recipient could withdraw right now, and what the funder would get
-    /// back if the stream were cancelled right now.
-    pub fn balance_of(env: Env, stream_id: u64) -> (i128, i128) {
-        let stream = load(&env, stream_id);
-        let streamed = streamed_at(&stream, env.ledger().timestamp());
-        (streamed - stream.withdrawn, stream.total - streamed)
-    }
-
-    pub fn get_stream(env: Env, stream_id: u64) -> Option<Stream> {
-        env.storage().persistent().get(&DataKey::Stream(stream_id))
-    }
-
-    pub fn get_stream_count(env: Env) -> u64 {
-        env.storage()
-            .instance()
-            .get(&DataKey::StreamCounter)
-            .unwrap()
-    }
 }
