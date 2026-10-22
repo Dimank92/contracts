@@ -85,6 +85,24 @@ impl LpPool {
         s.set(&DataKey::Epoch, &0u32);
     }
 
+    /// Pins the `lp_token` contract that the pool mints/burns shares
+    /// through. The pool is the only minter; this can only be set once.
+    pub fn set_lp_token(env: Env, lp_token: Address) {
+        require_admin(&env);
+        if env.storage().instance().has(&DataKey::LpToken) {
+            panic_with_error!(&env, Error::AlreadyInitialized);
+        }
+        env.storage().instance().set(&DataKey::LpToken, &lp_token);
+    }
+
+    /// Pins the `vault` tag under which the pool's option collateral is
+    /// escrowed on the market, keeping pool funds separate from
+    /// individual writers' collateral.
+    pub fn set_vault_tag(env: Env, vault_tag: u64) {
+        require_admin(&env);
+        env.storage().instance().set(&DataKey::VaultTag, &vault_tag);
+    }
+
     // ── Governance ────────────────────────────────────────────────────────────
 
     pub fn set_keeper(env: Env, keeper: Address) {
@@ -115,8 +133,9 @@ impl LpPool {
 
     /// Queues `amount` of the asset for conversion to shares when the
     /// current epoch is processed. Any ticket from an already-processed
-    /// epoch is claimed first.
-    pub fn deposit(env: Env, user: Address, amount: i128) {
+    /// epoch is claimed first. Re-requesting in the same epoch adds to
+    /// the existing ticket.
+    pub fn request_deposit(env: Env, user: Address, amount: i128) {
         ttl::extend_instance(&env);
         user.require_auth();
         if amount < MIN_DEPOSIT {
@@ -134,10 +153,16 @@ impl LpPool {
         events::deposit_queued(&env, user, epoch, amount);
     }
 
+    /// Backwards-compatible alias for `request_deposit`.
+    pub fn deposit(env: Env, user: Address, amount: i128) {
+        Self::request_deposit(env, user, amount);
+    }
+
     /// Queues `shares` for redemption at the current epoch's closing
     /// price. The shares leave the user's balance now, so they can't be
     /// requested twice. A request made mid-epoch simply waits for the
-    /// epoch to close.
+    /// epoch to close. Re-requesting in the same epoch adds to the
+    /// existing ticket.
     pub fn request_withdraw(env: Env, user: Address, shares: i128) {
         ttl::extend_instance(&env);
         user.require_auth();
@@ -230,6 +255,10 @@ impl LpPool {
                 sub_invocations: vec![&env],
             }),
         ]);
+        // The pool writes through the market's writer flow, tagging its
+        // collateral with the pool's vault tag so it is never commingled
+        // with individual writers' collateral.
+        let vault_tag = vault_tag(&env);
         let position_id: u64 = env.invoke_contract(
             &market,
             &Symbol::new(&env, "write_option"),
@@ -240,6 +269,7 @@ impl LpPool {
                 contracts.into_val(&env),
                 collateral.into_val(&env),
                 min_premium.into_val(&env),
+                vault_tag.into_val(&env),
             ],
         );
         let after = usdc.balance(&pool);
@@ -289,6 +319,7 @@ impl LpPool {
                 &env,
                 pool.clone().into_val(&env),
                 position_id.into_val(&env),
+                vault_tag(&env).into_val(&env),
             ],
         );
         let returned = usdc.balance(&pool) - before;
@@ -327,12 +358,20 @@ impl LpPool {
     /// Closes the current epoch once every position has been reclaimed:
     /// fixes the share price from realized assets, converts all queued
     /// withdrawals and deposits at it, and opens the next epoch.
+    ///
+    /// Share price is derived from `idle` (realized assets) over
+    /// `TotalShares` — never from the raw token balance of the pool
+    /// address. Withdrawals are only fillable from idle assets; any
+    /// collateral still locked against a live series is excluded, and
+    /// `process_epoch` refuses to run while positions are open.
     pub fn process_epoch(env: Env) -> EpochResult {
         ttl::extend_instance(&env);
         require_keeper(&env);
         if !positions(&env).is_empty() {
             panic_with_error!(&env, Error::PositionsStillOpen);
         }
+        // Withdrawable assets are idle only; locked collateral is never
+        // available to fill withdrawals.
         let assets = get_i128(&env, &DataKey::Idle);
         let supply = get_i128(&env, &DataKey::TotalShares);
         let deposit_assets = get_i128(&env, &DataKey::PendingDeposits);
@@ -340,6 +379,9 @@ impl LpPool {
 
         // Both conversions round down, in the pool's favour.
         let withdraw_assets = to_assets(&env, withdraw_shares, assets, supply);
+        if withdraw_assets > assets {
+            panic_with_error!(&env, Error::InsufficientIdle);
+        }
         let deposit_shares = to_shares(&env, deposit_assets, assets, supply);
 
         set_i128(
@@ -353,6 +395,10 @@ impl LpPool {
             &DataKey::TotalShares,
             supply - withdraw_shares + deposit_shares,
         );
+        // Burn the shares being redeemed. They were already removed from
+        // user balances at request time; burning here keeps the token
+        // supply in sync with `TotalShares`.
+        burn_shares(&env, withdraw_shares);
         set_i128(&env, &DataKey::PendingDeposits, 0);
         set_i128(&env, &DataKey::PendingWithdrawShares, 0);
 
@@ -387,8 +433,21 @@ impl LpPool {
 
     /// Assets per share, scaled by `PRICE_SCALE`, including the virtual
     /// offset. Informational mid-epoch; settlement uses `process_epoch`.
+    ///
+    /// Derived from internally-tracked assets (`idle + locked −
+    /// liabilities`), never from the raw token balance of the pool
+    /// address, so a token donation cannot move the price.
     pub fn share_price(env: Env) -> i128 {
         let assets = Self::total_assets(env.clone()) + VIRTUAL_ASSETS;
+        let shares = get_i128(&env, &DataKey::TotalShares) + VIRTUAL_SHARES;
+        mul(&env, assets, PRICE_SCALE) / shares
+    }
+
+    /// Assets per share that the *next* `process_epoch` would settle at,
+    /// i.e. realized idle assets over total shares (locked collateral is
+    /// excluded). Scaled by `PRICE_SCALE`.
+    pub fn settlement_price(env: Env) -> i128 {
+        let assets = get_i128(&env, &DataKey::Idle) + VIRTUAL_ASSETS;
         let shares = get_i128(&env, &DataKey::TotalShares) + VIRTUAL_SHARES;
         mul(&env, assets, PRICE_SCALE) / shares
     }
@@ -420,6 +479,25 @@ impl LpPool {
     pub fn get_positions(env: Env) -> Vec<PoolPosition> {
         positions(&env)
     }
+
+    /// Assets queued for deposit in the current epoch.
+    pub fn pending_deposits(env: Env) -> i128 {
+        get_i128(&env, &DataKey::PendingDeposits)
+    }
+
+    /// Shares queued for withdrawal in the current epoch.
+    pub fn pending_withdraw_shares(env: Env) -> i128 {
+        get_i128(&env, &DataKey::PendingWithdrawShares)
+    }
+
+    /// Assets the current epoch's queued withdrawals would receive at the
+    /// informational mid-epoch price (floored at zero).
+    pub fn pending_withdraw_assets(env: Env) -> i128 {
+        let shares = get_i128(&env, &DataKey::PendingWithdrawShares);
+        let assets = get_i128(&env, &DataKey::Idle);
+        let supply = get_i128(&env, &DataKey::TotalShares);
+        to_assets(&env, shares, assets, supply)
+    }
 }
 
 impl LpPool {
@@ -432,8 +510,14 @@ impl LpPool {
         if let Some(t) = ticket(env, &deposit_key) {
             if t.epoch < current {
                 let r = epoch_result(env, t.epoch);
-                shares = mul(env, t.amount, r.deposit_shares) / r.deposit_assets;
-                add_i128(env, &DataKey::Shares(user.clone()), shares);
+                // Guard against a zero-deposit epoch (no shares minted).
+                if r.deposit_assets > 0 {
+                    shares = mul(env, t.amount, r.deposit_shares) / r.deposit_assets;
+                }
+                if shares > 0 {
+                    add_i128(env, &DataKey::Shares(user.clone()), shares);
+                    mint_shares(env, user, shares);
+                }
                 env.storage().persistent().remove(&deposit_key);
             }
         }
@@ -442,14 +526,18 @@ impl LpPool {
         if let Some(t) = ticket(env, &withdraw_key) {
             if t.epoch < current {
                 let r = epoch_result(env, t.epoch);
-                assets = mul(env, t.amount, r.withdraw_assets) / r.withdraw_shares;
+                if r.withdraw_shares > 0 {
+                    assets = mul(env, t.amount, r.withdraw_assets) / r.withdraw_shares;
+                }
                 env.storage().persistent().remove(&withdraw_key);
-                add_i128(env, &DataKey::Claimable, -assets);
-                token::Client::new(env, &asset(env)).transfer(
-                    &env.current_contract_address(),
-                    user,
-                    &assets,
-                );
+                if assets > 0 {
+                    add_i128(env, &DataKey::Claimable, -assets);
+                    token::Client::new(env, &asset(env)).transfer(
+                        &env.current_contract_address(),
+                        user,
+                        &assets,
+                    );
+                }
             }
         }
 
@@ -458,6 +546,47 @@ impl LpPool {
         }
         (shares, assets)
     }
+}
+
+/// Mints `shares` to `user` through the pinned `lp_token`. The pool is
+/// the only minter; the token call is authorized as the current contract.
+fn mint_shares(env: &Env, user: &Address, shares: i128) {
+    let lp_token = lp_token(env);
+    env.invoke_contract::<()>(
+        &lp_token,
+        &Symbol::new(env, "mint"),
+        vec![
+            env,
+            env.current_contract_address().into_val(env),
+            user.clone().into_val(env),
+            shares.into_val(env),
+        ],
+    );
+}
+
+/// Burns `shares` from the pool's own balance through the pinned
+/// `lp_token`. Used when finalizing withdrawals.
+fn burn_shares(env: &Env, shares: i128) {
+    if shares <= 0 {
+        return;
+    }
+    let lp_token = lp_token(env);
+    env.invoke_contract::<()>(
+        &lp_token,
+        &Symbol::new(env, "burn"),
+        vec![
+            env,
+            env.current_contract_address().into_val(env),
+            shares.into_val(env),
+        ],
+    );
+}
+
+fn lp_token(env: &Env) -> Address {
+    env.storage()
+        .instance()
+        .get(&DataKey::LpToken)
+        .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized))
 }
 
 fn to_shares(env: &Env, assets_in: i128, assets: i128, supply: i128) -> i128 {
@@ -509,6 +638,13 @@ fn asset(env: &Env) -> Address {
 
 fn market(env: &Env) -> Address {
     env.storage().instance().get(&DataKey::Market).unwrap()
+}
+
+fn vault_tag(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::VaultTag)
+        .unwrap_or(0)
 }
 
 fn epoch(env: &Env) -> u32 {

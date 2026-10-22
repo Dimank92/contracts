@@ -1,6 +1,8 @@
 #![cfg(test)]
 
-use crate::{error::Error, Params, ParamsClient, BOUNDS_CHANGE_DELAY, CURRENT_SCHEMA_VERSION};
+use crate::{
+    error::Error, ParamValue, Params, ParamsClient, BOUNDS_CHANGE_DELAY, CURRENT_SCHEMA_VERSION,
+};
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Events as _, Ledger},
@@ -145,4 +147,158 @@ fn migrate_requires_timelock() {
     client.initialize(&timelock);
     let v = CURRENT_SCHEMA_VERSION;
     assert!(client.try_migrate(&v, &(v + 1)).is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Namespaced typed registry
+// ---------------------------------------------------------------------------
+
+fn ns(env: &Env) -> Symbol {
+    Symbol::new(env, "price_oracle")
+}
+
+fn other_ns(env: &Env) -> Symbol {
+    Symbol::new(env, "vault")
+}
+
+fn key(env: &Env) -> Symbol {
+    Symbol::new(env, "min_reports")
+}
+
+#[test]
+fn set_get_remove_roundtrip_u32() {
+    let (env, client, _) = setup();
+    let (n, k) = (ns(&env), key(&env));
+    assert_eq!(client.get_value(&n, &k), None);
+
+    client.set_value(&n, &k, &ParamValue::U32(5));
+    assert_eq!(client.get_value(&n, &k), Some(ParamValue::U32(5)));
+
+    client.set_value(&n, &k, &ParamValue::U32(7));
+    assert_eq!(client.get_value(&n, &k), Some(ParamValue::U32(7)));
+
+    client.remove_value(&n, &k);
+    assert_eq!(client.get_value(&n, &k), None);
+}
+
+#[test]
+fn set_get_remove_roundtrip_i64() {
+    let (env, client, _) = setup();
+    let (n, k) = (ns(&env), key(&env));
+    client.set_value(&n, &k, &ParamValue::I64(-42));
+    assert_eq!(client.get_value(&n, &k), Some(ParamValue::I64(-42)));
+    client.remove_value(&n, &k);
+    assert_eq!(client.get_value(&n, &k), None);
+}
+
+#[test]
+fn set_get_remove_roundtrip_bool() {
+    let (env, client, _) = setup();
+    let (n, k) = (ns(&env), key(&env));
+    client.set_value(&n, &k, &ParamValue::Bool(true));
+    assert_eq!(client.get_value(&n, &k), Some(ParamValue::Bool(true)));
+    client.remove_value(&n, &k);
+    assert_eq!(client.get_value(&n, &k), None);
+}
+
+#[test]
+fn set_get_remove_roundtrip_address() {
+    let (env, client, _) = setup();
+    let (n, k) = (ns(&env), key(&env));
+    let who = Address::generate(&env);
+    client.set_value(&n, &k, &ParamValue::Address(who.clone()));
+    assert_eq!(client.get_value(&n, &k), Some(ParamValue::Address(who)));
+    client.remove_value(&n, &k);
+    assert_eq!(client.get_value(&n, &k), None);
+}
+
+#[test]
+fn namespaces_are_isolated() {
+    let (env, client, _) = setup();
+    let (n, o, k) = (ns(&env), other_ns(&env), key(&env));
+    client.set_value(&n, &k, &ParamValue::U32(1));
+    // Same key name under a different namespace is a distinct entry.
+    assert_eq!(client.get_value(&o, &k), None);
+    client.set_value(&o, &k, &ParamValue::U32(2));
+    assert_eq!(client.get_value(&n, &k), Some(ParamValue::U32(1)));
+    assert_eq!(client.get_value(&o, &k), Some(ParamValue::U32(2)));
+    client.remove_value(&o, &k);
+    assert_eq!(client.get_value(&n, &k), Some(ParamValue::U32(1)));
+}
+
+#[test]
+fn type_mismatch_fails_closed() {
+    let (env, client, _) = setup();
+    let (n, k) = (ns(&env), key(&env));
+    client.set_value(&n, &k, &ParamValue::U32(5));
+    // Reading as a different type must fail with the specific error, never coerce.
+    assert_eq!(
+        client.try_get_typed(&n, &k, &ParamValue::I64(0)),
+        Err(Ok(Error::TypeMismatch))
+    );
+    assert_eq!(
+        client.try_get_typed(&n, &k, &ParamValue::Bool(false)),
+        Err(Ok(Error::TypeMismatch))
+    );
+}
+
+#[test]
+fn get_typed_falls_back_to_default_when_unset() {
+    let (env, client, _) = setup();
+    let (n, k) = (ns(&env), key(&env));
+    assert_eq!(
+        client.get_typed(&n, &k, &ParamValue::U32(9)),
+        ParamValue::U32(9)
+    );
+    client.set_value(&n, &k, &ParamValue::U32(3));
+    assert_eq!(
+        client.get_typed(&n, &k, &ParamValue::U32(9)),
+        ParamValue::U32(3)
+    );
+}
+
+#[test]
+fn remove_unset_key_is_a_noop() {
+    let (env, client, _) = setup();
+    let (n, k) = (ns(&env), key(&env));
+    // Removing an unset key must not panic or error.
+    client.remove_value(&n, &k);
+    assert_eq!(client.get_value(&n, &k), None);
+}
+
+#[test]
+fn list_namespace_pages_entries() {
+    let (env, client, _) = setup();
+    let n = ns(&env);
+    let k1 = Symbol::new(&env, "a");
+    let k2 = Symbol::new(&env, "b");
+    let k3 = Symbol::new(&env, "c");
+    client.set_value(&n, &k1, &ParamValue::U32(1));
+    client.set_value(&n, &k2, &ParamValue::U32(2));
+    client.set_value(&n, &k3, &ParamValue::U32(3));
+    // An entry in another namespace must not leak into the listing.
+    client.set_value(&other_ns(&env), &k1, &ParamValue::U32(99));
+
+    let page = client.list_namespace(&n, &0, &2);
+    assert_eq!(page.len(), 2);
+    let rest = client.list_namespace(&n, &2, &2);
+    assert_eq!(rest.len(), 1);
+    let empty = client.list_namespace(&n, &4, &2);
+    assert_eq!(empty.len(), 0);
+}
+
+#[test]
+fn non_admin_cannot_write() {
+    let env = Env::default();
+    let timelock = Address::generate(&env);
+    let id = env.register_contract(None, Params);
+    let client = ParamsClient::new(&env, &id);
+    client.initialize(&timelock);
+    // No auth mocked: the write must be rejected.
+    assert!(client
+        .try_set_value(&ns(&env), &key(&env), &ParamValue::U32(1))
+        .is_err());
+    assert!(client
+        .try_remove_value(&ns(&env), &key(&env))
+        .is_err());
 }

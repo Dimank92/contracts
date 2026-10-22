@@ -11,6 +11,13 @@ pub enum Error {
     InvalidBounds = 5,
     NoPendingBounds = 6,
     BoundsDelayNotElapsed = 7,
+    // Namespaced parameter registry.
+    TypeMismatch = 8,
+    KeyNotFound = 9,
+    InvalidNamespace = 10,
+    InvalidKey = 11,
+    InvalidCursor = 12,
+    InvalidLimit = 13,
     // Schema migrations (zenith_common::migrations) — same codes in
     // every Zenith contract. See docs/migrations.md.
     SchemaVersionMismatch = 100,

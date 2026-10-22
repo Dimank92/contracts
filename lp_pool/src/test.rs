@@ -355,6 +355,100 @@ fn queued_tickets_accumulate_within_an_epoch() {
 }
 
 #[test]
+fn first_epoch_with_zero_shares_prices_at_par() {
+    let h = setup();
+    // No shares exist yet; the price is the virtual-share par value.
+    assert_eq!(h.pool.total_shares(), 0);
+    assert_eq!(h.pool.share_price(), VIRTUAL_SHARES);
+    let alice = user(&h, 1_000_000);
+    h.pool.deposit(&alice, &1_000_000);
+    h.pool.process_epoch();
+    let (shares, _) = h.pool.claim(&alice);
+    assert_eq!(shares, 1_000_000 * VIRTUAL_SHARES);
+    assert_eq!(h.pool.share_price(), VIRTUAL_SHARES);
+}
+
+#[test]
+fn locked_collateral_exceeding_withdrawable_assets_blocks_fill() {
+    let h = setup();
+    let alice = user(&h, 1_000_000);
+    h.pool.deposit(&alice, &1_000_000);
+    h.pool.process_epoch();
+    h.pool.claim(&alice);
+    let shares = h.pool.shares_of(&alice);
+
+    // Lock most of the capital against a live series.
+    h.write(1, 10, 900_000);
+    assert_eq!(h.pool.locked(), 900_000);
+    assert!(h.pool.idle() < 1_000_000);
+
+    // The full redemption cannot be filled from idle capital, so the epoch
+    // finalizes with the request still queued (or partially filled).
+    h.pool.request_withdraw(&alice, &shares);
+    h.pool.process_epoch();
+    let (_, out) = h.pool.claim(&alice);
+    assert!(out <= h.pool.idle() + PREMIUM);
+    assert!(out < 1_000_000);
+}
+
+#[test]
+fn depositor_can_claim_across_several_epochs() {
+    let h = setup();
+    let alice = user(&h, 1_000_000);
+    h.pool.deposit(&alice, &1_000_000);
+    h.pool.process_epoch();
+    let (first, _) = h.pool.claim(&alice);
+    assert_eq!(first, 1_000_000 * VIRTUAL_SHARES);
+
+    // Deposit again in a later epoch; the ticket is processed separately.
+    h.usdc.mint(&alice, &500_000);
+    h.pool.deposit(&alice, &500_000);
+    h.pool.process_epoch();
+    let (second, _) = h.pool.claim(&alice);
+    assert!(second > 0);
+    assert_eq!(h.pool.shares_of(&alice), first + second);
+    assert_eq!(h.pool.get_epoch(), 2);
+}
+
+#[test]
+fn share_burn_rounds_down_leaving_dust() {
+    let h = setup();
+    let alice = user(&h, 1_000_000);
+    h.pool.deposit(&alice, &1_000_000);
+    h.pool.process_epoch();
+    h.pool.claim(&alice);
+    let shares = h.pool.shares_of(&alice);
+
+    // Redeem an odd number of shares so the payout rounds down.
+    let odd = shares / 3;
+    h.pool.request_withdraw(&alice, &odd);
+    h.pool.process_epoch();
+    let (burned, out) = h.pool.claim(&alice);
+    assert_eq!(burned, odd);
+    // Payout never exceeds the proportional value of the burned shares.
+    let price = h.pool.share_price();
+    assert!(out <= odd * price / VIRTUAL_SHARES);
+    assert!(out > 0);
+}
+
+#[test]
+fn re_requesting_in_the_same_epoch_accumulates() {
+    let h = setup();
+    let alice = user(&h, 1_000_000);
+    h.pool.deposit(&alice, &1_000_000);
+    h.pool.process_epoch();
+    h.pool.claim(&alice);
+    let shares = h.pool.shares_of(&alice);
+
+    h.pool.request_withdraw(&alice, &(shares / 4));
+    h.pool.request_withdraw(&alice, &(shares / 4));
+    assert_eq!(h.pool.get_withdraw_ticket(&alice).unwrap().shares, shares / 2);
+    h.pool.process_epoch();
+    let (burned, _) = h.pool.claim(&alice);
+    assert_eq!(burned, shares / 2);
+}
+
+#[test]
 fn internal_accounting_matches_token_balance() {
     let h = setup();
     let u = user(&h, 1_000_000);
@@ -380,4 +474,36 @@ fn internal_accounting_matches_token_balance() {
         h.token.balance(&h.pool.address),
         h.pool.idle() + h.pool.locked() + claimable
     );
+}
+
+// ── Integration: pool-written series blocks a withdrawal until settlement ────
+
+#[test]
+fn pool_written_series_blocks_withdrawal_until_settlement() {
+    let h = setup();
+    let alice = user(&h, 1_000_000);
+    h.pool.deposit(&alice, &1_000_000);
+    h.pool.process_epoch();
+    h.pool.claim(&alice);
+    let shares = h.pool.shares_of(&alice);
+
+    // Pool writes a series, locking collateral against the vault tag.
+    let pos = h.write(1, 10, 800_000);
+    assert_eq!(h.pool.locked(), 800_000);
+
+    // Alice requests a full redemption; it cannot be filled while the
+    // series is live because most capital is locked.
+    h.pool.request_withdraw(&alice, &shares);
+    h.pool.process_epoch();
+    let (_, out_before) = h.pool.claim(&alice);
+    assert!(out_before < 1_000_000);
+
+    // Settlement returns the collateral; the remaining request can now fill.
+    h.market.settle(&pos, &800_000);
+    assert_eq!(h.pool.reclaim(&pos), 800_000);
+    assert_eq!(h.pool.locked(), 0);
+    h.pool.process_epoch();
+    let (_, out_after) = h.pool.claim(&alice);
+    assert!(out_after > 0);
+    assert!(out_before + out_after <= 1_000_000 + PREMIUM);
 }

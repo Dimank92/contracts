@@ -26,7 +26,12 @@ mod types;
 use error::Error;
 pub use migrations::CURRENT_SCHEMA_VERSION;
 use types::DataKey;
-pub use types::{BoundsProposal, Param};
+pub use types::{BoundsProposal, Param, ParamValue, TypedKey, ValueType};
+
+/// Default page size for `list_namespace` when the caller passes 0.
+pub const DEFAULT_LIST_LIMIT: u32 = 20;
+/// Hard cap on a single `list_namespace` page.
+pub const MAX_LIST_LIMIT: u32 = 100;
 
 /// Extra delay on top of the timelock's own delay before a bounds
 /// change can take effect.
@@ -162,6 +167,110 @@ impl Params {
         events::bounds_cancelled(&env, key);
     }
 
+    // ── Typed, namespaced registry ──────────────────────────────────────────
+
+    /// Writes a typed value under `(namespace, key, type_tag)`. Admin or
+    /// multisig only. The type tag is part of the storage key, so a `u32`
+    /// and an `i64` under the same name never collide. Overwrites any
+    /// existing value of the same type; emits old/new in the event.
+    pub fn set_value(env: Env, namespace: Symbol, key: Symbol, value: ParamValue) {
+        ttl::extend_instance(&env);
+        zenith_common::require_admin_or_multisig(&env);
+        migrations::require_current(&env);
+        let typed = TypedKey::new(namespace.clone(), key.clone(), value.type_tag());
+        let storage_key = DataKey::Typed(typed.clone());
+        let old = ttl::get_persistent::<ParamValue>(&env, &storage_key);
+        ttl::set_persistent(&env, &storage_key, &value);
+        Self::bump_version(&env);
+        events::value_set(&env, namespace, key, value.type_tag(), old, value);
+    }
+
+    /// Reads a typed value. Permissionless. Fails closed with
+    /// `TypeMismatch` if the stored value's type differs from the requested
+    /// one — never coerces.
+    pub fn get_value(env: Env, namespace: Symbol, key: Symbol, ty: ValueType) -> Option<ParamValue> {
+        ttl::extend_instance(&env);
+        let storage_key = DataKey::Typed(TypedKey::new(namespace, key, ty));
+        let stored: Option<ParamValue> = ttl::get_persistent(&env, &storage_key);
+        match stored {
+            Some(v) if v.type_tag() == ty => Some(v),
+            Some(_) => panic_with_error!(&env, Error::TypeMismatch),
+            None => None,
+        }
+    }
+
+    /// Reads a typed value, falling back to `default` when unset. The
+    /// default must match `ty`; a mismatch fails closed.
+    pub fn get_value_or(
+        env: Env,
+        namespace: Symbol,
+        key: Symbol,
+        ty: ValueType,
+        default: ParamValue,
+    ) -> ParamValue {
+        ttl::extend_instance(&env);
+        if default.type_tag() != ty {
+            panic_with_error!(&env, Error::TypeMismatch);
+        }
+        let storage_key = DataKey::Typed(TypedKey::new(namespace, key, ty));
+        let stored: Option<ParamValue> = ttl::get_persistent(&env, &storage_key);
+        match stored {
+            Some(v) if v.type_tag() == ty => v,
+            Some(_) => panic_with_error!(&env, Error::TypeMismatch),
+            None => default,
+        }
+    }
+
+    /// Removes a typed value. Admin or multisig only. Removing an unset
+    /// key is a no-op that still emits an event with `old = None`.
+    pub fn remove_value(env: Env, namespace: Symbol, key: Symbol, ty: ValueType) {
+        ttl::extend_instance(&env);
+        zenith_common::require_admin_or_multisig(&env);
+        migrations::require_current(&env);
+        let storage_key = DataKey::Typed(TypedKey::new(namespace.clone(), key.clone(), ty));
+        let old = ttl::get_persistent::<ParamValue>(&env, &storage_key);
+        if old.is_some() {
+            env.storage().persistent().remove(&storage_key);
+            Self::bump_version(&env);
+        }
+        events::value_removed(&env, namespace, key, ty, old);
+    }
+
+    /// Lists up to `limit` typed values in `namespace`, starting at
+    /// `cursor`. Permissionless. Returns `(entries, next_cursor)`; a
+    /// `next_cursor` of `None` means the listing is exhausted. `limit == 0`
+    /// uses `DEFAULT_LIST_LIMIT`; values above `MAX_LIST_LIMIT` are clamped.
+    pub fn list_namespace(
+        env: Env,
+        namespace: Symbol,
+        cursor: u32,
+        limit: u32,
+    ) -> (Vec<(Symbol, ParamValue)>, Option<u32>) {
+        ttl::extend_instance(&env);
+        let cap = if limit == 0 {
+            DEFAULT_LIST_LIMIT
+        } else if limit > MAX_LIST_LIMIT {
+            MAX_LIST_LIMIT
+        } else {
+            limit
+        };
+        let index_key = DataKey::NamespaceIndex(namespace.clone());
+        let keys: Vec<TypedKey> = ttl::get_persistent(&env, &index_key).unwrap_or(Vec::new(&env));
+        let total = keys.len();
+        let mut out: Vec<(Symbol, ParamValue)> = Vec::new(&env);
+        let mut i = cursor;
+        while i < total && out.len() < cap {
+            let typed = keys.get(i).unwrap();
+            let storage_key = DataKey::Typed(typed.clone());
+            if let Some(v) = ttl::get_persistent::<ParamValue>(&env, &storage_key) {
+                out.push_back((typed.key, v));
+            }
+            i += 1;
+        }
+        let next = if i < total { Some(i) } else { None };
+        (out, next)
+    }
+
     pub fn get_param(env: Env, key: Symbol) -> Option<Param> {
         ttl::extend_instance(&env);
         ttl::get_persistent(&env, &DataKey::Param(key))
@@ -246,5 +355,15 @@ impl Params {
         env.storage()
             .instance()
             .set(&DataKey::Version, &(version + 1));
+    }
+
+    /// Adds `typed` to the namespace index if not already present.
+    fn index_typed(env: &Env, typed: &TypedKey) {
+        let index_key = DataKey::NamespaceIndex(typed.namespace.clone());
+        let mut keys: Vec<TypedKey> = ttl::get_persistent(env, &index_key).unwrap_or(Vec::new(env));
+        if !keys.contains(typed) {
+            keys.push_back(typed.clone());
+            ttl::set_persistent(env, &index_key, &keys);
+        }
     }
 }

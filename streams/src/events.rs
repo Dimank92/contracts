@@ -25,3 +25,16 @@ pub fn transferred(env: &Env, stream_id: u64, from: Address, to: Address) {
         (from, to),
     );
 }
+
+pub fn recipient_transferred(
+    env: &Env,
+    stream_id: u64,
+    old_recipient: Address,
+    new_recipient: Address,
+    withdrawable: i128,
+) {
+    env.events().publish(
+        (Symbol::new(env, "recipient_transferred"), stream_id),
+        (old_recipient, new_recipient, withdrawable),
+    );
+}

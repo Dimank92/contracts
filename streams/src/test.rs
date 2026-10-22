@@ -182,6 +182,139 @@ fn recipient_can_transfer_stream() {
     assert_eq!(h.token.balance(&h.recipient), 0);
 }
 
+#[test]
+fn transfer_recipient_reassigns_withdraw_rights() {
+    let h = setup();
+    let id = h.create(1_000, 1_000, 1_000, 2_000);
+    h.warp(1_500);
+    let new_recipient = Address::generate(&h.env);
+    h.client.transfer_recipient(&id, &new_recipient);
+    // Schedule untouched: same withdrawable/remaining split.
+    assert_eq!(h.client.balance_of(&id), (500, 500));
+    // New recipient can claim the amount already withdrawable at transfer time.
+    h.client.withdraw(&id, &500);
+    assert_eq!(h.token.balance(&new_recipient), 500);
+    assert_eq!(h.token.balance(&h.recipient), 0);
+    // Accrual continues for the new recipient.
+    h.warp(2_000);
+    h.client.withdraw(&id, &500);
+    assert_eq!(h.token.balance(&new_recipient), 1_000);
+    assert_eq!(h.token.balance(&h.recipient), 0);
+}
+
+#[test]
+fn transfer_recipient_requires_both_auths() {
+    let h = setup();
+    let id = h.create(1_000, 1_000, 1_000, 2_000);
+    h.warp(1_500);
+    let new_recipient = Address::generate(&h.env);
+
+    // Only the current recipient authorizes.
+    h.env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &h.recipient,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &h.client.address,
+            fn_name: "transfer_recipient",
+            args: (&id, &new_recipient).into_val(&h.env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(h.client.try_transfer_recipient(&id, &new_recipient).is_err());
+
+    // Only the new recipient authorizes.
+    h.env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &new_recipient,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &h.client.address,
+            fn_name: "transfer_recipient",
+            args: (&id, &new_recipient).into_val(&h.env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(h.client.try_transfer_recipient(&id, &new_recipient).is_err());
+
+    // No auth at all.
+    h.env.mock_auths(&[]);
+    assert!(h.client.try_transfer_recipient(&id, &new_recipient).is_err());
+
+    // Recipient unchanged after failed attempts.
+    h.client.withdraw(&id, &500);
+    assert_eq!(h.token.balance(&h.recipient), 500);
+    assert_eq!(h.token.balance(&new_recipient), 0);
+}
+
+#[test]
+fn transfer_recipient_fails_for_missing_stream() {
+    let h = setup();
+    let new_recipient = Address::generate(&h.env);
+    assert!(h.client.try_transfer_recipient(&42, &new_recipient).is_err());
+}
+
+#[test]
+fn transfer_recipient_fails_for_completed_stream() {
+    let h = setup();
+    let id = h.create(1_000, 1_000, 1_000, 2_000);
+    h.warp(2_000);
+    let new_recipient = Address::generate(&h.env);
+    assert!(h.client.try_transfer_recipient(&id, &new_recipient).is_err());
+}
+
+#[test]
+fn transfer_recipient_fails_for_canceled_stream() {
+    let h = setup();
+    let id = h.create(1_000, 1_000, 1_000, 2_000);
+    h.warp(1_500);
+    h.client.cancel(&h.funder, &id);
+    let new_recipient = Address::generate(&h.env);
+    assert!(h.client.try_transfer_recipient(&id, &new_recipient).is_err());
+}
+
+#[test]
+fn old_recipient_cannot_withdraw_after_transfer() {
+    let h = setup();
+    let id = h.create(1_000, 1_000, 1_000, 2_000);
+    h.warp(1_500);
+    let new_recipient = Address::generate(&h.env);
+    h.client.transfer_recipient(&id, &new_recipient);
+    // Same ledger: the old recipient no longer has withdrawal rights.
+    h.env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &h.recipient,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &h.client.address,
+            fn_name: "withdraw",
+            args: (&id, &500i128).into_val(&h.env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(h.client.try_withdraw(&id, &500).is_err());
+    assert_eq!(h.token.balance(&h.recipient), 0);
+    // The new recipient can still withdraw the checkpointed amount.
+    h.client.withdraw(&id, &500);
+    assert_eq!(h.token.balance(&new_recipient), 500);
+}
+
+#[test]
+fn transfer_recipient_emits_event_with_checkpointed_amount() {
+    let h = setup();
+    let id = h.create(1_000, 1_000, 1_000, 2_000);
+    h.warp(1_500);
+    let new_recipient = Address::generate(&h.env);
+    h.client.transfer_recipient(&id, &new_recipient);
+
+    let events = h.env.events().all();
+    let (_, _, data) = events.last().expect("expected a transfer event");
+    let (event_id, old_recipient, event_new_recipient, withdrawable): (
+        u64,
+        Address,
+        Address,
+        i128,
+    ) = data.try_into_val(&h.env).expect("unexpected event payload");
+    assert_eq!(event_id, id);
+    assert_eq!(old_recipient, h.recipient);
+    assert_eq!(event_new_recipient, new_recipient);
+    assert_eq!(withdrawable, 500);
+}
+
 /// Property test: over many pseudo-random schedules, totals, and
 /// withdrawal/cancel sequences, the total paid out never exceeds the
 /// deposit and everything deposited is eventually accounted for.

@@ -11,6 +11,12 @@ pub enum Error {
     Unauthorized = 5,
     InsufficientBalance = 6,
     StreamCanceled = 7,
+    /// The stream's schedule is fully vested / completed, so it can no
+    /// longer be transferred to a new recipient.
+    StreamCompleted = 8,
+    /// `transfer_recipient` was called with the current recipient as the
+    /// new recipient. Self-transfers are explicitly rejected.
+    SelfTransfer = 9,
     // Schema migrations (zenith_common::migrations) — same codes in
     // every Zenith contract. See docs/migrations.md.
     SchemaVersionMismatch = 100,

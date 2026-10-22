@@ -203,6 +203,42 @@ impl Streams {
         events::transferred(&env, stream_id, old, new_recipient);
     }
 
+    /// Reassigns the right to withdraw from `stream_id` to `new_recipient`.
+    /// Both the current recipient and the new recipient must authorize.
+    ///
+    /// The stream's funder, token, total, and schedule are untouched; only
+    /// the recipient changes, so any amount already withdrawable stays
+    /// claimable by the new recipient. The withdrawable amount at transfer
+    /// time is checkpointed in the event for auditability.
+    ///
+    /// Transferring to the current recipient is rejected with
+    /// `Error::SameRecipient` (an explicit rejection rather than a silent
+    /// no-op, so callers cannot mistake a mis-typed address for success).
+    /// Non-existent streams fail with `Error::StreamNotFound`; canceled or
+    /// fully vested streams fail with `Error::StreamCanceled` /
+    /// `Error::StreamCompleted`.
+    pub fn transfer_recipient(env: Env, stream_id: u64, new_recipient: Address) {
+        let mut stream = load(&env, stream_id);
+        migrations::require_current(&env);
+        stream.recipient.require_auth();
+        new_recipient.require_auth();
+        if stream.canceled {
+            panic_with_error!(&env, Error::StreamCanceled);
+        }
+        if env.ledger().timestamp() >= stream.end {
+            panic_with_error!(&env, Error::StreamCompleted);
+        }
+        if new_recipient == stream.recipient {
+            panic_with_error!(&env, Error::SameRecipient);
+        }
+
+        let withdrawable = streamed_at(&stream, env.ledger().timestamp()) - stream.withdrawn;
+        let old = stream.recipient.clone();
+        stream.recipient = new_recipient.clone();
+        save(&env, stream_id, &stream);
+        events::recipient_transferred(&env, stream_id, old, new_recipient, withdrawable);
+    }
+
     // ── Schema migrations (docs/migrations.md) ──────────────────────────────
 
     /// Runs the registered steps `from+1 ..= to`. Governance only. Returns
