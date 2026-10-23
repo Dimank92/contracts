@@ -31,8 +31,7 @@ soroban-sdk = { version = "21.0.0", features = ["testutils"] }
 # test Env for cross-contract tests. Never linked into the production
 # wasm (see src/multisig_client.rs).
 multisig = { package = "zenith-multisig", path = "../multisig", features = ["testutils"] }
-# Adversarial mock contracts for negative-path cross-contract tests (issue #115).
-test_adversaries = { package = "zenith-test-adversaries", path = "../test_adversaries" }
+proptest = { workspace = true }
 
 [features]
 testutils = ["soroban-sdk/testutils"]

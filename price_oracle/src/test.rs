@@ -513,11 +513,6 @@ fn setup_multisig(h: &Harness) -> (Address, [Address; 3]) {
         ],
         &2,
         &0,
-        &multisig::Delays {
-            standard: 0,
-            critical: 0,
-        },
-        &None,
     );
     (contract_id, signers)
 }

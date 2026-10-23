@@ -10,6 +10,7 @@ publish.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+zenith-common = { workspace = true }
 soroban-sdk = { workspace = true }
 
 [dev-dependencies]

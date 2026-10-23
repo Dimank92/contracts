@@ -3,13 +3,21 @@
 //! `zenith_common::migrations`; this file only registers steps. See
 //! docs/migrations.md for how to author one.
 //!
-//! NOTE: this crate's lib.rs, error.rs and types.rs are empty on main
-//! (emptied by #148 and #150). Once they're restored, add
-//! `mod migrations;` to lib.rs, the migration error variants (codes
-//! 100–104, same names as every other crate) to `Error`, and `zenith_common::migrations::init_schema(&env,
-//! CURRENT_SCHEMA_VERSION)` to `initialize`. Until `initialize` writes it,
-//! a missing `SchemaVersion` reads as `BASELINE_SCHEMA_VERSION` (1), which
-//! is also correct for already-deployed instances.
+//! `initialize` stamps `CURRENT_SCHEMA_VERSION`; an instance deployed
+//! before that reads as `BASELINE_SCHEMA_VERSION` (1). Every ledger write
+//! goes through `require_current`, so a stored version this wasm doesn't
+//! know (older or newer) blocks deposits, withdrawals and transfers
+//! instead of being reinterpreted, and `migrate` refuses any target above
+//! `CURRENT_SCHEMA_VERSION`.
+//!
+//! Each `migrate`/`migrate_batch` call snapshots every per-token ledger
+//! total before running steps and aborts the whole call with
+//! `MigrationInvariantViolated` if any changed, so a step can never move
+//! or lose escrow. Per-tag entries are only ever rewritten by a step that
+//! also preserves their token's total.
+//!
+//! Migration is allowed while the vault is paused: it moves no funds and
+//! is often what an operator pauses for.
 
 use soroban_sdk::{contractimpl, panic_with_error, Address, BytesN, Env};
 use zenith_common::migrations::{self, MigrationErrors, Step};
@@ -18,11 +26,11 @@ use zenith_common::{require_admin_or_multisig, ActionClass, Auth};
 
 use crate::error::Error;
 use crate::types::DataKey;
-use crate::{ttl, Vault};
+use crate::{ledger_totals, tokens, ttl, Vault, VaultClient};
 
 /// The layout this wasm reads and writes. Raise it by one in the same PR
 /// that adds the matching arm to `step`.
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 pub const ERRORS: MigrationErrors<Error> = MigrationErrors {
     version_mismatch: Error::SchemaVersionMismatch,
@@ -32,8 +40,8 @@ pub const ERRORS: MigrationErrors<Error> = MigrationErrors {
     invalid_batch: Error::InvalidMigrationBatch,
 };
 
-/// Step registry, keyed by the version each step migrates **to**. Layout
-/// 1 is the baseline, so there are no steps yet. Add one arm per version:
+/// Step registry, keyed by the version each step migrates **to**. Add one
+/// arm per version:
 ///
 /// ```ignore
 /// 2 => v2(env, cursor, limit),
@@ -43,10 +51,35 @@ pub const ERRORS: MigrationErrors<Error> = MigrationErrors {
 /// and returns `Step::More(cursor + processed)` until it's done.
 pub fn step(env: &Env, to: u32, cursor: u32, limit: u32) -> Step {
     let _ = (cursor, limit);
-    #[allow(clippy::match_single_binding)]
     match to {
+        2 => v2(env),
         _ => panic_with_error!(env, Error::InvalidMigrationTarget),
     }
+}
+
+/// v1 -> v2: adds the `Tokens` index, defaulting to the default token. A
+/// v1 vault only ever indexed its default token's total in instance
+/// storage under a known key; any other token is added to the index by
+/// its next ledger write.
+fn v2(env: &Env) -> Step {
+    if !env.storage().instance().has(&DataKey::Tokens) {
+        env.storage().instance().set(&DataKey::Tokens, &tokens(env));
+    }
+    Step::Done
+}
+
+/// Runs `f` and aborts with `MigrationInvariantViolated` unless every
+/// per-token ledger total is unchanged afterwards.
+pub(crate) fn preserving_ledger(env: &Env, f: impl FnOnce() -> u32) -> u32 {
+    let before = ledger_totals(env);
+    let reached = f();
+    let after = ledger_totals(env);
+    for (i, total) in before.iter().enumerate() {
+        if after.get(i as u32) != Some(total) {
+            panic_with_error!(env, Error::MigrationInvariantViolated);
+        }
+    }
+    reached
 }
 
 /// The `MigrationInProgress` guard for state-changing entrypoints.
@@ -117,7 +150,9 @@ impl Vault {
     pub fn migrate(env: Env, from: u32, to: u32) -> u32 {
         ttl::extend_instance(&env);
         require_admin(&env);
-        migrations::migrate(&env, from, to, CURRENT_SCHEMA_VERSION, step, &ERRORS)
+        preserving_ledger(&env, || {
+            migrations::migrate(&env, from, to, CURRENT_SCHEMA_VERSION, step, &ERRORS)
+        })
     }
 
     /// Permissionless alternative to `migrate`, authorized by the pinned
@@ -135,7 +170,9 @@ impl Vault {
             ActionClass::Emergency,
             Error::Unauthorized,
         );
-        migrations::migrate(&env, from, to, CURRENT_SCHEMA_VERSION, step, &ERRORS)
+        preserving_ledger(&env, || {
+            migrations::migrate(&env, from, to, CURRENT_SCHEMA_VERSION, step, &ERRORS)
+        })
     }
 
     /// Continues a paginated migration from `cursor`. Permissionless, like
@@ -143,12 +180,19 @@ impl Vault {
     /// this wasm, so a keeper can only advance it.
     pub fn migrate_batch(env: Env, cursor: u32, limit: u32) -> u32 {
         ttl::extend_instance(&env);
-        migrations::migrate_batch(&env, cursor, limit, step, &ERRORS)
+        preserving_ledger(&env, || {
+            migrations::migrate_batch(&env, cursor, limit, step, &ERRORS)
+        })
     }
 
     pub fn schema_version(env: Env) -> u32 {
         ttl::extend_instance(&env);
         migrations::schema_version(&env)
+    }
+
+    /// The storage layout version this instance is on (`schema_version`).
+    pub fn version(env: Env) -> u32 {
+        Self::schema_version(env)
     }
 
     /// `(target, cursor)` while a paginated migration is in progress.

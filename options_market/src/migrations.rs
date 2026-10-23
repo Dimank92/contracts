@@ -2,32 +2,15 @@
 //! (version checks, ordering, pagination, the in-progress guard) lives in
 //! `zenith_common::migrations`; this file only registers steps. See
 //! docs/migrations.md for how to author one.
-//!
-//! NOTE: this crate's lib.rs, error.rs, storage.rs and types.rs are
-//! empty on main (emptied by #149). Once they're restored:
-//! - add `mod migrations;` to lib.rs, the migration error variants (codes
-//!   100–104, same names as every other crate) to `Error`, and
-//!   `zenith_common::migrations::init_schema(&env, CURRENT_SCHEMA_VERSION)`
-//!   to `initialize`;
-//! - rewire the existing `upgrade` / `upgrade_via_multisig` onto
-//!   `zenith_common::upgrade::upgrade` (with `UpgradeAuth::Admin` /
-//!   `UpgradeAuth::PinnedMultisig`), which drops the caller-supplied
-//!   `multisig_contract` argument in favour of the pin set here — an ABI
-//!   change to list in tools/spec-diff/allow.txt;
-//! - call `migrations::require_current` from state-changing entrypoints.
-//!
-//! Until `initialize` writes it, a missing `SchemaVersion` reads as
-//! `BASELINE_SCHEMA_VERSION` (1), which is also correct for
-//! already-deployed instances.
 
-use soroban_sdk::{contractimpl, panic_with_error, Address, Env};
+use soroban_sdk::{contractimpl, panic_with_error, Address, BytesN, Env};
 use zenith_common::migrations::{self, MigrationErrors, Step};
 use zenith_common::upgrade;
 use zenith_common::{require_admin_or_multisig, ActionClass, Auth};
 
 use crate::error::Error;
 use crate::types::DataKey;
-use crate::{ttl, OptionsMarket};
+use crate::{ttl, OptionsMarket, OptionsMarketClient};
 
 /// The layout this wasm reads and writes. Raise it by one in the same PR
 /// that adds the matching arm to `step`.
@@ -82,6 +65,12 @@ impl OptionsMarket {
     pub fn get_upgrade_multisig(env: Env) -> Option<Address> {
         ttl::extend_instance(&env);
         upgrade::pinned_multisig(&env)
+    }
+
+    /// The multisig action id that authorizes upgrading this contract to
+    /// `new_wasm_hash` — what signers approve.
+    pub fn upgrade_action_id(env: Env, new_wasm_hash: BytesN<32>) -> u64 {
+        upgrade::upgrade_action_id(&env, &new_wasm_hash)
     }
 
     /// Runs the registered steps `from+1 ..= to`. Admin only. Returns the

@@ -158,7 +158,13 @@ where
 /// Continues an in-progress migration from `cursor`, processing up to
 /// `limit` items of the current step. `cursor` must be exactly where the
 /// previous call stopped. Returns the schema version reached.
-pub fn migrate_batch<E>(env: &Env, cursor: u32, limit: u32, step: StepFn, errs: &MigrationErrors<E>) -> u32
+pub fn migrate_batch<E>(
+    env: &Env,
+    cursor: u32,
+    limit: u32,
+    step: StepFn,
+    errs: &MigrationErrors<E>,
+) -> u32
 where
     E: Copy + Into<soroban_sdk::Error>,
 {
@@ -166,7 +172,15 @@ where
     if cursor != state.cursor || limit == 0 || limit > MAX_MIGRATION_BATCH {
         panic_with_error!(env, errs.invalid_batch);
     }
-    run(env, schema_version(env), state.target, cursor, limit, step, errs)
+    run(
+        env,
+        schema_version(env),
+        state.target,
+        cursor,
+        limit,
+        step,
+        errs,
+    )
 }
 
 fn run<E>(
