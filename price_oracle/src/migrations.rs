@@ -17,7 +17,7 @@ use zenith_common::{require_admin_or_multisig, ActionClass, Auth};
 
 use crate::error::Error;
 use crate::types::DataKey;
-use crate::{ttl, PriceOracle};
+use crate::{ttl, PriceOracle, PriceOracleClient};
 
 /// The layout this wasm reads and writes. Raise it by one in the same PR
 /// that adds the matching arm to `step`.
@@ -34,7 +34,7 @@ pub const ERRORS: MigrationErrors<Error> = MigrationErrors {
 /// Step registry, keyed by the version each step migrates **to**. Layout
 /// 1 is the baseline, so there are no steps yet. Add one arm per version:
 ///
-/// ```ignore
+/// ```text
 /// 2 => v2(env, cursor, limit),
 /// ```
 ///

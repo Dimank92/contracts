@@ -1,6 +1,8 @@
-#![no_std]
+#[cfg(test)]
+use soroban_sdk::Env;
+use soroban_sdk::Vec;
 
-use soroban_sdk::{Vec, Env};
+use crate::math::{abs_diff, sort, MAX_FEEDERS};
 
 pub struct PriceDispersionResult {
     pub filtered_median: i128,
@@ -12,38 +14,46 @@ pub struct PriceDispersionResult {
 pub struct OutlierFilter;
 
 impl OutlierFilter {
-    /// Filters out price reports exceeding `k * MAD` (Median Absolute Deviation),
-    /// mitigating flash crashes and collusive feeder outliers.
-    pub fn compute_robust_price(env: &Env, mut reports: Vec<i128>, k: u32) -> Option<PriceDispersionResult> {
-        let n = reports.len();
-        if n == 0 {
+    /// Filters out price reports exceeding `k * MAD` (Median Absolute
+    /// Deviation) from the median, mitigating flash crashes and collusive
+    /// feeder outliers, and returns the mean of the kept reports.
+    ///
+    /// "Median" here is the upper median (`sorted[n / 2]`) for both the
+    /// price and the deviations, so at least `n / 2 + 1` reports are
+    /// always within `MAD` and kept for any `k >= 1`. `None` for an empty
+    /// set, more than `MAX_FEEDERS` reports, or arithmetic that would
+    /// overflow — never a panic.
+    pub fn compute_robust_price(reports: Vec<i128>, k: u32) -> Option<PriceDispersionResult> {
+        let n = reports.len() as usize;
+        if n == 0 || n > MAX_FEEDERS as usize {
             return None;
         }
 
-        // 1. Sort to determine preliminary median
-        reports.sort();
-        let median = reports.get(n / 2)?;
-
-        // 2. Compute absolute deviations from median
-        let mut abs_devs = Vec::new(env);
-        for i in 0..n {
-            let val = reports.get(i)?;
-            let diff = i128::try_from(val.abs_diff(median)).ok()?;
-            abs_devs.push_back(diff);
+        // 1. Sort to determine the preliminary median.
+        let mut buffer = [0i128; MAX_FEEDERS as usize];
+        for (slot, value) in buffer.iter_mut().zip(reports.iter()) {
+            *slot = value;
         }
-        abs_devs.sort();
-        let mad = abs_devs.get(n / 2)?;
+        let sorted = &mut buffer[..n];
+        sort(sorted);
+        let median = sorted[n / 2];
 
-        // 3. Drop reports > k * MAD
+        // 2. Median of the absolute deviations from it.
+        let mut devs = [0i128; MAX_FEEDERS as usize];
+        for (dev, value) in devs.iter_mut().zip(sorted.iter()) {
+            *dev = abs_diff(*value, median).ok()?;
+        }
+        let devs = &mut devs[..n];
+        sort(devs);
+        let mad = devs[n / 2];
+
+        // 3. Drop reports > k * MAD.
         let threshold = mad.checked_mul(k as i128)?;
         let mut valid_sum = 0i128;
         let mut valid_count = 0u32;
-
-        for i in 0..n {
-            let val = reports.get(i)?;
-            let diff = i128::try_from(val.abs_diff(median)).ok()?;
-            if diff <= threshold {
-                valid_sum = valid_sum.checked_add(val)?;
+        for value in sorted.iter() {
+            if abs_diff(*value, median).ok()? <= threshold {
+                valid_sum = valid_sum.checked_add(*value)?;
                 valid_count += 1;
             }
         }
@@ -103,7 +113,7 @@ mod proptests {
     /// (filtered_median, mad, dispersion_bps, valid_reports_count)
     fn robust(values: &[i128], k: u32) -> Option<(i128, i128, u32, u32)> {
         let env = Env::default();
-        OutlierFilter::compute_robust_price(&env, Vec::from_slice(&env, values), k).map(|r| {
+        OutlierFilter::compute_robust_price(Vec::from_slice(&env, values), k).map(|r| {
             (
                 r.filtered_median,
                 r.mad,

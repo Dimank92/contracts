@@ -495,7 +495,8 @@ fn pause_and_unpause_each_emit_their_own_event() {
 // ─── cross-contract: pause_via_multisig / transfer_admin_via_multisig ─────
 
 /// Deploys a real multisig contract in the SAME Env as the price
-/// oracle under test, with a 2-of-3 threshold.
+/// oracle under test, with a 2-of-3 threshold and no approval expiry,
+/// and pins it as the oracle's trusted multisig.
 fn setup_multisig(h: &Harness) -> (Address, [Address; 3]) {
     let signers = [
         Address::generate(&h.env),
@@ -513,12 +514,8 @@ fn setup_multisig(h: &Harness) -> (Address, [Address; 3]) {
         ],
         &2,
         &0,
-        &multisig::Delays {
-            standard: 0,
-            critical: 0,
-        },
-        &None,
     );
+    h.client.set_multisig(&contract_id);
     (contract_id, signers)
 }
 
@@ -897,4 +894,346 @@ fn archived_instance_restores_feeders_and_admin() {
 
     assert_eq!(h.client.get_admin(), h.admin);
     assert!(h.client.is_feeder(&feeder));
+}
+
+// ─── oracle_adapter ingest validation (issue #182) ──────────────────────────
+
+fn err(e: crate::Error) -> soroban_sdk::Error {
+    soroban_sdk::Error::from_contract_error(e as u32)
+}
+
+fn setup_with_feeder<'a>() -> (Harness<'a>, Address) {
+    let h = setup();
+    // Start well past zero so "older than max_staleness" is expressible.
+    h.env.ledger().set_timestamp(1_000_000);
+    let feeder = Address::generate(&h.env);
+    h.client.add_feeder(&feeder);
+    (h, feeder)
+}
+
+#[test]
+fn default_symbols_are_known_at_full_precision() {
+    let h = setup();
+    for name in ["XLM", "BTC", "ETH", "SOL"] {
+        assert_eq!(
+            h.client.get_symbol_precision(&Symbol::new(&h.env, name)),
+            Some(7)
+        );
+    }
+    assert_eq!(
+        h.client.get_symbol_precision(&Symbol::new(&h.env, "DOGE")),
+        None
+    );
+    assert_eq!(h.client.decimals(), 7);
+}
+
+#[test]
+fn ingest_rejects_an_unknown_symbol() {
+    let (h, feeder) = setup_with_feeder();
+    let doge = Symbol::new(&h.env, "DOGE");
+    assert_eq!(
+        h.client.try_report_price(&feeder, &doge, &1_200_000),
+        Err(Ok(err(crate::Error::UnknownSymbol)))
+    );
+
+    h.client.set_symbol_precision(&doge, &4);
+    h.client.report_price(&feeder, &doge, &1_200_000);
+    assert_eq!(h.client.get_price(&doge), Some(1_200_000));
+}
+
+#[test]
+fn ingest_rejects_negative_and_absurd_prices() {
+    let (h, feeder) = setup_with_feeder();
+    let xlm = Symbol::new(&h.env, "XLM");
+    for bad in [-1, i128::MIN, crate::math::MAX_PRICE + 1, i128::MAX] {
+        assert_eq!(
+            h.client.try_report_price(&feeder, &xlm, &bad),
+            Err(Ok(err(crate::Error::InvalidPrice)))
+        );
+    }
+    h.client
+        .report_price(&feeder, &xlm, &crate::math::MAX_PRICE);
+    assert!(h.client.get_latest_report(&xlm, &feeder).is_some());
+}
+
+#[test]
+fn ingest_rejects_more_decimals_than_the_symbol_declares() {
+    let (h, feeder) = setup_with_feeder();
+    let btc = Symbol::new(&h.env, "BTC");
+    h.client.set_symbol_precision(&btc, &2); // cents
+    assert_eq!(
+        h.client.try_report_price(&feeder, &btc, &650_000_000_001),
+        Err(Ok(err(crate::Error::PrecisionExceeded)))
+    );
+    h.client.report_price(&feeder, &btc, &650_000_000_000);
+}
+
+#[test]
+fn set_symbol_precision_rejects_more_than_the_oracle_scale() {
+    let h = setup();
+    assert_eq!(
+        h.client
+            .try_set_symbol_precision(&Symbol::new(&h.env, "XLM"), &8),
+        Err(Ok(err(crate::Error::InvalidDecimals)))
+    );
+}
+
+#[test]
+fn report_price_scaled_normalizes_to_seven_decimals() {
+    let (h, feeder) = setup_with_feeder();
+    let xlm = Symbol::new(&h.env, "XLM");
+    let now = h.env.ledger().timestamp();
+    // 0.1234567891 at 10 decimals -> 0.1234567 (rounded down).
+    h.client
+        .report_price_scaled(&feeder, &xlm, &1_234_567_891, &10, &now);
+    assert_eq!(
+        h.client.get_latest_report(&xlm, &feeder),
+        Some((1_234_567, now))
+    );
+    // 0.12 at 2 decimals.
+    h.client.report_price_scaled(&feeder, &xlm, &12, &2, &now);
+    assert_eq!(h.client.get_price(&xlm), Some(1_200_000));
+}
+
+#[test]
+fn report_price_scaled_rejects_bad_decimals_and_overflow() {
+    let (h, feeder) = setup_with_feeder();
+    let xlm = Symbol::new(&h.env, "XLM");
+    let now = h.env.ledger().timestamp();
+    assert_eq!(
+        h.client
+            .try_report_price_scaled(&feeder, &xlm, &1, &19, &now),
+        Err(Ok(err(crate::Error::InvalidDecimals)))
+    );
+    assert_eq!(
+        h.client
+            .try_report_price_scaled(&feeder, &xlm, &i128::MAX, &0, &now),
+        Err(Ok(err(crate::Error::ArithmeticOverflow)))
+    );
+    // Rounds down to zero -> not a positive price.
+    assert_eq!(
+        h.client
+            .try_report_price_scaled(&feeder, &xlm, &1, &18, &now),
+        Err(Ok(err(crate::Error::InvalidPrice)))
+    );
+}
+
+#[test]
+fn ingest_rejects_a_future_timestamp() {
+    let (h, feeder) = setup_with_feeder();
+    let xlm = Symbol::new(&h.env, "XLM");
+    let now = h.env.ledger().timestamp();
+    assert_eq!(
+        h.client
+            .try_report_price_scaled(&feeder, &xlm, &1_200_000, &7, &(now + 1)),
+        Err(Ok(err(crate::Error::FutureTimestamp)))
+    );
+}
+
+#[test]
+fn ingest_rejects_an_already_stale_or_out_of_order_observation() {
+    let (h, feeder) = setup_with_feeder();
+    let xlm = Symbol::new(&h.env, "XLM");
+    let now = h.env.ledger().timestamp();
+    let window = h.client.get_max_staleness();
+    assert_eq!(
+        h.client
+            .try_report_price_scaled(&feeder, &xlm, &1_200_000, &7, &(now - window - 1)),
+        Err(Ok(err(crate::Error::StaleReport)))
+    );
+    // Exactly at the window edge is still fresh.
+    h.client
+        .report_price_scaled(&feeder, &xlm, &1_100_000, &7, &(now - window));
+
+    h.client
+        .report_price_scaled(&feeder, &xlm, &1_200_000, &7, &(now - 10));
+    // A report can't replace a newer one with an older observation.
+    assert_eq!(
+        h.client
+            .try_report_price_scaled(&feeder, &xlm, &1_300_000, &7, &(now - 20)),
+        Err(Ok(err(crate::Error::StaleReport)))
+    );
+    assert_eq!(
+        h.client.get_latest_report(&xlm, &feeder),
+        Some((1_200_000, now - 10))
+    );
+}
+
+// ─── oracle_adapter read path (issue #182) ──────────────────────────────────
+
+#[test]
+fn get_price_data_explains_an_absent_price() {
+    let (h, _feeder) = setup_with_feeder();
+    assert_eq!(
+        h.client.try_get_price_data(&Symbol::new(&h.env, "XLM")),
+        Err(Ok(crate::Error::NoReports))
+    );
+}
+
+#[test]
+fn get_price_data_explains_an_all_stale_price() {
+    let (h, feeder) = setup_with_feeder();
+    let xlm = Symbol::new(&h.env, "XLM");
+    let other = Address::generate(&h.env);
+    h.client.add_feeder(&other);
+    h.client.report_price(&feeder, &xlm, &1_000_000);
+    h.client.report_price(&other, &xlm, &1_100_000);
+    h.env
+        .ledger()
+        .set_timestamp(h.env.ledger().timestamp() + h.client.get_max_staleness() + 1);
+
+    assert_eq!(h.client.get_price(&xlm), None);
+    assert_eq!(
+        h.client.try_get_price_data(&xlm),
+        Err(Ok(crate::Error::StalePrice))
+    );
+}
+
+#[test]
+fn get_price_data_explains_a_below_quorum_price() {
+    let (h, feeder) = setup_with_feeder();
+    let xlm = Symbol::new(&h.env, "XLM");
+    h.client.set_min_reports(&2);
+    h.client.report_price(&feeder, &xlm, &1_000_000);
+    assert_eq!(
+        h.client.try_get_price_data(&xlm),
+        Err(Ok(crate::Error::BelowQuorum))
+    );
+}
+
+#[test]
+fn get_price_data_carries_provenance_and_matches_get_price() {
+    let (h, a) = setup_with_feeder();
+    let xlm = Symbol::new(&h.env, "XLM");
+    let b = Address::generate(&h.env);
+    h.client.add_feeder(&b);
+    let t0 = h.env.ledger().timestamp();
+    h.client.report_price(&a, &xlm, &1_000_000);
+    h.env.ledger().set_timestamp(t0 + 60);
+    h.client.report_price(&b, &xlm, &1_100_000);
+
+    let data = h.client.get_price_data(&xlm);
+    assert_eq!(data.symbol, xlm);
+    assert_eq!(data.price, 1_050_000);
+    assert_eq!(data.decimals, 7);
+    assert_eq!(data.timestamp, t0); // the oldest report used
+    assert_eq!(data.report_count, 2);
+    assert_eq!(h.client.get_price(&xlm), Some(data.price));
+}
+
+#[test]
+fn get_price_never_returns_a_price_older_than_the_window() {
+    let (h, feeder) = setup_with_feeder();
+    let xlm = Symbol::new(&h.env, "XLM");
+    let t0 = h.env.ledger().timestamp();
+    h.client.report_price(&feeder, &xlm, &1_000_000);
+    let window = h.client.get_max_staleness();
+
+    h.env.ledger().set_timestamp(t0 + window);
+    assert_eq!(h.client.get_price(&xlm), Some(1_000_000));
+    h.env.ledger().set_timestamp(t0 + window + 1);
+    assert_eq!(h.client.get_price(&xlm), None);
+}
+
+#[test]
+fn get_price_even_count_tie_floors_the_middle_mean() {
+    let h = setup();
+    let xlm = Symbol::new(&h.env, "XLM");
+    for price in [1_000_000i128, 1_000_001, 2_000_000, 900_000] {
+        let feeder = Address::generate(&h.env);
+        h.client.add_feeder(&feeder);
+        h.client.report_price(&feeder, &xlm, &price);
+    }
+    // Sorted 900_000, 1_000_000, 1_000_001, 2_000_000 -> floor(2_000_001 / 2).
+    assert_eq!(h.client.get_price(&xlm), Some(1_000_000));
+}
+
+#[test]
+fn removing_a_feeder_mid_round_drops_it_from_the_aggregate() {
+    let h = setup();
+    let xlm = Symbol::new(&h.env, "XLM");
+    let mut feeders = std::vec::Vec::new();
+    for price in [1_000_000i128, 1_100_000, 5_000_000] {
+        let feeder = Address::generate(&h.env);
+        h.client.add_feeder(&feeder);
+        h.client.report_price(&feeder, &xlm, &price);
+        feeders.push(feeder);
+    }
+    assert_eq!(h.client.get_price(&xlm), Some(1_100_000));
+
+    h.client.remove_feeder(&feeders[1]);
+    // Now the median of 1_000_000 and 5_000_000.
+    assert_eq!(h.client.get_price(&xlm), Some(3_000_000));
+    assert_eq!(h.client.get_price_data(&xlm).report_count, 2);
+}
+
+#[test]
+fn a_rejected_report_leaves_the_previous_one_in_place() {
+    let (h, feeder) = setup_with_feeder();
+    let xlm = Symbol::new(&h.env, "XLM");
+    h.client.report_price(&feeder, &xlm, &1_200_000);
+    let _ = h.client.try_report_price(&feeder, &xlm, &0);
+    assert_eq!(h.client.get_price(&xlm), Some(1_200_000));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #10)")] // InvalidMinReports
+fn set_min_reports_rejects_an_unreachable_quorum() {
+    let h = setup();
+    h.client.set_min_reports(&(crate::math::MAX_FEEDERS + 1));
+}
+
+// ─── multisig trust (pinned multisig, single-use approvals) ─────────────────
+
+#[test]
+#[should_panic(expected = "Error(Contract, #9)")] // Unauthorized
+fn via_multisig_rejects_a_genuine_but_unpinned_multisig() {
+    let h = setup();
+    let (multisig_id, signers) = setup_multisig(&h);
+    let multisig_client = MultisigClient::new(&h.env, &multisig_id);
+    let action_id = aid(&h.env, 1);
+    multisig_client.approve(&signers[0], &action_id);
+    multisig_client.approve(&signers[1], &action_id);
+
+    // Re-pin to some other address: the approved multisig is no longer trusted.
+    h.client.set_multisig(&Address::generate(&h.env));
+    h.client.pause_via_multisig(&multisig_id, &action_id);
+}
+
+#[test]
+fn a_multisig_approval_authorizes_exactly_one_call() {
+    let h = setup();
+    let (multisig_id, signers) = setup_multisig(&h);
+    let multisig_client = MultisigClient::new(&h.env, &multisig_id);
+    let action_id = aid(&h.env, 1);
+    multisig_client.approve(&signers[0], &action_id);
+    multisig_client.approve(&signers[1], &action_id);
+
+    h.client.pause_via_multisig(&multisig_id, &action_id);
+    assert!(!multisig_client.is_approved(&action_id));
+    h.client.unpause();
+    assert_eq!(
+        h.client.try_pause_via_multisig(&multisig_id, &action_id),
+        Err(Ok(err(crate::Error::Unauthorized)))
+    );
+    assert!(!h.client.is_paused());
+}
+
+#[test]
+fn set_multisig_pins_and_reports_the_trusted_multisig() {
+    let h = setup();
+    assert_eq!(h.client.get_multisig(), None);
+    let (multisig_id, _) = setup_multisig(&h);
+    assert_eq!(h.client.get_multisig(), Some(multisig_id));
+}
+
+// ─── schema ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn initialize_records_the_current_schema_version() {
+    let h = setup();
+    assert_eq!(
+        h.client.schema_version(),
+        crate::migrations::CURRENT_SCHEMA_VERSION
+    );
 }
