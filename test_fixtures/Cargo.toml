@@ -1,0 +1,20 @@
+[package]
+name = "zenith-test-fixtures"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
+
+[features]
+# The fixtures are test-only by design; this feature gate makes the
+# dependency explicit so consumers never accidentally link fixtures into
+# production builds.
+testutils = []
