@@ -93,7 +93,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo xtask test -p ${{ matrix.crate }}
 
-  wasm:
+  wasm-release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -6,12 +6,25 @@
 //! The timelock administers itself: there is no `migrate` entrypoint.
 //! Instead `execute` dispatches a `Call` targeting the timelock with
 //! function `migrate` and args `(from: u32, to: u32)` to `self_migrate`
-//! below, the same way it handles `set_prop` / `set_delay` / `lock_in`.
+//! below, the same way it handles `update_delay` / `grant_role` /
+//! `revoke_role` / `set_open_executor`.
 //! A migration is therefore always a delayed, cancellable operation. It
 //! must be its own operation, after the one that installs the new wasm:
 //! a wasm swap only takes effect once the invocation that made it
 //! returns, so a `migrate` self-call in the same `execute` would still run
 //! the old code.
+//!
+//! NOTE: this crate's lib.rs, error.rs, events.rs, types.rs and
+//! Cargo.toml were empty on main (emptied by #148) and are restored by
+//! #166. The crate now declares `mod migrations;`, carries the migration
+//! error variants (codes 100–104) in `Error`, writes the schema version in
+//! `initialize`, and dispatches the `migrate` self-call in `self_call`:
+//!
+//! ```ignore
+//! } else if *func == symbol_short!("migrate") {
+//!     migrations::self_migrate(env, arg(env, args, 0), arg(env, args, 1));
+//! }
+//! ```
 
 use soroban_sdk::{contractimpl, panic_with_error, Env};
 use zenith_common::migrations::{self, MigrationErrors, Step};

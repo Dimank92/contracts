@@ -1077,6 +1077,13 @@ seconds before it can run. Modelled on OpenZeppelin's TimelockController.
 | `execute(executor, calls, predecessor, salt)` | Executor-only (unless open). Requires the operation ready and `predecessor` (if any) done. Runs every call in order via `invoke_contract`; any revert reverts the whole batch. |
 | `cancel(canceller, id)` | Canceller-only. Removes a pending operation. |
 
+The delay boundary is **inclusive**: an operation may be executed at exactly
+its ready-at, and not before. The id commits to the whole payload, so
+`execute` identifies the operation by the content it repeats — the same
+`calls`/`predecessor`/`salt` hash to the id that was scheduled. A predecessor
+that is cancelled can never run, so neither can its dependent: cancelling a
+predecessor never leaves a dependent executable.
+
 **Self-administration.** Soroban forbids re-entry, so a `Call` whose
 `target` is the timelock itself is dispatched internally by `execute`:
 `update_delay(u64)`, `grant_role(Role, Address)`, `revoke_role(Role, Address)`,
@@ -1085,10 +1092,11 @@ through a delayed operation.
 
 **Views:** `get_timestamp(id)` (0 unknown, 1 done, else ready-at),
 `is_operation`, `is_operation_pending`, `is_operation_ready`,
-`is_operation_done`, `get_min_delay`, `has_role(role, account)`,
-`is_open_executor`, `hash_operation`.
+`is_operation_done`, `get_operation`, `get_min_delay`,
+`has_role(role, account)`, `is_open_executor`, `hash_operation`.
 
-**Events:** `scheduled`, `executed`, `cancelled`, `min_delay_changed`, `role_changed`.
+**Events:** `scheduled`, `executed`, `cancelled`, `min_delay_changed`,
+`role_changed`, `open_executor_changed`.
 
 **Errors:** 1 `AlreadyInitialized`, 2 `Unauthorized`, 3 `InsufficientDelay`,
 4 `AlreadyScheduled`, 5 `NotReady`, 6 `PredecessorNotExecuted`, 7 `NotPending`,

@@ -4,24 +4,29 @@ use soroban_sdk::contracterror;
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub enum Error {
+    /// `initialize` ran on a contract that was already initialized.
     AlreadyInitialized = 1,
+    /// The caller does not hold the role the entrypoint requires.
     Unauthorized = 2,
+    /// The requested delay is below `min_delay`.
     InsufficientDelay = 3,
+    /// An operation with this id is already scheduled or already done.
     AlreadyScheduled = 4,
+    /// The delay has not elapsed yet. An operation may run at exactly its
+    /// ready-at.
     NotReady = 5,
-    /// The predecessor exists but has not executed yet.
-    PredecessorNotExecuted = 6,
+    /// The operation's predecessor has not run (or was cancelled).
+    PredecessorNotDone = 6,
+    /// There is no pending operation with this id: it is unknown, or it has
+    /// already run.
     NotPending = 7,
+    /// A self-call named a function the timelock does not implement.
     UnknownSelfCall = 8,
+    /// The batch has no calls in it.
     EmptyOperation = 9,
-    /// A predecessor id that was never scheduled.
-    ActionNotFound = 10,
-    /// The predecessor, or one of its ancestors, was cancelled.
-    PredecessorCancelled = 11,
-    /// Scheduling would make the operation (transitively) its own predecessor.
-    PredecessorCycle = 12,
-    /// The predecessor chain is longer than `MAX_CHAIN_DEPTH`.
-    PredecessorChainTooDeep = 13,
+
+    // Schema migrations (zenith_common::migrations) — the same codes in
+    // every Zenith contract. See docs/migrations.md.
     SchemaVersionMismatch = 100,
     InvalidMigrationTarget = 101,
     MigrationInProgress = 102,
