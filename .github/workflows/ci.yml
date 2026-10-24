@@ -197,3 +197,64 @@ jobs:
         run: "! VERIFY_INJECT_DRIFT=1 scripts/reproducible-build/verify.sh"
       - name: Cargo.lock unchanged by build
         run: git diff --exit-code Cargo.lock
+
+  # Workspace test-coverage gate (issue #221).
+  #
+  # Runs the workspace test suite under cargo-llvm-cov and fails the build
+  # when any crate's line coverage drops below the floor committed in
+  # .github/coverage-thresholds.toml. This is a fail-on-decrease ratchet, not
+  # a fixed absolute target: the baseline starts near zero for the stub
+  # crates and is raised in the same PR that un-ignores a suite.
+  #
+  # Trigger strategy: coverage is expensive, so it runs on pull_request only
+  # (not on every push to main). A flaky coverage run fails closed — the
+  # comparison script exits non-zero on any missing/unparseable report.
+  #
+  # Ignored tests are counted and reported separately so an increase in the
+  # #[ignore] population is visible in the PR output.
+  coverage:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Run workspace tests under coverage
+        # Exclude wasm-only code paths and generated bindings so the numbers
+        # stay stable across runs.
+        run: >
+          cargo llvm-cov --workspace --all-targets --no-fail-fast
+          --ignore-filename-regex '(^|/)(target|wasm|generated|bindings)/'
+          --lcov --output-path target/coverage/lcov.info
+      - name: Per-crate coverage summary
+        run: >
+          cargo llvm-cov report
+          --lcov --input-path target/coverage/lcov.info
+          --summary-only
+      - name: Count ignored tests
+        run: |
+          count=$(grep -rE '#\[ignore' --include='*.rs' . | wc -l)
+          echo "Ignored tests: $count" >> "$GITHUB_STEP_SUMMARY"
+          echo "ignored_tests=$count" >> "$GITHUB_OUTPUT"
+        id: ignored
+      - name: Enforce per-crate coverage thresholds
+        # Fails closed: a missing threshold file, an unrecognised crate, or an
+        # unparseable report all exit non-zero rather than silently passing.
+        run: >
+          python3 scripts/coverage/check_thresholds.py
+          --thresholds .github/coverage-thresholds.toml
+          --lcov target/coverage/lcov.info
+          --ignored "${{ steps.ignored.outputs.ignored_tests }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-lcov
+          path: target/coverage/lcov.info
+          if-no-files-found: warn

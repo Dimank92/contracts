@@ -1,0 +1,78 @@
+# Per-crate test-coverage floors for the CI coverage gate (issue #221).
+#
+# Model: fail-on-decrease. Each crate's `min_lines` is the committed floor;
+# the gate fails only when measured coverage drops below it. When a suite is
+# un-ignored or new tests land, raise the floor in the same PR so the win is
+# ratcheted in. The baseline starts near zero for the stub crates.
+#
+# `min_lines` is a percentage of instrumented lines (0-100). `ignored_max`
+# caps the number of `#[ignore]`d tests so the ignored population cannot
+# creep back; lower it as suites are un-ignored.
+#
+# Crates not listed here are treated as an error by the gate (fail closed):
+# a new workspace member must be added with an explicit floor rather than
+# silently defaulting to zero.
+
+[settings]
+# wasm-only code paths and generated bindings are excluded so numbers stay
+# stable across toolchains.
+exclude = [
+    "*/src/generated/*",
+    "*/target/*",
+]
+
+[crates.common]
+min_lines = 0.0
+ignored_max = 0
+
+[crates.governor]
+min_lines = 0.0
+ignored_max = 0
+
+[crates.grants_escrow]
+min_lines = 0.0
+ignored_max = 0
+
+[crates.integration_tests]
+min_lines = 0.0
+ignored_max = 0
+
+[crates.multisig]
+min_lines = 0.0
+ignored_max = 0
+
+[crates.options_market]
+min_lines = 0.0
+ignored_max = 0
+
+[crates.params]
+min_lines = 0.0
+ignored_max = 0
+
+[crates.price_oracle]
+min_lines = 0.0
+ignored_max = 0
+
+[crates.staking]
+min_lines = 0.0
+ignored_max = 0
+
+[crates.streams]
+min_lines = 0.0
+ignored_max = 0
+
+[crates.timelock]
+min_lines = 0.0
+ignored_max = 0
+
+[crates.vault]
+min_lines = 0.0
+ignored_max = 0
+
+[crates.spec_diff]
+min_lines = 0.0
+ignored_max = 0
+
+[crates.xtask]
+min_lines = 0.0
+ignored_max = 0
