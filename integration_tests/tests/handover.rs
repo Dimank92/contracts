@@ -129,7 +129,7 @@ fn deploy<'a>() -> World<'a> {
     let market = OptionsMarketClient::new(&env, &env.register_contract(None, OptionsMarket));
     market.initialize(&deployer, &oracle.address, &usdc, &deployer);
     let vault = VaultClient::new(&env, &env.register_contract(None, Vault));
-    vault.initialize(&market.address, &usdc);
+    vault.initialize(&market.address, &usdc, &(7 * 86_400u64));
 
     let votes = MockVotesClient::new(&env, &env.register_contract(None, MockVotes));
     let voter = Address::generate(&env);
