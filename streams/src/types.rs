@@ -52,6 +52,8 @@ pub struct StreamRecord {
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
+    /// One-shot initialize flag; see `zenith_common::require_uninitialized`.
+    Initialized,
     /// Governance address allowed to cancel any stream.
     Governance,
     StreamCounter,

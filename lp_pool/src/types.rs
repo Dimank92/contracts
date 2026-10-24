@@ -3,6 +3,8 @@ use soroban_sdk::{contracttype, Address};
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
+    /// One-shot initialize flag; see `zenith_common::require_uninitialized`.
+    Initialized,
     Admin,
     /// Runs `write_option` and `process_epoch`.
     Keeper,

@@ -2089,6 +2089,7 @@ name = "zenith-lp-pool"
 version = "0.1.0"
 dependencies = [
  "soroban-sdk",
+ "zenith-common",
 ]
 
 [[package]]
@@ -2096,6 +2097,7 @@ name = "zenith-lp-token"
 version = "0.1.0"
 dependencies = [
  "soroban-sdk",
+ "zenith-common",
 ]
 
 [[package]]
@@ -2104,6 +2106,7 @@ version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
  "soroban-sdk",
+ "zenith-common",
 ]
 
 [[package]]
@@ -2127,6 +2130,7 @@ name = "zenith-params"
 version = "0.1.0"
 dependencies = [
  "soroban-sdk",
+ "zenith-common",
 ]
 
 [[package]]
@@ -2144,6 +2148,7 @@ name = "zenith-staking"
 version = "0.1.0"
 dependencies = [
  "soroban-sdk",
+ "zenith-common",
 ]
 
 [[package]]
@@ -2152,6 +2157,7 @@ version = "0.1.0"
 dependencies = [
  "proptest",
  "soroban-sdk",
+ "zenith-common",
 ]
 
 [[package]]

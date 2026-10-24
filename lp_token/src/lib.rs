@@ -37,9 +37,13 @@ impl LpToken {
     /// pool's own authorization so a front-runner can't claim a freshly
     /// deployed token for a pool that never agreed to it.
     pub fn initialize(env: Env, pool: Address, decimal: u32, name: String, symbol: String) {
-        if env.storage().instance().has(&DataKey::Pool) {
-            panic_with_error!(&env, Error::AlreadyInitialized);
-        }
+        zenith_common::require_uninitialized(
+            &env,
+            &DataKey::Initialized,
+            &DataKey::Pool,
+            Error::AlreadyInitialized,
+        );
+        zenith_common::mark_initialized(&env, &DataKey::Initialized);
         pool.require_auth();
         if decimal > u8::MAX.into() {
             panic_with_error!(&env, Error::InvalidDecimals);

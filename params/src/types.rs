@@ -22,6 +22,8 @@ pub struct BoundsProposal {
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
+    /// One-shot initialize flag; see `zenith_common::require_uninitialized`.
+    Initialized,
     Timelock,
     /// Bumped on every value or bounds change, so consumers can cache
     /// values locally and only re-read them when this moves.

@@ -236,3 +236,35 @@ fn prop_withdrawn_never_exceeds_deposit() {
         assert_eq!(h.token.balance(&h.client.address), 0);
     }
 }
+
+#[test]
+fn second_initialize_is_rejected_and_keeps_governance() {
+    let h = setup();
+    let attacker = Address::generate(&h.env);
+    let res = h.client.try_initialize(&attacker);
+    assert_eq!(
+        res,
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            crate::error::Error::AlreadyInitialized as u32
+        )))
+    );
+    assert_eq!(h.client.get_governance(), h.governance);
+}
+
+#[test]
+fn legacy_deployment_without_flag_is_treated_as_initialized() {
+    let h = setup();
+    h.env.as_contract(&h.client.address, || {
+        h.env
+            .storage()
+            .instance()
+            .remove(&crate::types::DataKey::Initialized);
+    });
+    let res = h.client.try_initialize(&Address::generate(&h.env));
+    assert_eq!(
+        res,
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            crate::error::Error::AlreadyInitialized as u32
+        )))
+    );
+}

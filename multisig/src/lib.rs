@@ -133,9 +133,13 @@ impl Multisig {
         rotation_delay: u64,
     ) {
         ttl::extend_instance(&env);
-        if env.storage().instance().has(&DataKey::Signers) {
-            panic_with_error!(&env, Error::AlreadyInitialized);
-        }
+        zenith_common::require_uninitialized(
+            &env,
+            &DataKey::Initialized,
+            &DataKey::Signers,
+            Error::AlreadyInitialized,
+        );
+        zenith_common::mark_initialized(&env, &DataKey::Initialized);
         let mut map: Map<Address, u32> = Map::new(&env);
         for (signer, weight) in signers.iter() {
             if weight == 0 {
