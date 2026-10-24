@@ -88,16 +88,16 @@ always comes first.
 exist on options_market, price_oracle and vault. The shared implementation
 is `zenith_common::upgrade`.
 
-- **Pinned multisig.** `upgrade_via_multisig` does not take a
-  `multisig_contract` argument. It only trusts the multisig the admin set
-  with `set_upgrade_multisig(multisig)` (`get_upgrade_multisig()` to read).
-  This closes the "Known caveat" in
-  [governance-handover.md](governance-handover.md) for upgrades.
-- **Hash-bound approvals.** `action_id` must equal
-  `upgrade_action_id(new_wasm_hash)`: the first 8 bytes of
+- **Trusted multisig.** `upgrade_via_multisig` does not take a
+  `multisig_contract` argument. It only trusts the contract's trusted
+  multisig, set by the admin with `set_multisig(multisig)`
+  (`get_multisig()` to read) — the same multisig every `_via_multisig`
+  entrypoint is restricted to.
+- **Hash-bound approvals.** `action_id` (a `BytesN<32>`) must equal
+  `upgrade_action_id(new_wasm_hash)` =
   `sha256("zenith.upgrade" || xdr(contract) || hash)`. Signers therefore
-  approve one exact wasm for one exact contract, and the approval can't be
-  reused elsewhere. The action class is `Critical`.
+  approve one exact wasm for one exact contract, and like every approval
+  it authorizes one call only. The action class is `Critical`.
 - **multisig** upgrades itself with its own, stricter threshold. See
   below.
 

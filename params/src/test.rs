@@ -190,15 +190,15 @@ fn migrate_rejects_unknown_or_stale_targets() {
     let v = CURRENT_SCHEMA_VERSION;
     assert_eq!(
         client.try_migrate(&v, &(v + 1)),
-        Err(Ok(Error::InvalidMigrationTarget))
+        Err(Ok(Error::InvalidMigrationTarget.into()))
     );
     assert_eq!(
         client.try_migrate(&(v - 1), &v),
-        Err(Ok(Error::SchemaVersionMismatch))
+        Err(Ok(Error::SchemaVersionMismatch.into()))
     );
     assert_eq!(
         client.try_migrate_batch(&0, &10),
-        Err(Ok(Error::NoMigrationInProgress))
+        Err(Ok(Error::NoMigrationInProgress.into()))
     );
 }
 

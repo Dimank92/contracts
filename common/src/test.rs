@@ -196,7 +196,7 @@ fn stale_schema_blocks_guarded_entrypoints() {
     client.init(&1);
     assert_eq!(
         client.try_guarded(),
-        Err(Ok(HarnessError::MigrationInProgress))
+        Err(Ok(HarnessError::MigrationInProgress.into()))
     );
 }
 
@@ -214,30 +214,30 @@ fn paginated_migration_runs_every_step_once_in_order() {
     assert_eq!(client.processed(), migrations::DEFAULT_MIGRATION_BATCH);
     assert_eq!(
         client.try_guarded(),
-        Err(Ok(HarnessError::MigrationInProgress))
+        Err(Ok(HarnessError::MigrationInProgress.into()))
     );
 
     // `migrate` can't be re-entered while a batch is in flight.
     assert_eq!(
         client.try_migrate(&2, &3),
-        Err(Ok(HarnessError::MigrationInProgress))
+        Err(Ok(HarnessError::MigrationInProgress.into()))
     );
     // Replaying or skipping pages is rejected, as are bad limits.
     assert_eq!(
         client.try_migrate_batch(&0, &50),
-        Err(Ok(HarnessError::InvalidMigrationBatch))
+        Err(Ok(HarnessError::InvalidMigrationBatch.into()))
     );
     assert_eq!(
         client.try_migrate_batch(&100, &50),
-        Err(Ok(HarnessError::InvalidMigrationBatch))
+        Err(Ok(HarnessError::InvalidMigrationBatch.into()))
     );
     assert_eq!(
         client.try_migrate_batch(&50, &0),
-        Err(Ok(HarnessError::InvalidMigrationBatch))
+        Err(Ok(HarnessError::InvalidMigrationBatch.into()))
     );
     assert_eq!(
         client.try_migrate_batch(&50, &(migrations::MAX_MIGRATION_BATCH + 1)),
-        Err(Ok(HarnessError::InvalidMigrationBatch))
+        Err(Ok(HarnessError::InvalidMigrationBatch.into()))
     );
 
     assert_eq!(client.migrate_batch(&50, &40), 2);
@@ -249,7 +249,7 @@ fn paginated_migration_runs_every_step_once_in_order() {
 
     assert_eq!(
         client.try_migrate_batch(&0, &50),
-        Err(Ok(HarnessError::NoMigrationInProgress))
+        Err(Ok(HarnessError::NoMigrationInProgress.into()))
     );
 }
 
@@ -261,23 +261,23 @@ fn rejects_repeating_or_skipping_steps() {
     // `from` must be the stored version.
     assert_eq!(
         client.try_migrate(&2, &3),
-        Err(Ok(HarnessError::SchemaVersionMismatch))
+        Err(Ok(HarnessError::SchemaVersionMismatch.into()))
     );
     // Target must be ahead of `from` and known to this wasm.
     assert_eq!(
         client.try_migrate(&1, &1),
-        Err(Ok(HarnessError::InvalidMigrationTarget))
+        Err(Ok(HarnessError::InvalidMigrationTarget.into()))
     );
     assert_eq!(
         client.try_migrate(&1, &4),
-        Err(Ok(HarnessError::InvalidMigrationTarget))
+        Err(Ok(HarnessError::InvalidMigrationTarget.into()))
     );
 
     assert_eq!(client.migrate(&1, &2), 2);
     // Step 2 already ran: repeating it fails.
     assert_eq!(
         client.try_migrate(&1, &2),
-        Err(Ok(HarnessError::SchemaVersionMismatch))
+        Err(Ok(HarnessError::SchemaVersionMismatch.into()))
     );
 }
 
