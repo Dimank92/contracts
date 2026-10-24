@@ -3,7 +3,20 @@
 `lp_token` is the share token for `lp_pool`. `initialize(pool, decimal,
 name, symbol)` pins the pool. It requires the pool's own authorization,
 so nobody can claim a freshly deployed token for a pool that didn't
-agree to it. Only the pinned pool can `mint(to, amount)`.
+agree to it. Only the pinned pool can `mint(to, amount)` and
+`burn(from, amount)`.
+
+`initialize` is idempotent-safe: the pool pin lives in instance storage
+and a second call fails with `Error::AlreadyInitialized` rather than
+silently re-pinning the pool or resetting the metadata.
+
+## Pool rotation
+
+The pool pin can only change through `set_pool(new_pool)`, an explicit
+admin-gated rotation path. It requires the current admin's authorization
+and emits a `set_pool` event with topics `[set_pool]` and data
+`(old_pool, new_pool)`. There is no other way to change the mint/burn
+authority, so the share supply always has exactly one minter.
 
 ## Why a direct implementation, not OpenZeppelin `fungible`
 
@@ -30,6 +43,12 @@ option once the workspace moves to a matching SDK.
 | Negative amounts rejected | ✅ | `negative_amounts_are_rejected` |
 | Works through the generic `token::TokenClient` | ✅ | `works_through_the_generic_token_client` |
 | `mint` restricted to the pinned pool; emits `[mint, pool, to]` / `amount` | ✅ | `mint_requires_the_pool_and_emits_mint`, `mint_without_pool_auth_fails` |
+| `burn` restricted to the pinned pool; burning more than the balance fails | ✅ | `burn_requires_the_pool`, `burn_over_balance_fails` |
+| `initialize` cannot be called twice; the pool pin is never reset | ✅ | `initialize_is_idempotent_safe`, `reinitialization_cannot_repin_the_pool` |
+| `set_pool` rotates the pin only with admin auth and emits `set_pool` | ✅ | `set_pool_requires_admin`, `set_pool_rotates_mint_authority` |
+| Self-transfer and transfer to the contract's own address behave as plain transfers | ✅ | `self_transfer_and_transfer_to_contract` |
+| `transfer_from` with an allowance exactly equal to the amount succeeds and zeroes the allowance | ✅ | `transfer_from_exact_allowance` |
+| Approving the zero address is allowed and readable via `allowance` | ✅ | `approve_zero_address` |
 
 ## TTL management
 

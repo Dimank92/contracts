@@ -28,6 +28,8 @@ pub enum DataKey {
     Initialized,
     /// The only address allowed to mint.
     Pool,
+    /// Admin allowed to rotate the pool pin.
+    Admin,
     Decimals,
     Name,
     Symbol,
@@ -63,4 +65,41 @@ pub fn write_balance(env: &Env, id: &Address, amount: i128) {
     env.storage()
         .persistent()
         .extend_ttl(&key, BALANCE_LIFETIME_THRESHOLD, BALANCE_BUMP_AMOUNT);
+}
+
+pub fn read_allowance(env: &Env, from: &Address, spender: &Address) -> AllowanceValue {
+    let key = DataKey::Allowance(AllowanceKey {
+        from: from.clone(),
+        spender: spender.clone(),
+    });
+    match env.storage().temporary().get::<_, AllowanceValue>(&key) {
+        Some(allowance) if allowance.expiration_ledger >= env.ledger().sequence() => allowance,
+        _ => AllowanceValue {
+            amount: 0,
+            expiration_ledger: 0,
+        },
+    }
+}
+
+pub fn write_allowance(
+    env: &Env,
+    from: &Address,
+    spender: &Address,
+    amount: i128,
+    expiration_ledger: u32,
+) {
+    let key = DataKey::Allowance(AllowanceKey {
+        from: from.clone(),
+        spender: spender.clone(),
+    });
+    env.storage().temporary().set(&key, &AllowanceValue {
+        amount,
+        expiration_ledger,
+    });
+    // Temporary entries are only bumped while they are still live.
+    if expiration_ledger > env.ledger().sequence() {
+        env.storage()
+            .temporary()
+            .extend_ttl(&key, expiration_ledger - env.ledger().sequence(), expiration_ledger - env.ledger().sequence());
+    }
 }

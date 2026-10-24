@@ -51,6 +51,12 @@ pub struct Proposal {
     pub canceled: bool,
     /// Timelock ready timestamp once queued, zero before.
     pub eta: u64,
+    /// Hash of the human-readable description, for off-chain indexing.
+    pub description_hash: BytesN<32>,
+    /// Ledger timestamp after which the proposal can no longer be executed.
+    pub expires_at: u64,
+    /// Whether the proposal has been executed through the timelock.
+    pub executed: bool,
 }
 
 #[contracttype]
@@ -60,10 +66,12 @@ pub enum DataKey {
     Initialized,
     Token,
     Timelock,
+    Admin,
     VotingDelay,
     VotingPeriod,
     QuorumBps,
     ProposalThreshold,
+    ExecutionDelay,
     Proposal(BytesN<32>),
     Voted(BytesN<32>, Address),
 }
