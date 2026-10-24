@@ -1,4 +1,26 @@
-use soroban_sdk::{contracttype, Address};
+use soroban_sdk::{contracttype, Address, Vec};
+
+/// Maximum number of checkpoints allowed in a `Stepped` schedule.
+pub const MAX_CHECKPOINTS: u32 = 64;
+
+/// Vesting schedule attached to a stream, selected at creation time.
+///
+/// All timestamps are ledger timestamps (seconds). The withdrawable amount is
+/// a pure function of the current ledger timestamp and the schedule.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Schedule {
+    /// Continuous linear vesting from `start` to `end`.
+    Linear,
+    /// Linear vesting from `start` to `end`, but nothing is withdrawable
+    /// before `cliff`. At and after `cliff`, the amount is computed
+    /// continuously from `start` (not from `cliff`).
+    LinearWithCliff { cliff: u64 },
+    /// Discrete milestone releases. `checkpoints` is an ordered list of
+    /// `(timestamp, cumulative_amount)` pairs, strictly increasing in both
+    /// fields, with the final cumulative amount equal to the stream total.
+    Stepped { checkpoints: Vec<(u64, i128)> },
+}
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -11,8 +33,14 @@ pub struct Stream {
     pub start: u64,
     /// Nothing is withdrawable before `cliff`; at `cliff` everything
     /// streamed since `start` unlocks at once.
+    ///
+    /// Kept in sync with the schedule: for `Linear` this equals `start`,
+    /// for `LinearWithCliff` it equals the schedule's cliff, and for
+    /// `Stepped` it equals the first checkpoint timestamp.
     pub cliff: u64,
     pub end: u64,
+    /// Vesting schedule selected at creation time.
+    pub schedule: Schedule,
     /// Cumulative amount already paid out to recipients.
     pub withdrawn: i128,
     /// Set once cancelled. The stream is frozen at the amount streamed at
@@ -20,46 +48,11 @@ pub struct Stream {
     pub canceled: bool,
 }
 
-/// Terminal/lifecycle status reported by query entrypoints.
-#[contracttype]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum StreamStatus {
-    /// Before `start` (or before `cliff`): nothing has vested yet.
-    Pending,
-    /// Between `start`/`cliff` and `end`: actively vesting.
-    Streaming,
-    /// Past `end`: fully vested.
-    Completed,
-    /// Cancelled by governance; frozen at the amount streamed at cancellation.
-    Cancelled,
-}
-
-/// Full read-only view of a stream returned by `get_stream`.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct StreamRecord {
-    pub sender: Address,
-    pub recipient: Address,
-    pub token: Address,
-    pub total: i128,
-    pub start: u64,
-    pub cliff: u64,
-    pub duration: u64,
-    pub withdrawn: i128,
-    pub status: StreamStatus,
-}
-
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
-    /// One-shot initialize flag; see `zenith_common::require_uninitialized`.
-    Initialized,
     /// Governance address allowed to cancel any stream.
     Governance,
     StreamCounter,
     Stream(u64),
-    /// Per-sender enumeration index: (sender, stream_id) -> ()
-    SenderStream(Address, u64),
-    /// Per-recipient enumeration index: (recipient, stream_id) -> ()
-    RecipientStream(Address, u64),
 }

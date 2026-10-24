@@ -27,15 +27,13 @@ mod types;
 
 use error::Error;
 pub use migrations::CURRENT_SCHEMA_VERSION;
-use types::{DataKey, Stream, StreamStatus};
+use types::{DataKey, Schedule, Stream};
+
+/// Maximum number of checkpoints a `Stepped` schedule may carry.
+pub const MAX_CHECKPOINTS: u32 = 64;
 
 #[contract]
 pub struct Streams;
-
-/// Hard cap on the number of streams returned by a single enumeration
-/// page. Callers paginate with the returned cursor; no query ever returns
-/// more than this many entries.
-const MAX_PAGE_SIZE: u32 = 50;
 
 fn load(env: &Env, stream_id: u64) -> Stream {
     env.storage()
@@ -55,7 +53,41 @@ fn streamed_at(stream: &Stream, now: u64) -> i128 {
     if stream.canceled || now >= stream.end {
         return stream.total;
     }
-    if now < stream.cliff || now <= stream.start {
+    withdrawable_at(stream, now)
+}
+
+/// Pure function of the ledger timestamp and the schedule: the cumulative
+/// amount vested as of `now`, in `[0, total]`. Never decreases with time.
+fn withdrawable_at(stream: &Stream, now: u64) -> i128 {
+    if stream.canceled || now >= stream.end {
+        return stream.total;
+    }
+    match &stream.schedule {
+        Schedule::Linear => linear_at(stream, now),
+        Schedule::LinearWithCliff { cliff } => {
+            if now < *cliff {
+                0
+            } else {
+                linear_at(stream, now)
+            }
+        }
+        Schedule::Stepped { checkpoints } => {
+            let mut vested = 0i128;
+            for (ts, cumulative) in checkpoints.iter() {
+                if now >= ts {
+                    vested = cumulative;
+                } else {
+                    break;
+                }
+            }
+            vested
+        }
+    }
+}
+
+/// Continuous linear accrual from `start` (not from the cliff), floored.
+fn linear_at(stream: &Stream, now: u64) -> i128 {
+    if now <= stream.start {
         return 0;
     }
     math::mul_div_floor(
@@ -65,106 +97,45 @@ fn streamed_at(stream: &Stream, now: u64) -> i128 {
     )
 }
 
-/// Vested-but-unwithdrawn amount for `stream` as of `now`. This is the
-/// single source of truth shared by `withdraw` and `withdrawable`.
-fn withdrawable_at(stream: &Stream, now: u64) -> i128 {
-    streamed_at(stream, now) - stream.withdrawn
-}
-
-/// Terminal status of a stream: cancelled, fully withdrawn, or live.
-fn status_of(stream: &Stream) -> StreamStatus {
-    if stream.canceled {
-        StreamStatus::Canceled
-    } else if stream.withdrawn >= stream.total {
-        StreamStatus::Completed
-    } else {
-        StreamStatus::Active
-    }
-}
-
-/// Appends `stream_id` to the sender/recipient index for `stream` and
-/// extends the index entry's TTL so it cannot expire before the stream.
-fn index_stream(env: &Env, stream_id: u64, stream: &Stream) {
-    let mut sender_ids: Vec<u64> = env
-        .storage()
-        .persistent()
-        .get(&DataKey::SenderStreams(stream.funder.clone()))
-        .unwrap_or_else(|| Vec::new(env));
-    sender_ids.push_back(stream_id);
-    env.storage()
-        .persistent()
-        .set(&DataKey::SenderStreams(stream.funder.clone()), &sender_ids);
-
-    let mut recipient_ids: Vec<u64> = env
-        .storage()
-        .persistent()
-        .get(&DataKey::RecipientStreams(stream.recipient.clone()))
-        .unwrap_or_else(|| Vec::new(env));
-    recipient_ids.push_back(stream_id);
-    env.storage()
-        .persistent()
-        .set(&DataKey::RecipientStreams(stream.recipient.clone()), &recipient_ids);
-}
-
-/// Removes `stream_id` from the recipient index for `old` and adds it to
-/// the index for `new`, keeping enumeration in sync with the record.
-fn reindex_recipient(env: &Env, stream_id: u64, old: &Address, new: &Address) {
-    let mut old_ids: Vec<u64> = env
-        .storage()
-        .persistent()
-        .get(&DataKey::RecipientStreams(old.clone()))
-        .unwrap_or_else(|| Vec::new(env));
-    let mut kept: Vec<u64> = Vec::new(env);
-    for id in old_ids.iter() {
-        if id != stream_id {
-            kept.push_back(id);
+/// Validates a schedule against the stream bounds and total, panicking with
+/// a typed error on any violation.
+fn validate_schedule(env: &Env, schedule: &Schedule, total: i128, start: u64, end: u64) {
+    match schedule {
+        Schedule::Linear => {}
+        Schedule::LinearWithCliff { cliff } => {
+            if *cliff < start || *cliff > end {
+                panic_with_error!(env, Error::InvalidSchedule);
+            }
+        }
+        Schedule::Stepped { checkpoints } => {
+            if checkpoints.len() > MAX_CHECKPOINTS {
+                panic_with_error!(env, Error::TooManyCheckpoints);
+            }
+            if checkpoints.is_empty() {
+                panic_with_error!(env, Error::InvalidSchedule);
+            }
+            let mut prev_ts = start;
+            let mut prev_cum = 0i128;
+            for (ts, cumulative) in checkpoints.iter() {
+                if ts <= prev_ts || cumulative <= prev_cum || ts > end {
+                    panic_with_error!(env, Error::InvalidSchedule);
+                }
+                prev_ts = ts;
+                prev_cum = cumulative;
+            }
+            if prev_cum != total {
+                panic_with_error!(env, Error::InvalidSchedule);
+            }
         }
     }
-    old_ids = kept;
-    env.storage()
-        .persistent()
-        .set(&DataKey::RecipientStreams(old.clone()), &old_ids);
-
-    let mut new_ids: Vec<u64> = env
-        .storage()
-        .persistent()
-        .get(&DataKey::RecipientStreams(new.clone()))
-        .unwrap_or_else(|| Vec::new(env));
-    new_ids.push_back(stream_id);
-    env.storage()
-        .persistent()
-        .set(&DataKey::RecipientStreams(new.clone()), &new_ids);
-}
-
-/// Returns up to `limit` (capped at `MAX_PAGE_SIZE`) ids from `ids`
-/// starting at `cursor`, plus the next cursor (or `None` when exhausted).
-fn paginate(env: &Env, ids: &Vec<u64>, cursor: u32, limit: u32) -> (Vec<u64>, Option<u32>) {
-    let cap = if limit == 0 || limit > MAX_PAGE_SIZE {
-        MAX_PAGE_SIZE
-    } else {
-        limit
-    };
-    let len = ids.len();
-    let mut page: Vec<u64> = Vec::new(env);
-    let mut i = cursor;
-    while i < len && page.len() < cap {
-        page.push_back(ids.get(i).unwrap());
-        i += 1;
-    }
-    let next = if i < len { Some(i) } else { None };
-    (page, next)
 }
 
 #[contractimpl]
 impl Streams {
     pub fn initialize(env: Env, governance: Address) {
-        zenith_common::require_uninitialized(
-            &env,
-            &DataKey::Initialized,
-            &DataKey::Governance,
-            Error::AlreadyInitialized,
-        );
-        zenith_common::mark_initialized(&env, &DataKey::Initialized);
+        if env.storage().instance().has(&DataKey::Governance) {
+            panic_with_error!(&env, Error::AlreadyInitialized);
+        }
         env.storage()
             .instance()
             .set(&DataKey::Governance, &governance);
@@ -180,6 +151,9 @@ impl Streams {
     /// `start` may be in the past (the elapsed portion is withdrawable
     /// immediately, subject to the cliff). Zero-duration streams
     /// (`start == end`) are rejected.
+    ///
+    /// Backward-compatible entrypoint: builds a `LinearWithCliff` schedule
+    /// (or plain `Linear` when `cliff == start`).
     #[allow(clippy::too_many_arguments)]
     pub fn create_stream(
         env: Env,
@@ -191,14 +165,39 @@ impl Streams {
         cliff: u64,
         end: u64,
     ) -> u64 {
+        let schedule = if cliff == start {
+            Schedule::Linear
+        } else {
+            Schedule::LinearWithCliff { cliff }
+        };
+        Self::create_stream_with_schedule(
+            env, funder, recipient, token, total, start, end, schedule,
+        )
+    }
+
+    /// Creates a stream with an explicit schedule variant, selected at
+    /// creation time. The schedule is validated once here rather than on
+    /// every read.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_stream_with_schedule(
+        env: Env,
+        funder: Address,
+        recipient: Address,
+        token: Address,
+        total: i128,
+        start: u64,
+        end: u64,
+        schedule: Schedule,
+    ) -> u64 {
         funder.require_auth();
         migrations::require_current(&env);
         if total <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
         }
-        if start >= end || cliff < start || cliff > end {
+        if start >= end {
             panic_with_error!(&env, Error::InvalidSchedule);
         }
+        validate_schedule(&env, &schedule, total, start, end);
 
         token::Client::new(&env, &token).transfer(&funder, &env.current_contract_address(), &total);
 
@@ -211,19 +210,21 @@ impl Streams {
             .instance()
             .set(&DataKey::StreamCounter, &(stream_id + 1));
 
-        let stream = Stream {
-            funder: funder.clone(),
-            recipient: recipient.clone(),
-            token,
-            total,
-            start,
-            cliff,
-            end,
-            withdrawn: 0,
-            canceled: false,
-        };
-        save(&env, stream_id, &stream);
-        index_stream(&env, stream_id, &stream);
+        save(
+            &env,
+            stream_id,
+            &Stream {
+                funder: funder.clone(),
+                recipient: recipient.clone(),
+                token,
+                total,
+                start,
+                end,
+                schedule,
+                withdrawn: 0,
+                canceled: false,
+            },
+        );
         events::created(&env, stream_id, funder, recipient, total);
         stream_id
     }
@@ -236,7 +237,7 @@ impl Streams {
         if amount <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
         }
-        let available = withdrawable_at(&stream, env.ledger().timestamp());
+        let available = streamed_at(&stream, env.ledger().timestamp()) - stream.withdrawn;
         if amount > available {
             panic_with_error!(&env, Error::InsufficientBalance);
         }
@@ -248,7 +249,7 @@ impl Streams {
             &stream.recipient,
             &amount,
         );
-        events::withdrawn(&env, stream_id, stream.recipient, amount);
+        events::withdrawn(&env, stream_id, stream.recipient, amount, &stream.schedule);
     }
 
     /// Funder or governance cancels. The recipient receives everything
@@ -297,63 +298,7 @@ impl Streams {
         let old = stream.recipient.clone();
         stream.recipient = new_recipient.clone();
         save(&env, stream_id, &stream);
-        reindex_recipient(&env, stream_id, &old, &new_recipient);
         events::transferred(&env, stream_id, old, new_recipient);
-    }
-
-    // ── Read-only introspection ─────────────────────────────────────────────
-
-    /// Returns the full stream record for `stream_id`. Cancelled and
-    /// fully-withdrawn streams remain queryable; an unknown id panics with
-    /// `Error::StreamNotFound`.
-    pub fn get_stream(env: Env, stream_id: u64) -> Stream {
-        load(&env, stream_id)
-    }
-
-    /// Returns the vested-but-unwithdrawn amount for `stream_id` as of the
-    /// current ledger timestamp. Uses the same computation as `withdraw`.
-    pub fn withdrawable(env: Env, stream_id: u64) -> i128 {
-        let stream = load(&env, stream_id);
-        withdrawable_at(&stream, env.ledger().timestamp())
-    }
-
-    /// Returns the terminal/live status of `stream_id`.
-    pub fn get_stream_status(env: Env, stream_id: u64) -> StreamStatus {
-        status_of(&load(&env, stream_id))
-    }
-
-    /// Cursor-paginated enumeration of streams funded by `address`.
-    /// Returns at most `MAX_PAGE_SIZE` ids and the next cursor (`None` when
-    /// exhausted).
-    pub fn get_sender_streams(
-        env: Env,
-        address: Address,
-        cursor: u32,
-        limit: u32,
-    ) -> (Vec<u64>, Option<u32>) {
-        let ids: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::SenderStreams(address))
-            .unwrap_or_else(|| Vec::new(&env));
-        paginate(&env, &ids, cursor, limit)
-    }
-
-    /// Cursor-paginated enumeration of streams paying `address`.
-    /// Returns at most `MAX_PAGE_SIZE` ids and the next cursor (`None` when
-    /// exhausted).
-    pub fn get_recipient_streams(
-        env: Env,
-        address: Address,
-        cursor: u32,
-        limit: u32,
-    ) -> (Vec<u64>, Option<u32>) {
-        let ids: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::RecipientStreams(address))
-            .unwrap_or_else(|| Vec::new(&env));
-        paginate(&env, &ids, cursor, limit)
     }
 
     // ── Schema migrations (docs/migrations.md) ──────────────────────────────
@@ -388,4 +333,41 @@ impl Streams {
     pub fn schema_version(env: Env) -> u32 {
         zenith_common::migrations::schema_version(&env)
     }
+
+    /// `(target, cursor)` while a paginated migration is in progress.
+    pub fn migration_state(env: Env) -> Option<(u32, u32)> {
+        zenith_common::migrations::migration_state(&env)
+    }
+
+    /// `(recipient_withdrawable, funder_refundable)` as of now: what the
+    /// recipient could withdraw right now, and what the funder would get
+    /// back if the stream were cancelled right now.
+    pub fn balance_of(env: Env, stream_id: u64) -> (i128, i128) {
+        let stream = load(&env, stream_id);
+        let streamed = streamed_at(&stream, env.ledger().timestamp());
+        (streamed - stream.withdrawn, stream.total - streamed)
+    }
+
+    /// Cumulative amount vested as of now, per the stream's schedule. Pure
+    /// function of the ledger timestamp and the schedule.
+    pub fn withdrawable(env: Env, stream_id: u64) -> i128 {
+        let stream = load(&env, stream_id);
+        withdrawable_at(&stream, env.ledger().timestamp())
+    }
+
+    pub fn get_stream(env: Env, stream_id: u64) -> Option<Stream> {
+        env.storage().persistent().get(&DataKey::Stream(stream_id))
+    }
+
+    pub fn get_stream_count(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::StreamCounter)
+            .unwrap()
+    }
+}
+
+/// Convenience constructor for a `Stepped` schedule from parallel arrays.
+pub fn stepped_schedule(checkpoints: Vec<(u64, i128)>) -> Schedule {
+    Schedule::Stepped { checkpoints }
 }

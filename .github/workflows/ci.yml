@@ -133,9 +133,12 @@ jobs:
   budgets:
     runs-on: ubuntu-latest
     env:
+      # Every #[contract] crate that builds to a deployable wasm. `common`
+      # is a plain rlib (no #[contract]) and is excluded; test/adversary
+      # crates (integration_tests, tools/*) are native-only and excluded.
       # Build order: options_market needs multisig, price_oracle, vault and
       # params wasm first (see the note at the top of this file).
-      CONTRACTS: multisig price_oracle vault params options_market streams staking governor grants_escrow
+      CONTRACTS: multisig price_oracle vault params options_market streams staking governor grants_escrow lp_token lp_pool timelock
     steps:
       - uses: actions/checkout@v4
         with:
@@ -146,16 +149,26 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install wasm-opt (binaryen)
         run: sudo apt-get update && sudo apt-get install -y binaryen
-      - name: Build every contract wasm
+      - name: Build every contract wasm (release)
         run: |
           for c in $CONTRACTS; do
             (cd "$c" && cargo build --target wasm32-unknown-unknown --release)
           done
       # Prints raw and optimized size per contract to the job summary and
-      # fails above budget. --in-place swaps each release wasm for its
-      # optimized build so the steps below test what would be deployed.
+      # fails above budget, reporting the offending crate, its size and the
+      # delta against the checked-in budget. --in-place swaps each release
+      # wasm for its optimized build so the steps below test what would be
+      # deployed.
       - name: Optimize and enforce wasm size budgets
         run: scripts/wasm-size/check.sh --in-place $CONTRACTS
+      # Raw release artifacts, for inspection and reuse by the
+      # deployment-script work.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-wasm
+          path: target/wasm32-unknown-unknown/release/*.wasm
+          if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         if: always()
         with:

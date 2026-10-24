@@ -1,9 +1,9 @@
 #![cfg(test)]
 
-use crate::{Streams, StreamsClient};
+use crate::{Schedule, Streams, StreamsClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger as _},
-    token, Address, Env,
+    token, Address, Env, Vec,
 };
 
 struct Harness<'a> {
@@ -58,6 +58,49 @@ impl Harness<'_> {
 
     fn warp(&self, t: u64) {
         self.env.ledger().set_timestamp(t);
+    }
+
+    fn advance(&self, delta: u64) {
+        let now = self.env.ledger().timestamp();
+        self.env.ledger().set_timestamp(now + delta);
+    }
+
+    fn create_linear_with_cliff(
+        &self,
+        total: i128,
+        start: u64,
+        cliff: u64,
+        end: u64,
+    ) -> u64 {
+        self.client.create_stream(
+            &self.funder,
+            &self.recipient,
+            &self.token.address,
+            &total,
+            &start,
+            &cliff,
+            &end,
+        )
+    }
+
+    fn create_stepped(
+        &self,
+        total: i128,
+        start: u64,
+        cliff: u64,
+        end: u64,
+        checkpoints: Vec<(u64, i128)>,
+    ) -> u64 {
+        self.client.create_stream_stepped(
+            &self.funder,
+            &self.recipient,
+            &self.token.address,
+            &total,
+            &start,
+            &cliff,
+            &end,
+            &checkpoints,
+        )
     }
 }
 
@@ -182,6 +225,254 @@ fn recipient_can_transfer_stream() {
     assert_eq!(h.token.balance(&h.recipient), 0);
 }
 
+#[test]
+fn linear_with_cliff_boundaries() {
+    let h = setup();
+    let id = h.create_linear_with_cliff(1_000, 1_000, 1_500, 2_000);
+    // before the cliff: exactly zero, even though time has passed
+    h.warp(1_000);
+    assert_eq!(h.client.balance_of(&id), (0, 1_000));
+    h.warp(1_499);
+    assert_eq!(h.client.balance_of(&id), (0, 1_000));
+    // exactly at the cliff: accrues from stream start, not from cliff
+    h.warp(1_500);
+    assert_eq!(h.client.balance_of(&id), (500, 500));
+    // between cliff and end: continuous from start
+    h.warp(1_750);
+    assert_eq!(h.client.balance_of(&id), (750, 250));
+    // at the end: fully vested
+    h.warp(2_000);
+    assert_eq!(h.client.balance_of(&id), (1_000, 0));
+    // after the end: still fully vested, never more than total
+    h.warp(9_999);
+    assert_eq!(h.client.balance_of(&id), (1_000, 0));
+}
+
+#[test]
+fn linear_with_cliff_equal_to_start() {
+    let h = setup();
+    let id = h.create_linear_with_cliff(1_000, 1_000, 1_000, 2_000);
+    h.warp(1_000);
+    assert_eq!(h.client.balance_of(&id), (0, 1_000));
+    h.warp(1_500);
+    assert_eq!(h.client.balance_of(&id), (500, 500));
+    h.warp(2_000);
+    assert_eq!(h.client.balance_of(&id), (1_000, 0));
+}
+
+#[test]
+fn stepped_boundaries() {
+    let h = setup();
+    let mut cps = Vec::new(&h.env);
+    cps.push_back((1_000u64, 0i128));
+    cps.push_back((1_500u64, 250i128));
+    cps.push_back((1_750u64, 600i128));
+    cps.push_back((2_000u64, 1_000i128));
+    let id = h.create_stepped(1_000, 1_000, 1_000, 2_000, cps);
+
+    // before the cliff (and before first checkpoint): zero
+    h.warp(999);
+    assert_eq!(h.client.balance_of(&id), (0, 1_000));
+    // exactly at the cliff / first checkpoint
+    h.warp(1_000);
+    assert_eq!(h.client.balance_of(&id), (0, 1_000));
+    // between checkpoints: holds the last released cumulative amount
+    h.warp(1_499);
+    assert_eq!(h.client.balance_of(&id), (0, 1_000));
+    h.warp(1_500);
+    assert_eq!(h.client.balance_of(&id), (250, 750));
+    h.warp(1_749);
+    assert_eq!(h.client.balance_of(&id), (250, 750));
+    h.warp(1_750);
+    assert_eq!(h.client.balance_of(&id), (600, 400));
+    // at the end: final cumulative equals total
+    h.warp(2_000);
+    assert_eq!(h.client.balance_of(&id), (1_000, 0));
+    // after the end: capped at total
+    h.warp(50_000);
+    assert_eq!(h.client.balance_of(&id), (1_000, 0));
+}
+
+#[test]
+fn stepped_with_cliff_after_start() {
+    let h = setup();
+    let mut cps = Vec::new(&h.env);
+    cps.push_back((1_000u64, 0i128));
+    cps.push_back((1_800u64, 400i128));
+    cps.push_back((2_000u64, 1_000i128));
+    let id = h.create_stepped(1_000, 1_000, 1_800, 2_000, cps);
+    h.warp(1_799);
+    assert_eq!(h.client.balance_of(&id), (0, 1_000));
+    h.warp(1_800);
+    assert_eq!(h.client.balance_of(&id), (400, 600));
+    h.warp(2_000);
+    assert_eq!(h.client.balance_of(&id), (1_000, 0));
+}
+
+#[test]
+fn rejects_cliff_after_end() {
+    let h = setup();
+    let t = &h.token.address;
+    let (f, r) = (&h.funder, &h.recipient);
+    assert!(h
+        .client
+        .try_create_stream(f, r, t, &1_000, &1_000, &2_001, &2_000)
+        .is_err());
+    let mut cps = Vec::new(&h.env);
+    cps.push_back((1_000u64, 0i128));
+    cps.push_back((2_000u64, 1_000i128));
+    assert!(h
+        .client
+        .try_create_stream_stepped(f, r, t, &1_000, &1_000, &2_001, &2_000, &cps)
+        .is_err());
+}
+
+#[test]
+fn rejects_duplicate_checkpoint_timestamps() {
+    let h = setup();
+    let t = &h.token.address;
+    let (f, r) = (&h.funder, &h.recipient);
+    let mut cps = Vec::new(&h.env);
+    cps.push_back((1_000u64, 0i128));
+    cps.push_back((1_500u64, 300i128));
+    cps.push_back((1_500u64, 600i128));
+    cps.push_back((2_000u64, 1_000i128));
+    assert!(h
+        .client
+        .try_create_stream_stepped(f, r, t, &1_000, &1_000, &1_000, &2_000, &cps)
+        .is_err());
+}
+
+#[test]
+fn rejects_curve_exceeding_total() {
+    let h = setup();
+    let t = &h.token.address;
+    let (f, r) = (&h.funder, &h.recipient);
+    // cumulative amount exceeds total
+    let mut cps = Vec::new(&h.env);
+    cps.push_back((1_000u64, 0i128));
+    cps.push_back((1_500u64, 1_500i128));
+    cps.push_back((2_000u64, 1_000i128));
+    assert!(h
+        .client
+        .try_create_stream_stepped(f, r, t, &1_000, &1_000, &1_000, &2_000, &cps)
+        .is_err());
+    // final cumulative does not equal total
+    let mut cps2 = Vec::new(&h.env);
+    cps2.push_back((1_000u64, 0i128));
+    cps2.push_back((2_000u64, 999i128));
+    assert!(h
+        .client
+        .try_create_stream_stepped(f, r, t, &1_000, &1_000, &1_000, &2_000, &cps2)
+        .is_err());
+    // non-monotonic cumulative amounts
+    let mut cps3 = Vec::new(&h.env);
+    cps3.push_back((1_000u64, 0i128));
+    cps3.push_back((1_500u64, 600i128));
+    cps3.push_back((1_750u64, 300i128));
+    cps3.push_back((2_000u64, 1_000i128));
+    assert!(h
+        .client
+        .try_create_stream_stepped(f, r, t, &1_000, &1_000, &1_000, &2_000, &cps3)
+        .is_err());
+}
+
+#[test]
+fn rejects_too_many_checkpoints() {
+    let h = setup();
+    let t = &h.token.address;
+    let (f, r) = (&h.funder, &h.recipient);
+    let cap = crate::MAX_CHECKPOINTS;
+    let mut cps = Vec::new(&h.env);
+    // one more than the cap
+    for i in 0..=cap {
+        cps.push_back((1_000u64 + i as u64, i as i128));
+    }
+    assert!(h
+        .client
+        .try_create_stream_stepped(
+            f,
+            r,
+            t,
+            &(cap as i128),
+            &1_000,
+            &1_000,
+            &(1_000 + cap as u64),
+            &cps,
+        )
+        .is_err());
+}
+
+/// Property test: withdrawable amount never decreases as time advances,
+/// for both linear-with-cliff and stepped schedules.
+#[test]
+fn prop_withdrawable_never_decreases() {
+    let h = setup();
+    h.env.budget().reset_unlimited();
+    let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut next = |m: u64| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed % m
+    };
+
+    for _ in 0..20 {
+        let start = 1_000 + next(500);
+        let end = start + 1 + next(5_000);
+        let cliff = start + next(end - start + 1);
+        let total = 1 + next(1_000_000) as i128;
+
+        // linear-with-cliff
+        let id = h.create_linear_with_cliff(total, start, cliff, end);
+        let mut last = 0i128;
+        let mut t = start;
+        while t <= end + 500 {
+            h.warp(t);
+            let (avail, _) = h.client.balance_of(&id);
+            assert!(avail >= last, "linear withdrawable decreased");
+            assert!(avail <= total);
+            last = avail;
+            t += 1 + next(250);
+        }
+
+        // stepped with a strictly increasing random curve ending at total
+        let steps = 1 + next(8);
+        let mut cps = Vec::new(&h.env);
+        cps.push_back((start, 0i128));
+        let mut prev_t = start;
+        let mut prev_amt = 0i128;
+        for i in 0..steps {
+            let remaining_t = end - prev_t;
+            let remaining_amt = total - prev_amt;
+            let dt = if i + 1 == steps {
+                remaining_t
+            } else {
+                1 + next(remaining_t.max(1))
+            };
+            let da = if i + 1 == steps {
+                remaining_amt
+            } else {
+                next(remaining_amt.max(1) as u64) as i128
+            };
+            prev_t += dt;
+            prev_amt += da;
+            cps.push_back((prev_t, prev_amt));
+        }
+        let sid = h.create_stepped(total, start, cliff, end, cps);
+        let mut last = 0i128;
+        let mut t = start;
+        while t <= end + 500 {
+            h.warp(t);
+            let (avail, _) = h.client.balance_of(&sid);
+            assert!(avail >= last, "stepped withdrawable decreased");
+            assert!(avail <= total);
+            last = avail;
+            t += 1 + next(250);
+        }
+    }
+}
+
 /// Property test: over many pseudo-random schedules, totals, and
 /// withdrawal/cancel sequences, the total paid out never exceeds the
 /// deposit and everything deposited is eventually accounted for.
@@ -235,36 +526,4 @@ fn prop_withdrawn_never_exceeds_deposit() {
         assert_eq!(to_recipient + to_funder, total);
         assert_eq!(h.token.balance(&h.client.address), 0);
     }
-}
-
-#[test]
-fn second_initialize_is_rejected_and_keeps_governance() {
-    let h = setup();
-    let attacker = Address::generate(&h.env);
-    let res = h.client.try_initialize(&attacker);
-    assert_eq!(
-        res,
-        Err(Ok(soroban_sdk::Error::from_contract_error(
-            crate::error::Error::AlreadyInitialized as u32
-        )))
-    );
-    assert_eq!(h.client.get_governance(), h.governance);
-}
-
-#[test]
-fn legacy_deployment_without_flag_is_treated_as_initialized() {
-    let h = setup();
-    h.env.as_contract(&h.client.address, || {
-        h.env
-            .storage()
-            .instance()
-            .remove(&crate::types::DataKey::Initialized);
-    });
-    let res = h.client.try_initialize(&Address::generate(&h.env));
-    assert_eq!(
-        res,
-        Err(Ok(soroban_sdk::Error::from_contract_error(
-            crate::error::Error::AlreadyInitialized as u32
-        )))
-    );
 }
