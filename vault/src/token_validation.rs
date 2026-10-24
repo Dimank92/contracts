@@ -1,5 +1,3 @@
-#![no_std]
-
 use soroban_sdk::{token, Address, Env};
 
 #[derive(Clone, Debug, PartialEq)]
