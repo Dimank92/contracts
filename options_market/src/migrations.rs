@@ -69,7 +69,7 @@ impl OptionsMarket {
 
     /// The multisig action id that authorizes upgrading this contract to
     /// `new_wasm_hash` — what signers approve.
-    pub fn upgrade_action_id(env: Env, new_wasm_hash: BytesN<32>) -> u64 {
+    pub fn upgrade_action_id(env: Env, new_wasm_hash: BytesN<32>) -> BytesN<32> {
         upgrade::upgrade_action_id(&env, &new_wasm_hash)
     }
 

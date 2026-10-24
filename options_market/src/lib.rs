@@ -249,7 +249,7 @@ impl OptionsMarket {
     /// executable as `Critical`. Swapping the contract's executable is
     /// the single most consequential action any of these contracts can
     /// take, so the multisig is pinned rather than caller-supplied.
-    pub fn upgrade_via_multisig(env: Env, action_id: u64, new_wasm_hash: BytesN<32>) {
+    pub fn upgrade_via_multisig(env: Env, action_id: BytesN<32>, new_wasm_hash: BytesN<32>) {
         ttl::extend_instance(&env);
         zenith_common::upgrade::upgrade(
             &env,
