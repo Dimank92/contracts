@@ -46,4 +46,8 @@ pub enum Error {
     /// The migration batch is invalid.
     /// Cause: `migrate_batch` with a cursor other than where the last batch stopped, or a limit of 0 or above `MAX_MIGRATION_BATCH`.
     InvalidMigrationBatch = 104,
+    /// A state the contract guarantees by construction was missing (e.g. a
+    /// storage entry that `initialize` always writes). Never expected on a
+    /// correctly deployed contract; replaces a panic with a typed error.
+    InternalInvariant = 90,
 }

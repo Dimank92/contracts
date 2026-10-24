@@ -113,6 +113,27 @@ jobs:
           name: wasm
           path: target/wasm32-unknown-unknown/release/*.wasm
 
+  # Rustdoc gate: undocumented public items and broken intra-doc links fail.
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo xtask doc
+
+  # Entrypoint interface vs the committed baselines in tools/api-diff/baselines.
+  api-diff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p api-diff -p multisig-cli
+      - run: tools/api-diff/run.sh check
+
   # Public-ABI guard: every existing function, type and error in each
   # contract's spec must survive unchanged (additions are fine) unless
   # the PR lists it in tools/spec-diff/allow.txt. Also prints the wasm

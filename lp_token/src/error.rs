@@ -29,4 +29,8 @@ pub enum Error {
     /// A balance would exceed `i128::MAX`.
     /// Cause: minting or transferring into a balance close to `i128::MAX`.
     Overflow = 8,
+    /// A state the contract guarantees by construction was missing (e.g. a
+    /// storage entry that `initialize` always writes). Never expected on a
+    /// correctly deployed contract; replaces a panic with a typed error.
+    InternalInvariant = 90,
 }

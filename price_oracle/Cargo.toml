@@ -21,6 +21,9 @@ debug-assertions = false
 panic = "abort"
 codegen-units = 1
 
+[lints]
+workspace = true
+
 [dependencies]
 soroban-sdk = { version = "21.0.0" }
 zenith-common = { path = "../common" }

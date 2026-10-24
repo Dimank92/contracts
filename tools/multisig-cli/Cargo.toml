@@ -1,0 +1,13 @@
+[package]
+name = "multisig-cli"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde_json = "1"
+sha2 = "0.10"
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
+multisig = { workspace = true }

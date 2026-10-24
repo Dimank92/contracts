@@ -1,12 +1,17 @@
 use soroban_sdk::{token, Address, Env};
 
 #[derive(Clone, Debug, PartialEq)]
+/// Why a guarded token transfer was rejected.
 pub enum TokenError {
+    /// The token contract misbehaved or is not a valid token.
     InvalidToken,
+    /// The requested amount was zero or negative.
     ZeroTransfer,
+    /// The observed balance change did not match the requested amount.
     DeltaMismatch,
 }
 
+/// Guards inbound collateral transfers against fee-on-transfer and misbehaving tokens.
 pub struct TokenTransferGuard;
 
 impl TokenTransferGuard {

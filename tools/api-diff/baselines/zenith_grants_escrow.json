@@ -1,0 +1,197 @@
+{
+  "functions": {
+    "approve_milestone": {
+      "inputs": [
+        [
+          "grant_id",
+          "U64"
+        ],
+        [
+          "idx",
+          "U32"
+        ],
+        [
+          "reviewer",
+          "Address"
+        ]
+      ],
+      "outputs": []
+    },
+    "bump": {
+      "inputs": [
+        [
+          "keys",
+          "Vec<DataKey>"
+        ]
+      ],
+      "outputs": []
+    },
+    "create_grant": {
+      "inputs": [
+        [
+          "funder",
+          "Address"
+        ],
+        [
+          "grantee",
+          "Address"
+        ],
+        [
+          "token",
+          "Address"
+        ],
+        [
+          "milestones",
+          "Vec<(I128, U64)>"
+        ],
+        [
+          "reviewers",
+          "Vec<Address>"
+        ],
+        [
+          "quorum",
+          "U32"
+        ]
+      ],
+      "outputs": [
+        "U64"
+      ]
+    },
+    "get_grant": {
+      "inputs": [
+        [
+          "grant_id",
+          "U64"
+        ]
+      ],
+      "outputs": [
+        "Option<Grant>"
+      ]
+    },
+    "get_grant_count": {
+      "inputs": [],
+      "outputs": [
+        "U64"
+      ]
+    },
+    "get_grantee_grant_count": {
+      "inputs": [
+        [
+          "grantee",
+          "Address"
+        ]
+      ],
+      "outputs": [
+        "U32"
+      ]
+    },
+    "get_grants_by_grantee": {
+      "inputs": [
+        [
+          "grantee",
+          "Address"
+        ],
+        [
+          "start",
+          "U32"
+        ],
+        [
+          "limit",
+          "U32"
+        ]
+      ],
+      "outputs": [
+        "Vec<U64>"
+      ]
+    },
+    "has_approved": {
+      "inputs": [
+        [
+          "grant_id",
+          "U64"
+        ],
+        [
+          "idx",
+          "U32"
+        ],
+        [
+          "reviewer",
+          "Address"
+        ]
+      ],
+      "outputs": [
+        "Bool"
+      ]
+    },
+    "migrate": {
+      "inputs": [
+        [
+          "from",
+          "U32"
+        ],
+        [
+          "to",
+          "U32"
+        ]
+      ],
+      "outputs": [
+        "U32"
+      ]
+    },
+    "migrate_batch": {
+      "inputs": [
+        [
+          "cursor",
+          "U32"
+        ],
+        [
+          "limit",
+          "U32"
+        ]
+      ],
+      "outputs": [
+        "U32"
+      ]
+    },
+    "migration_state": {
+      "inputs": [],
+      "outputs": [
+        "Option<(U32, U32)>"
+      ]
+    },
+    "reclaim": {
+      "inputs": [
+        [
+          "grant_id",
+          "U64"
+        ]
+      ],
+      "outputs": [
+        "I128"
+      ]
+    },
+    "schema_version": {
+      "inputs": [],
+      "outputs": [
+        "U32"
+      ]
+    },
+    "submit_milestone": {
+      "inputs": [
+        [
+          "grant_id",
+          "U64"
+        ],
+        [
+          "idx",
+          "U32"
+        ],
+        [
+          "evidence_hash",
+          "BytesN<32>"
+        ]
+      ],
+      "outputs": []
+    }
+  }
+}

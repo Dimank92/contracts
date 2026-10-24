@@ -11,6 +11,9 @@ publish.workspace = true
 # on its own — same pattern as price_oracle's Cargo.toml.
 crate-type = ["cdylib", "rlib"]
 
+[lints]
+workspace = true
+
 [dependencies]
 soroban-sdk = { workspace = true }
 zenith-common = { workspace = true }

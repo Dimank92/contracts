@@ -10,6 +10,9 @@ build = "../common/build_meta.rs"
 [lib]
 crate-type = ["cdylib"]
 
+[lints]
+workspace = true
+
 [dependencies]
 soroban-sdk = { workspace = true }
 zenith-common = { workspace = true }

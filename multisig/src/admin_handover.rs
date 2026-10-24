@@ -26,7 +26,7 @@ impl AdminHandover {
 
     pub fn propose_admin(env: &Env, current_admin: &Address, candidate: &Address) -> Result<(), AdminHandoverError> {
         current_admin.require_auth();
-        let stored_admin: Address = env.storage().instance().get(&symbol_short!("ADMIN")).unwrap();
+        let stored_admin: Address = env.storage().instance().get(&symbol_short!("ADMIN")).unwrap_or_else(|| panic_with_error!(env, Error::InternalInvariant));
         if current_admin != &stored_admin {
             return Err(AdminHandoverError::Unauthorized);
         }

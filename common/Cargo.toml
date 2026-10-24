@@ -11,6 +11,9 @@ rust-version.workspace = true
 # every contract can't collide on exported symbol names.
 crate-type = ["rlib"]
 
+[lints]
+workspace = true
+
 [dependencies]
 soroban-sdk = { workspace = true }
 

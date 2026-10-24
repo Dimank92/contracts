@@ -1873,3 +1873,13 @@ fn cancel_retires_action_permanently() {
         .try_cancel(&Address::generate(&h.env), &aid(&h.env, 8))
         .is_err());
 }
+
+#[test]
+fn uninitialized_getters_return_internal_invariant() {
+    let env = Env::default();
+    let client = MultisigClient::new(&env, &env.register_contract(None, Multisig));
+    assert_eq!(
+        client.try_get_threshold().err(),
+        Some(Ok(soroban_sdk::Error::from_contract_error(90)))
+    );
+}

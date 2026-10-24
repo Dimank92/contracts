@@ -1,0 +1,178 @@
+{
+  "functions": {
+    "bump": {
+      "inputs": [
+        [
+          "keys",
+          "Vec<DataKey>"
+        ]
+      ],
+      "outputs": []
+    },
+    "cancel_bounds": {
+      "inputs": [
+        [
+          "key",
+          "Symbol"
+        ]
+      ],
+      "outputs": []
+    },
+    "define_param": {
+      "inputs": [
+        [
+          "key",
+          "Symbol"
+        ],
+        [
+          "value",
+          "I128"
+        ],
+        [
+          "min",
+          "I128"
+        ],
+        [
+          "max",
+          "I128"
+        ]
+      ],
+      "outputs": []
+    },
+    "execute_bounds": {
+      "inputs": [
+        [
+          "key",
+          "Symbol"
+        ]
+      ],
+      "outputs": []
+    },
+    "get_param": {
+      "inputs": [
+        [
+          "key",
+          "Symbol"
+        ]
+      ],
+      "outputs": [
+        "Option<Param>"
+      ]
+    },
+    "get_pending_bounds": {
+      "inputs": [
+        [
+          "key",
+          "Symbol"
+        ]
+      ],
+      "outputs": [
+        "Option<BoundsProposal>"
+      ]
+    },
+    "get_timelock": {
+      "inputs": [],
+      "outputs": [
+        "Address"
+      ]
+    },
+    "get_value": {
+      "inputs": [
+        [
+          "key",
+          "Symbol"
+        ]
+      ],
+      "outputs": [
+        "I128"
+      ]
+    },
+    "get_version": {
+      "inputs": [],
+      "outputs": [
+        "U64"
+      ]
+    },
+    "initialize": {
+      "inputs": [
+        [
+          "timelock",
+          "Address"
+        ]
+      ],
+      "outputs": []
+    },
+    "migrate": {
+      "inputs": [
+        [
+          "from",
+          "U32"
+        ],
+        [
+          "to",
+          "U32"
+        ]
+      ],
+      "outputs": [
+        "U32"
+      ]
+    },
+    "migrate_batch": {
+      "inputs": [
+        [
+          "cursor",
+          "U32"
+        ],
+        [
+          "limit",
+          "U32"
+        ]
+      ],
+      "outputs": [
+        "U32"
+      ]
+    },
+    "migration_state": {
+      "inputs": [],
+      "outputs": [
+        "Option<(U32, U32)>"
+      ]
+    },
+    "propose_bounds": {
+      "inputs": [
+        [
+          "key",
+          "Symbol"
+        ],
+        [
+          "min",
+          "I128"
+        ],
+        [
+          "max",
+          "I128"
+        ]
+      ],
+      "outputs": []
+    },
+    "schema_version": {
+      "inputs": [],
+      "outputs": [
+        "U32"
+      ]
+    },
+    "set_param": {
+      "inputs": [
+        [
+          "key",
+          "Symbol"
+        ],
+        [
+          "value",
+          "I128"
+        ]
+      ],
+      "outputs": []
+    }
+  }
+}
