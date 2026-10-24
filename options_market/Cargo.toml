@@ -45,8 +45,6 @@ multisig = { workspace = true, features = ["testutils"] }
 vault = { workspace = true, features = ["testutils"] }
 # Same reasoning as price_oracle above, for src/params_client.rs.
 params = { package = "zenith-params", path = "../params", features = ["testutils"] }
-# Adversarial mock contracts for negative-path cross-contract tests (issue #115).
-test_adversaries = { package = "zenith-test-adversaries", path = "../test_adversaries" }
 # Measures and snapshots per-entrypoint resource usage (src/test_resources.rs).
 resource-snapshot = { path = "../tools/resource-snapshot" }
 

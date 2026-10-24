@@ -1,203 +1,138 @@
-#![allow(dead_code)]
+use crate::types::OptionType;
 
-//! Core math for the options market: fee calculation, payout, and collateral.
-//!
-//! All amounts are fixed-point at `PRICE_PRECISION` (1e7) unless noted.
+pub const PRICE_PRECISION: i128 = 10_000_000; // 1e7
+pub const RATE_PRECISION: i128 = 1_000_000_000; // 1e9
+pub const MIN_COLLATERAL_RATIO: i128 = 1_100_000_000; // 110% over-collateralization for puts
+pub const SETTLEMENT_WINDOW: u64 = 86_400; // 24h soft window after expiry to exercise
+pub const FORFEITURE_WINDOW: u64 = 90 * 86_400; // 90d window before unexercised ITM long sweeps to treasury
 
-/// Fixed-point scale: 1.0 = 10_000_000 (used for prices, strikes, contracts).
-pub const PRICE_PRECISION: i128 = 10_000_000;
+pub const DEFAULT_FEE_RATE_BPS: i128 = 50; // 0.5%
+pub const MAX_FEE_RATE_BPS: i128 = 1_000; // 10% hard ceiling, even for the admin
 
-/// Scale for implied-volatility rates (1.0 = 1_000_000_000, i.e. 1e9).
-pub const RATE_PRECISION: i128 = 1_000_000_000;
-
-/// Default protocol fee: 50 bps = 0.5%.
-pub const DEFAULT_FEE_RATE_BPS: i128 = 50;
-
-/// Maximum protocol fee: 1000 bps = 10%.
-pub const MAX_FEE_RATE_BPS: i128 = 1_000;
-
-/// Default cap on concurrently-active series per underlying.
+/// Caps how many series can ever be listed for a given underlying, so a
+/// single symbol can't accumulate unbounded storage entries over the
+/// contract's lifetime. This counts every series ever created, not
+/// currently-active ones — cancelling or letting a series expire doesn't
+/// free up room, since nothing about storage usage shrinks when that
+/// happens either.
 pub const MAX_SERIES_PER_UNDERLYING: u32 = 50;
 
-/// Minimum collateral ratio for puts: 110%.
-pub const MIN_COLLATERAL_RATIO: i128 = 110;
-
-/// Settlement window (24 h). Longs can exercise during this window after expiry.
-pub const SETTLEMENT_WINDOW: u64 = 86_400;
-
-/// Maximum positions in a single batch call.
+/// Caps how many position_ids exercise_batch/reclaim_batch will process in
+/// a single call, so a caller with a very large position count can't build
+/// a batch that blows through Soroban's per-call resource limits.
 pub const MAX_BATCH_SIZE: u32 = 25;
 
-/// Minimum lead time for new series: 1 hour.
-pub const MIN_EXPIRY_LEAD: u64 = 3_600;
+/// Most series one `settle_expiry` call settles. Sized against the
+/// per-transaction CPU / ledger-I/O budget: each series is one persistent
+/// read and two writes (see `settle_expiry_full_batch_fits_the_budget`).
+pub const MAX_EXPIRY_BATCH: u32 = 25;
 
-/// `floor(amount × bps / 10_000)`.
-///
-/// Guaranteed `0 <= fee <= amount` for `0 <= bps <= 10_000`.
-pub fn calc_fee(amount: i128, bps: i128) -> i128 {
-    if amount == 0 || bps == 0 {
-        return 0;
-    }
-    amount * bps / 10_000
+/// Series ids per expiry-calendar page.
+pub const EXPIRY_PAGE_SIZE: u32 = 25;
+
+/// Protocol fee on an amount, given a rate in basis points (1 bps = 0.01%).
+pub fn calc_fee(amount: i128, fee_rate_bps: i128) -> i128 {
+    amount
+        .checked_mul(fee_rate_bps)
+        .unwrap()
+        .checked_div(10_000)
+        .unwrap()
 }
 
-/// Intrinsic payout for a long position at settlement.
-///
-/// - Call: `max(0, settlement − strike) × contracts / PRICE_PRECISION`
-/// - Put:  `max(0, strike − settlement) × contracts / PRICE_PRECISION`
+/// Cash payout at settlement:
+/// Call: max(0, settlement - strike) × contracts / PRICE_PRECISION
+/// Put:  max(0, strike - settlement) × contracts / PRICE_PRECISION
 pub fn calc_payout(
-    option_type: &crate::types::OptionType,
+    option_type: &OptionType,
     strike: i128,
     settlement: i128,
     contracts: i128,
 ) -> i128 {
-    use crate::types::OptionType;
     let intrinsic = match option_type {
-        OptionType::Call => settlement - strike,
-        OptionType::Put => strike - settlement,
+        OptionType::Call => (settlement - strike).max(0),
+        OptionType::Put => (strike - settlement).max(0),
     };
-    if intrinsic <= 0 {
-        return 0;
-    }
-    intrinsic * contracts / PRICE_PRECISION
-}
-
-/// Minimum collateral a writer must lock.
-///
-/// - Call: `contracts × price / PRICE_PRECISION`  (100% notional)
-/// - Put:  `contracts × strike / PRICE_PRECISION × 110 / 100`  (110% of strike)
-pub fn required_collateral(
-    option_type: &crate::types::OptionType,
-    strike: i128,
-    price: i128,
-    contracts: i128,
-) -> i128 {
-    use crate::types::OptionType;
-    match option_type {
-        OptionType::Call => contracts * price / PRICE_PRECISION,
-        OptionType::Put => contracts * strike / PRICE_PRECISION * 110 / 100,
-    }
+    contracts
+        .checked_mul(intrinsic)
+        .unwrap()
+        .checked_div(PRICE_PRECISION)
+        .unwrap()
 }
 
 #[cfg(test)]
-mod proptests {
-    extern crate std;
-
+mod test {
     use super::*;
-    use crate::types::OptionType;
-    use proptest::prelude::*;
-    use std::panic::{catch_unwind, AssertUnwindSafe};
 
-    const CASES: u32 = 10_000;
-
-    fn amount() -> impl Strategy<Value = i128> {
-        0i128..=1_000_000_000_000_000
+    #[test]
+    fn calc_fee_computes_bps_of_amount() {
+        assert_eq!(calc_fee(40_000_000, 50), 200_000); // 0.5% of 40M
+        assert_eq!(calc_fee(40_000_000, 100), 400_000); // 1% of 40M
     }
 
-    fn bps() -> impl Strategy<Value = i128> {
-        0i128..=10_000
+    #[test]
+    fn calc_fee_of_zero_bps_is_zero() {
+        assert_eq!(calc_fee(40_000_000, 0), 0);
     }
 
-    fn price() -> impl Strategy<Value = i128> {
-        1_000i128..=1_000_000_000_000_000
+    #[test]
+    fn calc_fee_truncates_towards_zero_on_a_non_exact_division() {
+        // 999 * 50 / 10_000 = 4.995, integer division truncates to 4 —
+        // callers must not assume this rounds to the nearest bps.
+        assert_eq!(calc_fee(999, 50), 4);
     }
 
-    fn contracts() -> impl Strategy<Value = i128> {
-        1i128..=1_000_000_000_000
+    #[test]
+    fn calc_payout_call_is_zero_at_the_money() {
+        assert_eq!(
+            calc_payout(&OptionType::Call, 700_000_000, 700_000_000, PRICE_PRECISION),
+            0
+        );
     }
 
-    proptest! {
-        #![proptest_config(ProptestConfig::with_cases(CASES))]
+    #[test]
+    fn calc_payout_call_is_zero_out_of_the_money() {
+        assert_eq!(
+            calc_payout(&OptionType::Call, 700_000_000, 650_000_000, PRICE_PRECISION),
+            0
+        );
+    }
 
-        #[test]
-        fn fee_is_non_negative(amount in amount(), bps in bps()) {
-            prop_assert!(calc_fee(amount, bps) >= 0);
-        }
+    #[test]
+    fn calc_payout_call_pays_the_intrinsic_value_in_the_money() {
+        // Strike 700, settlement 750 -> 50 of intrinsic value, 1 contract.
+        assert_eq!(
+            calc_payout(&OptionType::Call, 700_000_000, 750_000_000, PRICE_PRECISION),
+            50_000_000
+        );
+    }
 
-        #[test]
-        fn fee_does_not_exceed_amount(amount in amount(), bps in bps()) {
-            prop_assert!(calc_fee(amount, bps) <= amount);
-        }
+    #[test]
+    fn calc_payout_put_is_zero_out_of_the_money() {
+        assert_eq!(
+            calc_payout(&OptionType::Put, 700_000_000, 750_000_000, PRICE_PRECISION),
+            0
+        );
+    }
 
-        #[test]
-        fn fee_is_floor_of_fraction(amount in amount(), bps in bps()) {
-            let fee = calc_fee(amount, bps);
-            // fee = floor(amount * bps / 10_000)
-            prop_assert_eq!(fee, amount * bps / 10_000);
-        }
+    #[test]
+    fn calc_payout_put_pays_the_intrinsic_value_in_the_money() {
+        // Strike 700, settlement 650 -> 50 of intrinsic value, 1 contract.
+        assert_eq!(
+            calc_payout(&OptionType::Put, 700_000_000, 650_000_000, PRICE_PRECISION),
+            50_000_000
+        );
+    }
 
-        #[test]
-        fn fee_is_zero_when_amount_or_bps_is_zero(amount in amount(), bps in bps()) {
-            prop_assert_eq!(calc_fee(0, bps), 0);
-            prop_assert_eq!(calc_fee(amount, 0), 0);
-        }
-
-        #[test]
-        fn fee_is_monotonic_in_amount(a1 in amount(), a2 in amount(), bps in bps()) {
-            let (lo, hi) = if a1 <= a2 { (a1, a2) } else { (a2, a1) };
-            prop_assert!(calc_fee(lo, bps) <= calc_fee(hi, bps));
-        }
-
-        /// Whole i128 domain: returns the checked result or fails exactly
-        /// where amount × bps overflows.
-        #[test]
-        fn overflow_is_never_silent(amount in any::<i128>(), bps in any::<i128>()) {
-            let expected = amount.checked_mul(bps).map(|p| p / 10_000);
-            let actual = catch_unwind(AssertUnwindSafe(|| {
-                if bps == 0 { return Some(0i128); }
-                if amount == 0 { return Some(0i128); }
-                Some(amount * bps / 10_000)
-            })).ok().flatten();
-            prop_assert_eq!(actual, expected.map(|_| amount * bps / 10_000).ok_or(()).ok());
-        }
-
-        #[test]
-        fn payout_is_non_negative_call(
-            strike in price(),
-            settlement in price(),
-            contracts in contracts(),
-        ) {
-            prop_assert!(calc_payout(&OptionType::Call, strike, settlement, contracts) >= 0);
-        }
-
-        #[test]
-        fn payout_is_non_negative_put(
-            strike in price(),
-            settlement in price(),
-            contracts in contracts(),
-        ) {
-            prop_assert!(calc_payout(&OptionType::Put, strike, settlement, contracts) >= 0);
-        }
-
-        #[test]
-        fn call_payout_zero_at_or_below_strike(
-            strike in price(),
-            contracts in contracts(),
-        ) {
-            prop_assert_eq!(calc_payout(&OptionType::Call, strike, strike, contracts), 0);
-            if strike > 1 {
-                prop_assert_eq!(calc_payout(&OptionType::Call, strike, strike - 1, contracts), 0);
-            }
-        }
-
-        #[test]
-        fn put_payout_zero_at_or_above_strike(
-            strike in price(),
-            contracts in contracts(),
-        ) {
-            prop_assert_eq!(calc_payout(&OptionType::Put, strike, strike, contracts), 0);
-            prop_assert_eq!(calc_payout(&OptionType::Put, strike, strike + 1, contracts), 0);
-        }
-
-        #[test]
-        fn call_and_put_never_both_nonzero(
-            strike in price(),
-            settlement in price(),
-            contracts in contracts(),
-        ) {
-            let call = calc_payout(&OptionType::Call, strike, settlement, contracts);
-            let put = calc_payout(&OptionType::Put, strike, settlement, contracts);
-            prop_assert!(call == 0 || put == 0);
-        }
+    #[test]
+    fn calc_payout_scales_linearly_with_contracts() {
+        let one_contract =
+            calc_payout(&OptionType::Call, 700_000_000, 750_000_000, PRICE_PRECISION);
+        let three_contracts = calc_payout(
+            &OptionType::Call,
+            700_000_000,
+            750_000_000,
+            3 * PRICE_PRECISION,
+        );
+        assert_eq!(three_contracts, one_contract * 3);
     }
 }

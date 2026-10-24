@@ -33,12 +33,24 @@ pub enum DataKey {
     Vault,
     /// Records which vault holds escrow for a specific series: series_id -> Address
     SeriesVault(u64),
-    /// Cap on concurrently active series per underlying (instance storage).
-    MaxActiveSeries,
-    /// Current count of active-slot-holding series for a given underlying.
-    ActiveSeriesCount(Symbol),
-    /// Migration flag: whether migrate_counters has completed.
-    Migrated,
+    /// Running total of unexercised ITM obligations across settled positions
+    OrphanedLiabilities,
+    /// Cached settlement window, synced from the params registry.
+    SettlementWindow,
+    /// Optional params registry address.
+    ParamsRegistry,
+    /// Registry version the cached parameters were read at.
+    ParamsVersion,
+    /// `(underlying, type, strike, expiry)` -> series_id; rejects duplicates.
+    SeriesIndex(Symbol, OptionType, i128, u64),
+    /// Pinned price_oracle contract `settle_expiry` reads.
+    PriceOracle,
+    /// Expiry calendar: series listed for `(underlying, expiry)`.
+    ExpiryCount(Symbol, u64),
+    /// Expiry calendar page `n` of `(underlying, expiry)`.
+    ExpiryPage(Symbol, u64, u32),
+    /// Set once a series has been added to its expiry calendar.
+    ExpiryIndexed(u64),
 }
 
 // ─── Data Types ───────────────────────────────────────────────────────────────

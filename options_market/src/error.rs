@@ -42,6 +42,10 @@ pub enum Error {
     MigrationPending = 32,
     InvalidActiveSeriesCap = 33,
     InvalidPageLimit = 34,
+    /// `settle_expiry` before `set_price_oracle`.
+    PriceOracleNotSet = 35,
+    // Schema migrations (zenith_common::migrations) — same codes in
+    // every Zenith contract. See docs/migrations.md.
     SchemaVersionMismatch = 100,
     InvalidMigrationTarget = 101,
     MigrationInProgress = 102,

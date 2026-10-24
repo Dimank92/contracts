@@ -13,4 +13,12 @@ pub enum Error {
     TokenNotAllowed = 7,
     UnregisteredIntegrator = 8,
     InsufficientVaultBalance = 9,
+    /// A migration step changed a per-token ledger total.
+    MigrationInvariantViolated = 10,
+    // Shared migration codes, see zenith_common::migrations.
+    SchemaVersionMismatch = 100,
+    InvalidMigrationTarget = 101,
+    MigrationInProgress = 102,
+    NoMigrationInProgress = 103,
+    InvalidMigrationBatch = 104,
 }

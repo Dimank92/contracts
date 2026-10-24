@@ -1,7 +1,5 @@
 use soroban_sdk::{Address, Env, Symbol};
 
-use crate::types::{OptionPosition, OptionSeries};
-
 pub fn series_created(env: &Env, series_id: u64, strike_price: i128, expiry: u64, premium: i128) {
     env.events().publish(
         (Symbol::new(env, "series_created"),),
@@ -115,12 +113,6 @@ pub fn series_escrowed_to_vault(env: &Env, series_id: u64, amount: i128) {
     );
 }
 
-pub fn vault_updated(env: &Env, old_vault: Option<Address>, new_vault: Address) {
-    env.events().publish(
-        (Symbol::new(env, "vault_updated"),),
-        (old_vault, new_vault),
-    );
-}
 pub fn option_auto_exercised(
     env: &Env,
     owner: Address,
@@ -134,46 +126,33 @@ pub fn option_auto_exercised(
     );
 }
 
-/// Final archival record for a pruned position: carries the full struct,
-/// since after this event the entry is gone from contract storage.
-pub fn position_pruned(env: &Env, position: OptionPosition) {
+pub fn position_transferred(env: &Env, position_id: u64, from: Address, to: Address) {
     env.events().publish(
-        (
-            Symbol::new(env, "position_pruned"),
-            position.owner.clone(),
-            position.series_id,
-        ),
-        position,
+        (Symbol::new(env, "position_transferred"), position_id),
+        (from, to),
     );
 }
 
-/// Final archival record for a pruned series (full struct).
-pub fn series_pruned(env: &Env, series: OptionSeries) {
+pub fn payout_forfeited(env: &Env, owner: Address, position_id: u64, amount: i128) {
     env.events().publish(
-        (
-            Symbol::new(env, "series_pruned"),
-            series.underlying.clone(),
-            series.series_id,
-        ),
-        series,
+        (Symbol::new(env, "payout_forfeited"), owner),
+        (position_id, amount),
     );
 }
 
-/// A series released its active-series slot on `underlying`;
-/// `active_count` is the count after the release.
-pub fn series_slot_released(env: &Env, underlying: Symbol, series_id: u64, active_count: u32) {
+/// One per `settle_expiry` call: the page `[cursor, next_cursor)` was
+/// walked and `settled` series in it were settled at `price`.
+pub fn expiry_settled(
+    env: &Env,
+    underlying: Symbol,
+    expiry: u64,
+    cursor: u32,
+    next_cursor: u32,
+    settled: u32,
+    price: i128,
+) {
     env.events().publish(
-        (Symbol::new(env, "series_slot_released"), underlying),
-        (series_id, active_count),
+        (Symbol::new(env, "expiry_settled"), underlying, expiry),
+        (cursor, next_cursor, settled, price),
     );
-}
-
-pub fn max_active_series_updated(env: &Env, cap: u32) {
-    env.events()
-        .publish((Symbol::new(env, "max_active_series_updated"),), cap);
-}
-
-pub fn counters_migrated(env: &Env) {
-    env.events()
-        .publish((Symbol::new(env, "counters_migrated"),), ());
 }

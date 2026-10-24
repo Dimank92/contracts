@@ -32,6 +32,7 @@ publish = false
 [workspace.dependencies]
 soroban-sdk = { version = "21.7.7" }
 ed25519-dalek = "2"
+proptest = "1"
 
 # Internal crates. Contracts that call each other on-chain use
 # `contractimport!` against the compiled wasm (see

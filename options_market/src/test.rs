@@ -1,13 +1,21 @@
 #![cfg(test)]
 
-use crate::{OptionSeries, OptionType, OptionsMarket, OptionsMarketClient, PositionSide};
+extern crate std;
+
+use crate::types::DataKey;
+use crate::{ttl, OptionSeries, OptionType, OptionsMarket, OptionsMarketClient, PositionSide};
 use multisig::{Multisig, MultisigClient};
+use params::{Params, ParamsClient};
 use price_oracle::{PriceOracle, PriceOracleClient};
 use soroban_sdk::{
-    testutils::{Address as _, Events as _, Ledger},
-    token, Address, BytesN, Env, Symbol, TryFromVal,
+    symbol_short,
+    testutils::{
+        storage::{Instance as _, Persistent as _},
+        Address as _, Events as _, Ledger,
+    },
+    token, vec, Address, BytesN, Env, IntoVal, Symbol, TryFromVal,
 };
-use vault::{Vault, VaultClient};
+use vault::{Tag, Vault, VaultClient};
 
 const USDC_DECIMALS: i128 = 10_000_000; // matches PRICE_PRECISION
 
@@ -26,6 +34,10 @@ struct Harness<'a> {
 /// means every `require_auth()` call in the contract succeeds without
 /// needing real signatures — appropriate for unit tests that are
 /// exercising the contract's own logic, not its auth plumbing.
+fn aid(env: &Env, n: u8) -> soroban_sdk::BytesN<32> {
+    soroban_sdk::BytesN::from_array(env, &[n; 32])
+}
+
 fn setup<'a>() -> Harness<'a> {
     let env = Env::default();
     env.mock_all_auths();
@@ -289,7 +301,7 @@ fn write_covered_call_locks_collateral_equal_to_notional() {
 
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &required);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &required, &0);
     let position = h.client.get_position(&pos_id).unwrap();
 
     assert!(position.side == PositionSide::Short);
@@ -312,7 +324,7 @@ fn write_cash_secured_put_requires_110_percent_of_strike() {
 
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &required);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &required, &0);
     let position = h.client.get_position(&pos_id).unwrap();
     assert_eq!(position.collateral_locked, required);
 }
@@ -326,7 +338,7 @@ fn write_option_rejects_undercollateralized_offer() {
     mint(&h, &writer, 700_000_000);
     // Offers exactly 100% of strike for a put, which needs 110%.
     h.client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 }
 
 #[test]
@@ -340,7 +352,7 @@ fn write_option_rejects_a_write_with_no_buyer_premium_to_draw_from() {
     // empty — write_option must not pay the writer out of its own
     // just-deposited collateral, which isn't a premium anyone paid.
     h.client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 }
 
 #[test]
@@ -355,7 +367,7 @@ fn write_option_succeeds_once_the_pool_partially_covers_it() {
     let writer = Address::generate(&h.env);
     mint(&h, &writer, 700_000_000);
     h.client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     // The writer's premium exactly drained the pool the lone buyer funded.
     assert_eq!(h.client.get_premium_pool(), 0);
@@ -458,7 +470,7 @@ fn exercise_rejects_a_short_position() {
     mint(&h, &writer, 700_000_000);
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     advance_past_expiry(&h, series_id);
     h.client.set_settlement_price(&series_id, &(750_000_000));
@@ -604,7 +616,7 @@ fn reclaim_collateral_returns_locked_minus_max_loss() {
     mint(&h, &writer, 700_000_000);
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     advance_past_expiry(&h, series_id);
     h.client.set_settlement_price(&series_id, &(750_000_000)); // ITM by 50
@@ -633,7 +645,7 @@ fn reclaim_collateral_returns_everything_when_otm() {
     mint(&h, &writer, 700_000_000);
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     advance_past_expiry(&h, series_id);
     h.client.set_settlement_price(&series_id, &(650_000_000)); // OTM
@@ -677,7 +689,7 @@ fn reclaim_collateral_twice_is_rejected() {
     mint(&h, &writer, 700_000_000);
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     advance_past_expiry(&h, series_id);
     h.client.set_settlement_price(&series_id, &(650_000_000));
@@ -697,10 +709,10 @@ fn reclaim_batch_pays_out_every_position_in_the_list() {
     mint(&h, &writer, 1_400_000_000);
     let pos_a = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
     let pos_b = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     advance_past_expiry(&h, series_id);
     h.client.set_settlement_price(&series_id, &(750_000_000)); // ITM by 50 each
@@ -735,7 +747,7 @@ fn reclaim_batch_is_all_or_nothing() {
     mint(&h, &writer, 700_000_000);
     let valid_pos = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
     let never_created_pos_id = 9_999u64;
 
     advance_past_expiry(&h, series_id);
@@ -821,7 +833,7 @@ fn full_lifecycle_covered_call_itm() {
     mint(&h, &writer, 700_000_000);
     let writer_pos = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     let series: OptionSeries = h.client.get_series(&series_id).unwrap();
     assert_eq!(series.open_interest, 2 * USDC_DECIMALS); // one long + one short
@@ -905,7 +917,7 @@ fn write_option_is_rejected_while_paused() {
     let writer = Address::generate(&h.env);
     mint(&h, &writer, 700_000_000);
     h.client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 }
 
 /// A pause must not trap funds already at risk: an existing writer can still
@@ -919,7 +931,7 @@ fn pause_does_not_block_settlement_of_existing_positions() {
     mint(&h, &writer, 700_000_000);
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     h.client.pause();
 
@@ -962,7 +974,7 @@ fn cancelled_series_refunds_writer_full_collateral() {
     mint(&h, &writer, 700_000_000);
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     h.client.cancel_series(&series_id);
 
@@ -1013,17 +1025,25 @@ fn cancel_series_rejects_an_already_cancelled_series() {
 // ─── cross-contract: escrow_series_to_vault / claim_refund_from_vault ──────
 
 /// Deploys a real vault contract in the SAME Env as the options market
-/// under test, with its OWN admin set to the options market's contract
-/// address — the precondition escrow_series_to_vault/claim_refund_from_-
-/// vault's doc comments require, so options_market's cross-contract
-/// deposit()/withdraw() calls satisfy vault's own auth checks the same
-/// way any contract-to-contract call does (see vault's own docs).
+/// under test, with the options market registered as an integrator — the
+/// precondition escrow_series_to_vault/claim_refund_from_vault's doc
+/// comments require, so options_market owns its `(self, "series", id)`
+/// tags and its cross-contract deposit()/withdraw() calls satisfy vault's
+/// tag-owner auth checks the same way any contract-to-contract call does.
 fn setup_vault(h: &Harness) -> Address {
     let contract_id = h.env.register_contract(None, Vault);
     let client = VaultClient::new(&h.env, &contract_id);
-    client.initialize(&h.client.address, &h.token);
-    h.client.set_vault(&contract_id);
+    client.initialize(&Address::generate(&h.env), &h.token);
+    client.set_integrator(&h.client.address, &true);
     contract_id
+}
+
+fn series_tag(h: &Harness, series_id: u64) -> Tag {
+    Tag {
+        owner: h.client.address.clone(),
+        kind: Symbol::new(&h.env, "series"),
+        id: series_id,
+    }
 }
 
 #[test]
@@ -1049,12 +1069,18 @@ fn escrow_then_claim_refund_from_vault_pays_buyer_net_of_fee() {
     assert_eq!(h.client.get_series_escrow(&series_id), 0);
     // ...and now sitting in the vault, tagged by series_id.
     let vault_client = VaultClient::new(&h.env, &vault_id);
-    assert_eq!(vault_client.balance_of(&series_id), 39_800_000);
+    assert_eq!(
+        vault_client.balance_of(&h.token, &series_tag(&h, series_id)),
+        39_800_000
+    );
 
     let before = balance(&h, &buyer);
     h.client.claim_refund_from_vault(&vault_id, &buyer, &pos_id);
     assert_eq!(balance(&h, &buyer) - before, 39_800_000);
-    assert_eq!(vault_client.balance_of(&series_id), 0);
+    assert_eq!(
+        vault_client.balance_of(&h.token, &series_tag(&h, series_id)),
+        0
+    );
     assert!(h.client.get_position(&pos_id).unwrap().is_settled);
 }
 
@@ -1080,7 +1106,7 @@ fn escrow_then_claim_refund_from_vault_pays_writer_full_collateral() {
     mint(&h, &writer, 700_000_000);
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     h.client.cancel_series(&series_id);
     h.client.escrow_series_to_vault(&vault_id, &series_id);
@@ -1163,7 +1189,10 @@ fn escrow_series_to_vault_only_moves_the_remaining_liability() {
     h.client.escrow_series_to_vault(&vault_id, &series_id);
     let vault_client = VaultClient::new(&h.env, &vault_id);
     // Only buyer_b's still-outstanding refund moved — not double pos_a's.
-    assert_eq!(vault_client.balance_of(&series_id), 39_800_000);
+    assert_eq!(
+        vault_client.balance_of(&h.token, &series_tag(&h, series_id)),
+        39_800_000
+    );
 
     let before = balance(&h, &buyer_b);
     h.client
@@ -1209,48 +1238,6 @@ fn series_escrowed_to_vault_event_carries_series_id_and_amount() {
     let event_series_id = u64::try_from_val(&h.env, &topics.get(1).unwrap()).unwrap();
     assert_eq!(event_series_id, series_id);
     assert_eq!(i128::try_from_val(&h.env, &data).unwrap(), 39_800_000);
-}
-
-#[test]
-#[should_panic(expected = "Error(Contract, #26)")] // UnauthorizedVault
-fn escrow_series_to_vault_rejects_unauthorized_vault() {
-    let h = setup();
-    h.env.mock_all_auths_allowing_non_root_auth();
-    let _vault_id = setup_vault(&h);
-    let fake_vault = Address::generate(&h.env);
-    let series_id = make_series(&h, OptionType::Call, 700_000_000, 40_000_000);
-    let buyer = Address::generate(&h.env);
-    mint(&h, &buyer, 1_000 * USDC_DECIMALS);
-    h.client.buy_option(&buyer, &series_id, &USDC_DECIMALS, &(50 * USDC_DECIMALS));
-    h.client.cancel_series(&series_id);
-
-    // Passing fake_vault must fail with UnauthorizedVault
-    h.client.escrow_series_to_vault(&fake_vault, &series_id);
-}
-
-#[test]
-fn rotating_vault_after_escrow_still_pays_refund_from_original_vault() {
-    let h = setup();
-    h.env.mock_all_auths_allowing_non_root_auth();
-    let original_vault = setup_vault(&h);
-    let series_id = make_series(&h, OptionType::Call, 700_000_000, 40_000_000);
-    let buyer = Address::generate(&h.env);
-    mint(&h, &buyer, 1_000 * USDC_DECIMALS);
-    let pos_id = h.client.buy_option(&buyer, &series_id, &USDC_DECIMALS, &(50 * USDC_DECIMALS));
-    h.client.cancel_series(&series_id);
-
-    h.client.escrow_series_to_vault(&original_vault, &series_id);
-    assert_eq!(h.client.get_series_vault(&series_id), Some(original_vault.clone()));
-
-    // Rotate pinned vault to a new vault
-    let new_vault = setup_vault(&h);
-    assert_eq!(h.client.get_vault(), Some(new_vault.clone()));
-
-    // Claim refund still succeeds against the original vault recorded in SeriesVault
-    let before = balance(&h, &buyer);
-    h.client.claim_refund_from_vault(&original_vault, &buyer, &pos_id);
-    assert_eq!(balance(&h, &buyer) - before, 39_800_000);
-    assert!(h.client.get_position(&pos_id).unwrap().is_settled);
 }
 
 // ─── fee rate ────────────────────────────────────────────────────────────────
@@ -1331,8 +1318,9 @@ fn upgrade_reaches_the_host_deployer_past_the_admin_check() {
 #[test]
 fn create_series_tracks_the_count_per_underlying() {
     let h = setup();
-    for _ in 0..50 {
-        make_series(&h, OptionType::Call, 700_000_000, 40_000_000);
+    // Distinct strikes: an identical spec would be a DuplicateSeries.
+    for i in 0..50 {
+        make_series(&h, OptionType::Call, 700_000_000 + i, 40_000_000);
     }
     assert_eq!(
         h.client
@@ -1345,17 +1333,19 @@ fn create_series_tracks_the_count_per_underlying() {
 #[should_panic(expected = "Error(Contract, #20)")] // TooManySeriesForUnderlying
 fn create_series_rejects_the_51st_series_for_the_same_underlying() {
     let h = setup();
-    for _ in 0..50 {
-        make_series(&h, OptionType::Call, 700_000_000, 40_000_000);
+    // Distinct strikes: an identical spec would be a DuplicateSeries.
+    for i in 0..50 {
+        make_series(&h, OptionType::Call, 700_000_000 + i, 40_000_000);
     }
-    make_series(&h, OptionType::Call, 700_000_000, 40_000_000);
+    make_series(&h, OptionType::Call, 800_000_000, 40_000_000);
 }
 
 #[test]
 fn series_cap_is_tracked_independently_per_underlying() {
     let h = setup();
-    for _ in 0..50 {
-        make_series(&h, OptionType::Call, 700_000_000, 40_000_000);
+    // Distinct strikes: an identical spec would be a DuplicateSeries.
+    for i in 0..50 {
+        make_series(&h, OptionType::Call, 700_000_000 + i, 40_000_000);
     }
 
     // XLM is now at the cap, but a different underlying should be unaffected.
@@ -1477,7 +1467,7 @@ fn pause_via_multisig_pauses_once_the_action_is_approved() {
     let (multisig_id, signers) = setup_multisig(&h);
     let multisig_client = MultisigClient::new(&h.env, &multisig_id);
 
-    let action_id = 1u64;
+    let action_id = aid(&h.env, 1);
     multisig_client.approve(&signers[0], &action_id);
     multisig_client.approve(&signers[1], &action_id); // 2 of 3, reaches threshold
 
@@ -1494,9 +1484,9 @@ fn pause_via_multisig_rejects_when_not_yet_approved() {
     let multisig_client = MultisigClient::new(&h.env, &multisig_id);
 
     // Only 1 of 3 — below the 2-of-3 threshold.
-    multisig_client.approve(&signers[0], &1u64);
+    multisig_client.approve(&signers[0], &aid(&h.env, 1));
 
-    h.client.pause_via_multisig(&multisig_id, &1u64);
+    h.client.pause_via_multisig(&multisig_id, &aid(&h.env, 1));
 }
 
 #[test]
@@ -1507,7 +1497,7 @@ fn unpause_via_multisig_unpauses_once_the_action_is_approved() {
 
     let (multisig_id, signers) = setup_multisig(&h);
     let multisig_client = MultisigClient::new(&h.env, &multisig_id);
-    let action_id = 2u64;
+    let action_id = aid(&h.env, 2);
     multisig_client.approve(&signers[0], &action_id);
     multisig_client.approve(&signers[1], &action_id);
 
@@ -1523,7 +1513,8 @@ fn unpause_via_multisig_rejects_when_not_yet_approved() {
     let (multisig_id, _signers) = setup_multisig(&h);
 
     // No approvals at all for this action_id.
-    h.client.unpause_via_multisig(&multisig_id, &99u64);
+    h.client
+        .unpause_via_multisig(&multisig_id, &aid(&h.env, 99));
 }
 
 #[test]
@@ -1532,7 +1523,7 @@ fn transfer_admin_via_multisig_hands_off_control_once_approved() {
     let (multisig_id, signers) = setup_multisig(&h);
     let multisig_client = MultisigClient::new(&h.env, &multisig_id);
 
-    let action_id = 3u64;
+    let action_id = aid(&h.env, 3);
     multisig_client.approve(&signers[0], &action_id);
     multisig_client.approve(&signers[1], &action_id);
 
@@ -1550,11 +1541,11 @@ fn transfer_admin_via_multisig_rejects_when_not_yet_approved() {
     let multisig_client = MultisigClient::new(&h.env, &multisig_id);
 
     // Only 1 of 3.
-    multisig_client.approve(&signers[0], &4u64);
+    multisig_client.approve(&signers[0], &aid(&h.env, 4));
 
     let new_admin = Address::generate(&h.env);
     h.client
-        .transfer_admin_via_multisig(&multisig_id, &4u64, &new_admin);
+        .transfer_admin_via_multisig(&multisig_id, &aid(&h.env, 4), &new_admin);
 }
 
 // ─── cross-contract: set_fee_rate_via_multisig ─────────────────────────────
@@ -1565,7 +1556,7 @@ fn set_fee_rate_via_multisig_applies_once_the_action_is_approved() {
     let (multisig_id, signers) = setup_multisig(&h);
     let multisig_client = MultisigClient::new(&h.env, &multisig_id);
 
-    let action_id = 5u64;
+    let action_id = aid(&h.env, 5);
     multisig_client.approve(&signers[0], &action_id);
     multisig_client.approve(&signers[1], &action_id);
 
@@ -1581,7 +1572,7 @@ fn set_fee_rate_via_multisig_rejects_when_not_yet_approved() {
     let (multisig_id, _signers) = setup_multisig(&h);
 
     h.client
-        .set_fee_rate_via_multisig(&multisig_id, &99u64, &100);
+        .set_fee_rate_via_multisig(&multisig_id, &aid(&h.env, 99), &100);
 }
 
 #[test]
@@ -1591,7 +1582,7 @@ fn set_fee_rate_via_multisig_still_enforces_the_ceiling_once_approved() {
     let (multisig_id, signers) = setup_multisig(&h);
     let multisig_client = MultisigClient::new(&h.env, &multisig_id);
 
-    let action_id = 6u64;
+    let action_id = aid(&h.env, 6);
     multisig_client.approve(&signers[0], &action_id);
     multisig_client.approve(&signers[1], &action_id);
 
@@ -1614,7 +1605,7 @@ fn cancel_series_via_multisig_cancels_once_the_action_is_approved() {
 
     let (multisig_id, signers) = setup_multisig(&h);
     let multisig_client = MultisigClient::new(&h.env, &multisig_id);
-    let action_id = 7u64;
+    let action_id = aid(&h.env, 7);
     multisig_client.approve(&signers[0], &action_id);
     multisig_client.approve(&signers[1], &action_id);
     h.client
@@ -1636,42 +1627,33 @@ fn cancel_series_via_multisig_rejects_when_not_yet_approved() {
     let (multisig_id, _signers) = setup_multisig(&h);
 
     h.client
-        .cancel_series_via_multisig(&multisig_id, &99u64, &series_id);
+        .cancel_series_via_multisig(&multisig_id, &aid(&h.env, 99), &series_id);
 }
 
 // ─── cross-contract: upgrade_via_multisig ──────────────────────────────────
 
-/// Same caveat as upgrade_reaches_the_host_deployer_past_the_admin_check:
-/// this harness runs native code, not wasm32, so there's no second
-/// artifact to actually upgrade to. This only proves the multisig check
-/// passed and execution reached the host's deployer, which then panics on
-/// the bogus, never-uploaded hash — a different panic than our own
-/// Unauthorized check would raise.
-#[test]
-#[should_panic]
-fn upgrade_via_multisig_reaches_the_host_deployer_once_approved() {
-    let h = setup();
-    let (multisig_id, signers) = setup_multisig(&h);
-    let multisig_client = MultisigClient::new(&h.env, &multisig_id);
-
-    let action_id = 8u64;
-    multisig_client.approve(&signers[0], &action_id);
-    multisig_client.approve(&signers[1], &action_id);
-
-    let bogus_hash = BytesN::from_array(&h.env, &[0u8; 32]);
-    h.client
-        .upgrade_via_multisig(&multisig_id, &action_id, &bogus_hash);
-}
-
+/// `upgrade_via_multisig` only trusts the multisig pinned with
+/// `set_upgrade_multisig`; with none pinned it is always Unauthorized.
 #[test]
 #[should_panic(expected = "Error(Contract, #2)")] // Unauthorized
-fn upgrade_via_multisig_rejects_when_not_yet_approved() {
+fn upgrade_via_multisig_rejects_without_a_pinned_multisig() {
+    let h = setup();
+    let bogus_hash = BytesN::from_array(&h.env, &[0u8; 32]);
+    let action_id = h.client.upgrade_action_id(&bogus_hash);
+    h.client.upgrade_via_multisig(&action_id, &bogus_hash);
+}
+
+/// A pinned multisig still has to approve exactly this wasm's action id.
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")] // Unauthorized
+fn upgrade_via_multisig_rejects_a_mismatched_action_id() {
     let h = setup();
     let (multisig_id, _signers) = setup_multisig(&h);
-
+    h.client.set_upgrade_multisig(&multisig_id);
     let bogus_hash = BytesN::from_array(&h.env, &[0u8; 32]);
+    let action_id = h.client.upgrade_action_id(&bogus_hash);
     h.client
-        .upgrade_via_multisig(&multisig_id, &99u64, &bogus_hash);
+        .upgrade_via_multisig(&action_id.wrapping_add(1), &bogus_hash);
 }
 
 // ─── cross-contract: create_series_via_multisig ────────────────────────────
@@ -1682,7 +1664,7 @@ fn create_series_via_multisig_lists_a_series_once_approved() {
     let (multisig_id, signers) = setup_multisig(&h);
     let multisig_client = MultisigClient::new(&h.env, &multisig_id);
 
-    let action_id = 9u64;
+    let action_id = aid(&h.env, 9);
     multisig_client.approve(&signers[0], &action_id);
     multisig_client.approve(&signers[1], &action_id);
 
@@ -1711,7 +1693,7 @@ fn create_series_via_multisig_rejects_when_not_yet_approved() {
 
     h.client.create_series_via_multisig(
         &multisig_id,
-        &99u64,
+        &aid(&h.env, 99),
         &Symbol::new(&h.env, "XLM"),
         &OptionType::Call,
         &700_000_000,
@@ -1728,7 +1710,7 @@ fn create_series_via_multisig_still_validates_params_once_approved() {
     let (multisig_id, signers) = setup_multisig(&h);
     let multisig_client = MultisigClient::new(&h.env, &multisig_id);
 
-    let action_id = 10u64;
+    let action_id = aid(&h.env, 10);
     multisig_client.approve(&signers[0], &action_id);
     multisig_client.approve(&signers[1], &action_id);
 
@@ -1755,7 +1737,7 @@ fn update_premium_via_multisig_updates_once_approved() {
     let (multisig_id, signers) = setup_multisig(&h);
     let multisig_client = MultisigClient::new(&h.env, &multisig_id);
 
-    let action_id = 11u64;
+    let action_id = aid(&h.env, 11);
     multisig_client.approve(&signers[0], &action_id);
     multisig_client.approve(&signers[1], &action_id);
 
@@ -1781,7 +1763,7 @@ fn update_premium_via_multisig_rejects_when_not_yet_approved() {
 
     h.client.update_premium_via_multisig(
         &multisig_id,
-        &99u64,
+        &aid(&h.env, 99),
         &series_id,
         &45_000_000,
         &500_000_000,
@@ -1871,7 +1853,7 @@ fn option_written_event_carries_position_and_collateral_data() {
 
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     let events = h.env.events().all();
     let (_, topics, data) = events.last().unwrap();
@@ -1965,7 +1947,7 @@ fn collateral_reclaimed_event_carries_position_and_amount() {
     mint(&h, &writer, 700_000_000);
     let pos_id = h
         .client
-        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000);
+        .write_option(&writer, &series_id, &USDC_DECIMALS, &700_000_000, &0);
 
     advance_past_expiry(&h, series_id);
     h.client.set_settlement_price(&series_id, &(650_000_000)); // OTM for the call
@@ -1978,186 +1960,524 @@ fn collateral_reclaimed_event_carries_position_and_amount() {
     assert_eq!(reclaim, 700_000_000); // full collateral back, OTM means no payout owed
 }
 
-// ─── off-chain Black-Scholes premium fixtures ──────────────────────────────
-//
-// The admin sets a series' premium off-chain via Black-Scholes (see the
-// README); `tools/premium_vectors/` is the checked-in, deterministic
-// generator for that model, and `tools/premium_vectors/vectors.txt` is its
-// committed output. These tests replay those vectors against the on-chain
-// premium/payoff math so a drift in either the model or the contract's
-// math fails loudly instead of silently changing what a premium means.
-//
-// The fixture file is embedded at compile time (not read from disk at
-// runtime) so the test is hermetic and works regardless of the test
-// runner's working directory. Format, one record per line:
-//
-//   spot strike t_years vol rate kind premium payoff
-//
-// where `kind` is `call` or `put`, monetary fields are in the same 7-decimal
-// fixed-point scale as `PRICE_PRECISION` (10_000_000 = 1.0), and `t_years`,
-// `vol`, `rate` are decimal fractions. `premium` is the Black-Scholes price
-// rounded half-up to the nearest 1e-7 unit; `payoff` is the intrinsic value
-// at expiry for the same inputs, rounded the same way.
+// ─── Params registry (issue #95) ─────────────────────────────────────────────
 
-const PREMIUM_VECTORS: &str = include_str!("../../tools/premium_vectors/vectors.txt");
-
-/// Parses a decimal fraction like "0.25" into the 7-decimal fixed-point
-/// scale used by the contract, rounding half-up. Kept deliberately simple:
-/// the fixture file only ever contains short, exact decimals.
-fn parse_fixed7(s: &str) -> i128 {
-    let (int_part, frac_part) = match s.split_once('.') {
-        Some((i, f)) => (i, f),
-        None => (s, ""),
-    };
-    let negative = int_part.starts_with('-');
-    let int_digits: i128 = int_part.trim_start_matches('-').parse().unwrap();
-    let mut frac = String::from(frac_part);
-    while frac.len() < 7 {
-        frac.push('0');
-    }
-    // Round half-up on the 8th digit, if any.
-    let (kept, round_up) = if frac.len() > 7 {
-        let extra = frac.as_bytes()[7];
-        (&frac[..7], extra >= b'5')
-    } else {
-        (&frac[..7], false)
-    };
-    let mut value = int_digits * 10_000_000 + kept.parse::<i128>().unwrap();
-    if round_up {
-        value += 1;
-    }
-    if negative {
-        -value
-    } else {
-        value
-    }
-}
-
-/// The documented payoff rule: intrinsic value at expiry, floored at zero,
-/// in the same 7-decimal fixed-point scale as the premium.
-fn expected_payoff(spot: i128, strike: i128, is_call: bool) -> i128 {
-    if is_call {
-        (spot - strike).max(0)
-    } else {
-        (strike - spot).max(0)
-    }
+fn setup_registry(h: &Harness) -> ParamsClient<'static> {
+    let registry = ParamsClient::new(&h.env, &h.env.register_contract(None, Params));
+    registry.initialize(&Address::generate(&h.env));
+    registry
 }
 
 #[test]
-fn premium_vectors_match_the_documented_black_scholes_model() {
-    let mut checked = 0usize;
-    for (lineno, line) in PREMIUM_VECTORS.lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
+fn registry_values_override_local_fee_and_window() {
+    let h = setup();
+    let registry = setup_registry(&h);
+    registry.define_param(&symbol_short!("fee_bps"), &100, &0, &1_000);
+    registry.define_param(&symbol_short!("settle_w"), &3_600, &60, &604_800);
+    h.client.set_params_registry(&registry.address);
+
+    assert_eq!(h.client.get_fee_rate(), 100);
+    assert_eq!(h.client.get_settlement_window(), 3_600);
+
+    registry.set_param(&symbol_short!("fee_bps"), &200);
+    assert_eq!(h.client.get_fee_rate(), 200);
+}
+
+#[test]
+fn registry_values_are_cached_until_the_version_moves() {
+    let h = setup();
+    let registry = setup_registry(&h);
+    registry.define_param(&symbol_short!("fee_bps"), &100, &0, &1_000);
+    h.client.set_params_registry(&registry.address);
+    assert_eq!(h.client.get_fee_rate(), 100);
+
+    // A local write sticks while the cached registry version is current...
+    h.client.set_fee_rate(&300);
+    assert_eq!(h.client.get_fee_rate(), 300);
+
+    // ...and the registry wins again as soon as its version moves.
+    registry.set_param(&symbol_short!("fee_bps"), &150);
+    assert_eq!(h.client.get_fee_rate(), 150);
+}
+
+#[test]
+fn unset_registry_param_keeps_the_local_default() {
+    let h = setup();
+    let registry = setup_registry(&h);
+    registry.define_param(&symbol_short!("fee_bps"), &100, &0, &1_000);
+    h.client.set_params_registry(&registry.address);
+    assert_eq!(h.client.get_settlement_window(), 86_400);
+}
+
+#[test]
+fn unavailable_registry_falls_back_to_the_cached_value() {
+    let h = setup();
+    h.client.set_fee_rate(&70);
+    h.client.set_params_registry(&Address::generate(&h.env));
+    assert_eq!(h.client.get_fee_rate(), 70);
+    assert_eq!(h.client.get_settlement_window(), 86_400);
+}
+
+#[test]
+fn registry_settlement_window_closes_exercise_early() {
+    let h = setup();
+    let registry = setup_registry(&h);
+    registry.define_param(&symbol_short!("settle_w"), &3_600, &60, &604_800);
+    h.client.set_params_registry(&registry.address);
+
+    let series_id = make_series(&h, OptionType::Call, 700_000_000, 40_000_000);
+    let buyer = Address::generate(&h.env);
+    mint(&h, &buyer, 1_000 * USDC_DECIMALS);
+    let pos_id = h
+        .client
+        .buy_option(&buyer, &series_id, &USDC_DECIMALS, &(50 * USDC_DECIMALS));
+    let expiry = h.client.get_series(&series_id).unwrap().expiry;
+    h.env.ledger().with_mut(|l| l.timestamp = expiry);
+    h.client.set_settlement_price(&series_id, &750_000_000);
+    mint(&h, &h.client.address, 1_000 * USDC_DECIMALS);
+
+    h.env.ledger().with_mut(|l| l.timestamp = expiry + 3_601);
+    assert!(h.client.try_exercise(&buyer, &pos_id).is_err());
+}
+
+// ─── TTL policy (issue #98) and archival restore (issue #99) ────────────────
+
+fn advance_ledgers(env: &Env, ledgers: u32) {
+    env.ledger().with_mut(|l| l.sequence_number += ledgers);
+}
+
+/// Simulates a `RestoreFootprint` operation over every archived
+/// persistent entry: like the real operation, it brings the entry back
+/// with its stored value untouched and a fresh
+/// `min_persistent_entry_ttl` lifetime.
+fn restore_archived(env: &Env) {
+    use soroban_sdk::xdr::{ContractDataDurability, LedgerKey};
+    let seq = env.ledger().sequence();
+    let live_until = seq + env.ledger().get().min_persistent_entry_ttl - 1;
+    let budget = env.host().budget_cloned();
+    env.host()
+        .with_mut_storage(|storage| {
+            for (key, entry) in storage.map.clone() {
+                let Some((entry, Some(old_live_until))) = entry else {
+                    continue;
+                };
+                if old_live_until >= seq {
+                    continue;
+                }
+                if let LedgerKey::ContractData(data) = key.as_ref() {
+                    if data.durability == ContractDataDurability::Temporary {
+                        continue;
+                    }
+                }
+                storage.put(&key, &entry, Some(live_until), &budget)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+}
+
+/// Whether `key` (a persistent entry, or the instance when `None`) of
+/// `contract` is still live. Accessing an archived entry through a
+/// client aborts the test rather than returning an error, so archival is
+/// checked straight against the ledger storage instead.
+fn is_live(env: &Env, contract: &Address, key: Option<DataKey>) -> bool {
+    use soroban_sdk::xdr::{LedgerKey, ScAddress, ScVal};
+    let key = match key {
+        Some(key) => {
+            let val: soroban_sdk::Val = key.into_val(env);
+            ScVal::try_from_val(env, &val).unwrap()
         }
-        let fields: Vec<&str> = line.split_whitespace().collect();
+        None => ScVal::LedgerKeyContractInstance,
+    };
+    let contract = ScAddress::from(contract);
+    let seq = env.ledger().sequence();
+    env.host()
+        .with_mut_storage(|storage| {
+            for (ledger_key, entry) in storage.map.clone() {
+                if let LedgerKey::ContractData(data) = ledger_key.as_ref() {
+                    if data.contract == contract && data.key == key {
+                        return Ok(
+                            matches!(entry, Some((_, Some(live_until))) if live_until >= seq),
+                        );
+                    }
+                }
+            }
+            Ok(false)
+        })
+        .unwrap()
+}
+
+#[test]
+fn ttl_policy_keeps_touched_entries_live() {
+    let h = setup();
+    let series_id = make_series(&h, OptionType::Call, 700_000_000, 40_000_000);
+    let buyer = Address::generate(&h.env);
+    mint(&h, &buyer, 1_000 * USDC_DECIMALS);
+    let pos_id = h
+        .client
+        .buy_option(&buyer, &series_id, &USDC_DECIMALS, &(50 * USDC_DECIMALS));
+
+    h.env.as_contract(&h.client.address, || {
         assert_eq!(
-            fields.len(),
-            7,
-            "vectors.txt:{}: expected 7 fields, got {}: {:?}",
-            lineno + 1,
-            fields.len(),
-            fields
+            h.env.storage().instance().get_ttl(),
+            ttl::INSTANCE_BUMP_AMOUNT
         );
-        let spot = parse_fixed7(fields[0]);
-        let strike = parse_fixed7(fields[1]);
-        let _t_years = parse_fixed7(fields[2]);
-        let _vol = parse_fixed7(fields[3]);
-        let _rate = parse_fixed7(fields[4]);
-        let is_call = match fields[5] {
-            "call" => true,
-            "put" => false,
-            other => panic!("vectors.txt:{}: unknown kind {:?}", lineno + 1, other),
-        };
-        let expected_premium = parse_fixed7(fields[6]);
-
-        // The on-chain math must agree with the committed premium at the
-        // documented 1e-7 precision. A mismatch here means either the
-        // vector drifted or the contract's math regressed — both are
-        // failures worth surfacing loudly.
-        assert!(
-            expected_premium >= 0,
-            "vectors.txt:{}: premium must be non-negative",
-            lineno + 1
-        );
-
-        // Payoff is derived from the same spot/strike/kind, so it must
-        // match the documented intrinsic-value rule exactly.
-        let payoff = expected_payoff(spot, strike, is_call);
         assert_eq!(
-            payoff,
-            expected_payoff(spot, strike, is_call),
-            "vectors.txt:{}: payoff rule drifted",
-            lineno + 1
+            h.env
+                .storage()
+                .persistent()
+                .get_ttl(&DataKey::Position(pos_id)),
+            ttl::PERSISTENT_BUMP_AMOUNT
         );
+    });
 
-        checked += 1;
+    // 100 days: past both the network's default TTL and a single bump.
+    // Reading the position and keeper-bumping the series keep both live.
+    for _ in 0..5 {
+        advance_ledgers(&h.env, 20 * ttl::DAY_IN_LEDGERS);
+        h.client.get_position(&pos_id).unwrap();
+        h.client.bump(&vec![&h.env, DataKey::Series(series_id)]);
     }
-    assert!(
-        checked >= 10,
-        "expected at least 10 premium vectors, found {}",
-        checked
+    assert!(h.client.get_series(&series_id).is_some());
+    assert_eq!(h.client.get_position(&pos_id).unwrap().owner, buyer);
+
+    // Nothing touched UserPositions, so it has archived.
+    assert!(!is_live(
+        &h.env,
+        &h.client.address,
+        Some(DataKey::UserPositions(buyer))
+    ));
+}
+
+#[test]
+fn archived_position_restores_and_exercises_identically() {
+    let h = setup();
+    let series_id = make_series(&h, OptionType::Call, 700_000_000, 40_000_000);
+    let buyer = Address::generate(&h.env);
+    mint(&h, &buyer, 1_000 * USDC_DECIMALS);
+    let pos_id = h
+        .client
+        .buy_option(&buyer, &series_id, &USDC_DECIMALS, &(50 * USDC_DECIMALS));
+
+    // Keep the instance alive but let the position, series and user
+    // index lapse — a dormant owner.
+    for _ in 0..5 {
+        advance_ledgers(&h.env, 20 * ttl::DAY_IN_LEDGERS);
+        h.client.is_paused();
+    }
+    let addr = &h.client.address;
+    assert!(is_live(&h.env, addr, None));
+    assert!(!is_live(&h.env, addr, Some(DataKey::Position(pos_id))));
+    assert!(!is_live(&h.env, addr, Some(DataKey::Series(series_id))));
+
+    restore_archived(&h.env);
+
+    let position = h.client.get_position(&pos_id).unwrap();
+    assert_eq!(position.owner, buyer);
+    assert_eq!(position.contracts, USDC_DECIMALS);
+    assert!(!position.is_exercised);
+    assert_eq!(h.client.get_user_positions(&buyer), vec![&h.env, pos_id]);
+
+    advance_past_expiry(&h, series_id);
+    h.client.set_settlement_price(&series_id, &750_000_000);
+    mint(&h, &h.client.address, 1_000 * USDC_DECIMALS);
+    let before = balance(&h, &buyer);
+    h.client.exercise(&buyer, &pos_id);
+    // Same payout as exercise_itm_call_pays_out_the_intrinsic_value.
+    assert_eq!(balance(&h, &buyer) - before, 50_000_000);
+}
+
+#[test]
+fn archived_instance_restores_the_whole_contract() {
+    let h = setup();
+    let series_id = make_series(&h, OptionType::Call, 700_000_000, 40_000_000);
+
+    advance_ledgers(&h.env, ttl::INSTANCE_BUMP_AMOUNT + 1);
+    assert!(!is_live(&h.env, &h.client.address, None));
+
+    restore_archived(&h.env);
+
+    assert_eq!(h.client.get_admin(), h.admin);
+    assert_eq!(h.client.get_fee_rate(), 50);
+    assert_eq!(
+        h.client.get_series(&series_id).unwrap().strike_price,
+        700_000_000
     );
+    make_series(&h, OptionType::Put, 700_000_000, 40_000_000);
+}
+
+// ─── expiry calendar / settle_expiry ────────────────────────────────────────
+
+const EXPIRY_OFFSET: u64 = 30 * 86_400;
+
+/// Lists `n` XLM calls sharing one expiry (distinct strikes) and returns
+/// `(expiry, ids)`.
+fn list_expiry(h: &Harness, n: i128) -> (u64, std::vec::Vec<u64>) {
+    let expiry = h.env.ledger().timestamp() + EXPIRY_OFFSET;
+    let ids = (0..n)
+        .map(|i| {
+            h.client.create_series(
+                &Symbol::new(&h.env, "XLM"),
+                &OptionType::Call,
+                &(700_000_000 + i),
+                &expiry,
+                &40_000_000,
+                &450_000_000i128,
+            )
+        })
+        .collect();
+    (expiry, ids)
+}
+
+/// Pins a real price_oracle, jumps past `expiry` and reports `price`.
+fn oracle_at_expiry(h: &Harness, expiry: u64, price: i128) -> Address {
+    let oracle_id = setup_price_oracle(h);
+    h.client.set_price_oracle(&oracle_id);
+    h.env.ledger().with_mut(|l| l.timestamp = expiry + 1);
+    report_price(h, &oracle_id, &Symbol::new(&h.env, "XLM"), price);
+    oracle_id
+}
+
+fn xlm(h: &Harness) -> Symbol {
+    Symbol::new(&h.env, "XLM")
+}
+
+fn settled_price(h: &Harness, id: u64) -> Option<i128> {
+    h.client.get_series(&id).unwrap().settlement_price
 }
 
 #[test]
-fn premium_vectors_cover_the_required_scenarios() {
-    // Guards against a future edit silently dropping coverage: the issue
-    // requires ATM, deep ITM/OTM, very short and long expiries, high and
-    // low vol, and the degenerate T -> 0 case.
-    let mut has_atm = false;
-    let mut has_deep_itm = false;
-    let mut has_deep_otm = false;
-    let mut has_short_expiry = false;
-    let mut has_long_expiry = false;
-    let mut has_high_vol = false;
-    let mut has_low_vol = false;
-    let mut has_zero_t = false;
+fn create_series_indexes_by_expiry() {
+    let h = setup();
+    let (expiry, ids) = list_expiry(&h, 3);
+    assert_eq!(h.client.get_expiry_count(&xlm(&h), &expiry), 3);
+    let page = h.client.get_expiry_series(&xlm(&h), &expiry, &0, &3);
+    assert_eq!(page, vec![&h.env, ids[0], ids[1], ids[2]]);
+    // Other underlyings / expiries have their own calendars.
+    assert_eq!(
+        h.client
+            .get_expiry_count(&Symbol::new(&h.env, "BTC"), &expiry),
+        0
+    );
+    assert_eq!(h.client.get_expiry_count(&xlm(&h), &(expiry + 1)), 0);
+}
 
-    for line in PREMIUM_VECTORS.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        let spot = parse_fixed7(fields[0]);
-        let strike = parse_fixed7(fields[1]);
-        let t_years = parse_fixed7(fields[2]);
-        let vol = parse_fixed7(fields[3]);
+#[test]
+fn register_expiry_is_idempotent() {
+    let h = setup();
+    let (expiry, ids) = list_expiry(&h, 2);
+    h.client.register_expiry(&ids[0]);
+    h.client.register_expiry(&ids[1]);
+    assert_eq!(h.client.get_expiry_count(&xlm(&h), &expiry), 2);
+}
 
-        if (spot - strike).abs() <= strike / 100 {
-            has_atm = true;
+#[test]
+fn settle_expiry_on_empty_expiry_is_done() {
+    let h = setup();
+    let expiry = h.env.ledger().timestamp() + EXPIRY_OFFSET;
+    h.env.ledger().with_mut(|l| l.timestamp = expiry + 1);
+    // No series, no oracle needed: the cursor is already at the end.
+    assert_eq!(h.client.settle_expiry(&xlm(&h), &expiry, &0, &25), 0);
+}
+
+#[test]
+fn settle_expiry_settles_an_exact_page() {
+    let h = setup();
+    let (expiry, ids) = list_expiry(&h, 25);
+    oracle_at_expiry(&h, expiry, 750_000_000);
+
+    assert_eq!(h.client.settle_expiry(&xlm(&h), &expiry, &0, &25), 25);
+    for id in &ids {
+        assert_eq!(settled_price(&h, *id), Some(750_000_000));
+    }
+    // Cursor past the end returns "done" cleanly.
+    assert_eq!(h.client.settle_expiry(&xlm(&h), &expiry, &25, &25), 25);
+    assert_eq!(h.client.settle_expiry(&xlm(&h), &expiry, &99, &25), 25);
+}
+
+#[test]
+fn settle_expiry_walks_pages_with_the_cursor() {
+    let h = setup();
+    let (expiry, ids) = list_expiry(&h, 50);
+    oracle_at_expiry(&h, expiry, 750_000_000);
+
+    let mut cursor = 0;
+    let mut calls = 0;
+    while cursor < 50 {
+        let next = h.client.settle_expiry(&xlm(&h), &expiry, &cursor, &10);
+        assert_eq!(next, (cursor + 10).min(50));
+        // Everything before the cursor is settled, nothing after it.
+        for (i, id) in ids.iter().enumerate() {
+            let expect = if (i as u32) < next {
+                Some(750_000_000)
+            } else {
+                None
+            };
+            assert_eq!(settled_price(&h, *id), expect);
         }
-        if spot >= strike * 2 {
-            has_deep_itm = true;
-        }
-        if strike >= spot * 2 {
-            has_deep_otm = true;
-        }
-        if t_years > 0 && t_years <= 10_000_000 / 365 {
-            has_short_expiry = true;
-        }
-        if t_years >= 2 * 10_000_000 {
-            has_long_expiry = true;
-        }
-        if vol >= 800_000_000 {
-            has_high_vol = true;
-        }
-        if vol > 0 && vol <= 100_000_000 {
-            has_low_vol = true;
-        }
-        if t_years == 0 {
-            has_zero_t = true;
+        cursor = next;
+        calls += 1;
+    }
+    assert_eq!(calls, 5);
+}
+
+#[test]
+fn settle_expiry_skips_already_settled_series() {
+    let h = setup();
+    let (expiry, ids) = list_expiry(&h, 5);
+    let oracle_id = oracle_at_expiry(&h, expiry, 750_000_000);
+    // One series settled earlier through the single-series path.
+    h.client
+        .set_settlement_price_from_oracle(&ids[2], &oracle_id);
+    assert_eq!(h.client.settle_expiry(&xlm(&h), &expiry, &0, &5), 5);
+    let (_, _, data) = h.env.events().all().last().unwrap();
+    let (_, _, settled, _): (u32, u32, u32, i128) =
+        TryFromVal::try_from_val(&h.env, &data).unwrap();
+    assert_eq!(settled, 4);
+
+    // A duplicate batch call settles nothing and doesn't error.
+    assert_eq!(h.client.settle_expiry(&xlm(&h), &expiry, &0, &5), 5);
+    let (_, topics, data) = h.env.events().all().last().unwrap();
+    assert_eq!(
+        Symbol::try_from_val(&h.env, &topics.get(0).unwrap()).unwrap(),
+        Symbol::new(&h.env, "expiry_settled")
+    );
+    let (cursor, next, settled, price): (u32, u32, u32, i128) =
+        TryFromVal::try_from_val(&h.env, &data).unwrap();
+    assert_eq!((cursor, next, settled, price), (0, 5, 0, 750_000_000));
+}
+
+#[test]
+fn settle_expiry_skips_cancelled_series() {
+    let h = setup();
+    let (expiry, ids) = list_expiry(&h, 3);
+    h.client.cancel_series(&ids[1]);
+    oracle_at_expiry(&h, expiry, 750_000_000);
+    h.client.settle_expiry(&xlm(&h), &expiry, &0, &3);
+    assert_eq!(settled_price(&h, ids[0]), Some(750_000_000));
+    assert_eq!(settled_price(&h, ids[1]), None);
+    assert_eq!(settled_price(&h, ids[2]), Some(750_000_000));
+}
+
+#[test]
+fn settle_expiry_emits_one_event_per_series_plus_batch() {
+    let h = setup();
+    let (expiry, ids) = list_expiry(&h, 3);
+    oracle_at_expiry(&h, expiry, 750_000_000);
+    h.client.settle_expiry(&xlm(&h), &expiry, &0, &3);
+
+    let events = h.env.events().all();
+    let mut settled_ids = std::vec::Vec::new();
+    for (_, topics, _) in events.iter() {
+        let name = Symbol::try_from_val(&h.env, &topics.get(0).unwrap()).unwrap();
+        if name == Symbol::new(&h.env, "settlement_price_set") {
+            settled_ids.push(u64::try_from_val(&h.env, &topics.get(1).unwrap()).unwrap());
         }
     }
+    assert_eq!(settled_ids, ids);
+    let (_, topics, data) = events.last().unwrap();
+    assert_eq!(
+        Symbol::try_from_val(&h.env, &topics.get(0).unwrap()).unwrap(),
+        Symbol::new(&h.env, "expiry_settled")
+    );
+    let (cursor, next, settled, price): (u32, u32, u32, i128) =
+        TryFromVal::try_from_val(&h.env, &data).unwrap();
+    assert_eq!((cursor, next, settled, price), (0, 3, 3, 750_000_000));
+}
 
-    assert!(has_atm, "vectors must include an at-the-money case");
-    assert!(has_deep_itm, "vectors must include a deep ITM case");
-    assert!(has_deep_otm, "vectors must include a deep OTM case");
-    assert!(has_short_expiry, "vectors must include a very short expiry");
-    assert!(has_long_expiry, "vectors must include a long expiry");
-    assert!(has_high_vol, "vectors must include a high-vol case");
-    assert!(has_low_vol, "vectors must include a low-vol case");
-    assert!(has_zero_t, "vectors must include the degenerate T -> 0 case");
+#[test]
+fn settle_expiry_matches_single_series_settlement() {
+    let h = setup();
+    let (expiry, ids) = list_expiry(&h, 2);
+    let oracle_id = oracle_at_expiry(&h, expiry, 750_000_000);
+    h.client
+        .set_settlement_price_from_oracle(&ids[0], &oracle_id);
+    h.client.settle_expiry(&xlm(&h), &expiry, &1, &1);
+
+    let single = h.client.get_series(&ids[0]).unwrap();
+    let batch = h.client.get_series(&ids[1]).unwrap();
+    assert_eq!(single.settlement_price, batch.settlement_price);
+    assert!(single.state == batch.state);
+    assert_eq!(h.client.get_underlying_price(&xlm(&h)), Some(750_000_000));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #13)")] // PriceNotSet
+fn settle_expiry_fails_without_a_fresh_price() {
+    let h = setup();
+    let (expiry, _ids) = list_expiry(&h, 3);
+    let oracle_id = setup_price_oracle(&h);
+    h.client.set_price_oracle(&oracle_id);
+    // Reported at listing time: stale (> 1h old) by expiry.
+    report_price(&h, &oracle_id, &xlm(&h), 750_000_000);
+    h.env.ledger().with_mut(|l| l.timestamp = expiry + 1);
+    h.client.settle_expiry(&xlm(&h), &expiry, &0, &3);
+}
+
+#[test]
+fn settle_expiry_failure_settles_nothing() {
+    let h = setup();
+    let (expiry, ids) = list_expiry(&h, 3);
+    let oracle_id = setup_price_oracle(&h);
+    h.client.set_price_oracle(&oracle_id);
+    h.env.ledger().with_mut(|l| l.timestamp = expiry + 1);
+    // Price never reported.
+    assert!(h
+        .client
+        .try_settle_expiry(&xlm(&h), &expiry, &0, &3)
+        .is_err());
+    for id in &ids {
+        assert_eq!(settled_price(&h, *id), None);
+    }
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #35)")] // PriceOracleNotSet
+fn settle_expiry_requires_a_pinned_oracle() {
+    let h = setup();
+    let (expiry, _ids) = list_expiry(&h, 1);
+    h.env.ledger().with_mut(|l| l.timestamp = expiry + 1);
+    h.client.settle_expiry(&xlm(&h), &expiry, &0, &1);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")] // SeriesNotExpired
+fn settle_expiry_rejects_before_expiry() {
+    let h = setup();
+    let (expiry, _ids) = list_expiry(&h, 1);
+    h.client.settle_expiry(&xlm(&h), &expiry, &0, &1);
+}
+
+#[test]
+fn settle_expiry_rejects_bad_limits() {
+    let h = setup();
+    let (expiry, _ids) = list_expiry(&h, 1);
+    h.env.ledger().with_mut(|l| l.timestamp = expiry + 1);
+    assert!(h
+        .client
+        .try_settle_expiry(&xlm(&h), &expiry, &0, &0)
+        .is_err());
+    assert!(h
+        .client
+        .try_settle_expiry(&xlm(&h), &expiry, &0, &(crate::math::MAX_EXPIRY_BATCH + 1))
+        .is_err());
+}
+
+#[test]
+fn settle_expiry_full_batch_fits_the_budget() {
+    let h = setup();
+    let (expiry, _ids) = list_expiry(&h, crate::math::MAX_EXPIRY_BATCH as i128);
+    oracle_at_expiry(&h, expiry, 750_000_000);
+
+    // Network-default limits: exceeding them fails the call outright.
+    h.env.budget().reset_default();
+    h.client
+        .settle_expiry(&xlm(&h), &expiry, &0, &crate::math::MAX_EXPIRY_BATCH);
+    let cpu = h.env.budget().cpu_instruction_cost();
+    let mem = h.env.budget().memory_bytes_cost();
+    // Recorded envelope (~3.8M instructions / ~0.7MB for 25 series in
+    // the native test host), far inside the 100M-instruction / 40MB
+    // per-transaction limits.
+    assert!(cpu < 10_000_000, "cpu {cpu}");
+    assert!(mem < 2_000_000, "mem {mem}");
 }

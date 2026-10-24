@@ -2,13 +2,6 @@
 //! (version checks, ordering, pagination, the in-progress guard) lives in
 //! `zenith_common::migrations`; this file only registers steps. See
 //! docs/migrations.md for how to author one.
-//!
-//! NOTE: this crate's lib.rs is empty on main (emptied by #149). Once
-//! it's restored, add `mod migrations;` to lib.rs (the error variants are
-//! already in error.rs) and `zenith_common::migrations::init_schema(&env,
-//! CURRENT_SCHEMA_VERSION)` to `initialize`. Until `initialize` writes it,
-//! a missing `SchemaVersion` reads as `BASELINE_SCHEMA_VERSION` (1), which
-//! is also correct for already-deployed instances.
 
 use soroban_sdk::{contractimpl, panic_with_error, Address, BytesN, Env};
 use zenith_common::migrations::{self, MigrationErrors, Step};

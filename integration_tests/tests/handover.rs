@@ -503,13 +503,13 @@ fn vault_multisig_recovery_path_survives_every_stage() {
     w.assert_vault_invariant();
     // The vault's only migration concern is its multisig recovery path:
     // with 2-of-3 signer approvals it can still re-point the vault admin.
-    let action_id = 9_001u64;
+    let action_id = BytesN::from_array(&w.env, &[0x5a; 32]);
     for s in &w.ms_signers[..2] {
         w.sign(
             s,
             &w.multisig.address,
             "approve",
-            (s.clone(), action_id).into_val(&w.env),
+            (s.clone(), action_id.clone()).into_val(&w.env),
         );
         w.multisig.approve(s, &action_id);
     }
