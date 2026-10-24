@@ -74,6 +74,48 @@ pub fn collateral_reclaimed(env: &Env, writer: Address, position_id: u64, reclai
     );
 }
 
+/// Writer topped up collateral on an existing short position.
+/// `amount` is the delta pulled in; `new_collateral` is the position's
+/// recorded collateral after the top-up.
+pub fn collateral_topped_up(
+    env: &Env,
+    writer: Address,
+    position_id: u64,
+    series_id: u64,
+    amount: i128,
+    new_collateral: i128,
+) {
+    env.events().publish(
+        (Symbol::new(env, "collateral_topped_up"), writer),
+        (position_id, series_id, amount, new_collateral),
+    );
+}
+
+/// Writer unwound a position before expiry.
+/// `buyback_cost` is the premium paid to close the short; `released` is the
+/// collateral returned to the writer (collateral minus buy-back cost);
+/// `remaining_collateral` is the position's recorded collateral after unwind.
+pub fn position_unwound(
+    env: &Env,
+    writer: Address,
+    position_id: u64,
+    series_id: u64,
+    buyback_cost: i128,
+    released: i128,
+    remaining_collateral: i128,
+) {
+    env.events().publish(
+        (Symbol::new(env, "position_unwound"), writer),
+        (
+            position_id,
+            series_id,
+            buyback_cost,
+            released,
+            remaining_collateral,
+        ),
+    );
+}
+
 pub fn admin_transferred(env: &Env, old_admin: Address, new_admin: Address) {
     env.events().publish(
         (Symbol::new(env, "admin_transferred"),),

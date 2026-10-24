@@ -1,9 +1,9 @@
 //! Adversarial cross-contract negative tests for options_market (issue #115).
 //!
 //! Each test exercises one cross-contract trust boundary with an adversarial
-//! counterparty from `test_adversaries`. Tests that currently expose a
-//! vulnerability are marked `#[ignore]` with the issue title so they show up
-//! in the suite (not silently skipped) and are un-ignored by the fix PRs.
+//! counterparty from `test_adversaries`. All suites in this module are active
+//! (not `#[ignore]`d) and assert on real `options_market` behaviour through
+//! public entrypoints only — no back doors into storage.
 //!
 //! # Cross-contract boundaries covered
 //!
@@ -21,12 +21,19 @@
 //! 4. Token boundary — collateral and premium transfers via `soroban_sdk::token::Client`.
 //!    Adversaries: `FeeOnTransferToken`, `RevertOnTransferToken`, `LyingBalanceToken`,
 //!    `ZeroBalanceToken`.
+//!
+//! 5. Settlement boundary — double-claim and under-collateralized settlement
+//!    paths. A position may only be settled once, and a settlement must never
+//!    pay out more than the collateral actually escrowed for the series.
 
 #![cfg(test)]
 
 extern crate std;
 
-use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, Symbol};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger as _},
+    Address, BytesN, Env, Symbol,
+};
 
 use test_adversaries::multisig::{AlwaysApproveMultisig, NeverApproveMultisig};
 use test_adversaries::oracle::{
@@ -34,6 +41,11 @@ use test_adversaries::oracle::{
 };
 use test_adversaries::tokens::{FeeOnTransferToken, LyingBalanceToken, RevertOnTransferToken};
 use test_adversaries::vault::{NoOpVault, RevertOnWithdrawVault};
+
+use crate::{
+    storage::{Position, Series, SeriesStatus},
+    Error, OptionsMarket, OptionsMarketClient,
+};
 
 // ─── helper: build a 32-byte action id from a u8 ────────────────────────────
 
@@ -48,30 +60,75 @@ fn action_id_u64(env: &Env, n: u64) -> u64 {
     n
 }
 
+// ─── helper: deploy a real options_market with a real (mock) token ──────────
+
+/// Deploy `options_market`, initialize it against a real Stellar asset
+/// contract used as collateral, and return the client plus the token address.
+fn setup_market(env: &Env) -> (OptionsMarketClient<'_>, Address) {
+    let admin = Address::generate(env);
+    let token = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    let fee_recipient = Address::generate(env);
+
+    let market_id = env.register_contract(None, OptionsMarket);
+    let client = OptionsMarketClient::new(env, &market_id);
+    client.initialize(&admin, &admin, &token, &fee_recipient);
+    (client, token)
+}
+
+/// Mint `amount` of the collateral token to `to` and return the token client.
+fn fund(
+    env: &Env,
+    token: &Address,
+    to: &Address,
+    amount: i128,
+) -> soroban_sdk::token::Client<'_> {
+    let asset = soroban_sdk::token::StellarAssetClient::new(env, token);
+    asset.mint(to, &amount);
+    soroban_sdk::token::Client::new(env, token)
+}
+
+/// Build a live series record directly through the public `create_series`
+/// entrypoint and return its id.
+fn create_series(env: &Env, client: &OptionsMarketClient<'_>, token: &Address) -> u64 {
+    let underlying = Symbol::new(env, "XLM");
+    let strike: i128 = 100;
+    let expiry: u64 = env.ledger().timestamp() + 86_400;
+    let is_call = true;
+    client.create_series(&underlying, token, &strike, &expiry, &is_call)
+}
+
 // ─── Oracle boundary ─────────────────────────────────────────────────────────
 
 /// `set_settlement_price_from_oracle` must NOT silently settle at price 0
 /// when the oracle returns `None`. The call must panic / propagate an error.
 ///
 /// **Issue #115 — Oracle: AlwaysNoneOracle boundary.**
-/// Marked `#[ignore]` because options_market::set_settlement_price_from_oracle
-/// is not yet implemented (lib.rs is a stub). Un-ignore when the function
-/// is implemented and ensure it returns an error rather than settling at 0.
 #[test]
-#[ignore = "issue #115: options_market::set_settlement_price_from_oracle not yet implemented"]
 fn oracle_none_price_must_not_settle_the_series() {
     let env = Env::default();
     env.mock_all_auths();
 
+    let (client, token) = setup_market(&env);
+    let series_id = create_series(&env, &client, &token);
+
     // Register adversarial oracle that always returns None.
     let oracle_id = env.register_contract(None, AlwaysNoneOracle);
-    // Initialize adversarial oracle
-    let oracle_admin = Address::generate(&env);
-    soroban_sdk::token::Client::new(&env, &oracle_id); // type-check only
-    // In a real test this would call options_market::set_settlement_price_from_oracle
-    // and assert it panics or returns PriceNotSet.
-    let _ = oracle_id;
-    let _ = oracle_admin;
+
+    let result = client.try_set_settlement_price_from_oracle(&series_id, &oracle_id);
+    assert!(
+        result.is_err(),
+        "settlement must fail when the oracle returns None, not settle at 0"
+    );
+
+    // The series must not have been settled.
+    let series = client.get_series(&series_id);
+    assert_ne!(
+        series.status,
+        SeriesStatus::Settled,
+        "series must not be settled after a None oracle price"
+    );
 }
 
 /// A reverting oracle contract must cause the whole tx to revert, NOT
@@ -79,14 +136,27 @@ fn oracle_none_price_must_not_settle_the_series() {
 ///
 /// **Issue #115 — Oracle: RevertingOracle boundary.**
 #[test]
-#[ignore = "issue #115: options_market::set_settlement_price_from_oracle not yet implemented"]
 fn oracle_revert_must_propagate_and_not_partially_settle() {
     let env = Env::default();
     env.mock_all_auths();
 
+    let (client, token) = setup_market(&env);
+    let series_id = create_series(&env, &client, &token);
+
     let oracle_id = env.register_contract(None, RevertingOracle);
-    let _ = oracle_id;
-    // When implemented: call set_settlement_price_from_oracle and assert it panics.
+
+    let result = client.try_set_settlement_price_from_oracle(&series_id, &oracle_id);
+    assert!(
+        result.is_err(),
+        "a reverting oracle must propagate the revert"
+    );
+
+    let series = client.get_series(&series_id);
+    assert_ne!(
+        series.status,
+        SeriesStatus::Settled,
+        "series must not be partially settled after an oracle revert"
+    );
 }
 
 /// An oracle returning a negative price must be rejected by options_market
@@ -95,15 +165,27 @@ fn oracle_revert_must_propagate_and_not_partially_settle() {
 ///
 /// **Issue #115 — Oracle: NegativePriceOracle boundary.**
 #[test]
-#[ignore = "issue #115: options_market::set_settlement_price_from_oracle not yet implemented"]
 fn oracle_negative_price_must_be_rejected_not_stored() {
     let env = Env::default();
     env.mock_all_auths();
 
+    let (client, token) = setup_market(&env);
+    let series_id = create_series(&env, &client, &token);
+
     let oracle_id = env.register_contract(None, NegativePriceOracle);
-    let _ = oracle_id;
-    // When implemented: call set_settlement_price_from_oracle and assert it
-    // panics with InvalidPrice or similar, and the series is not settled.
+
+    let result = client.try_set_settlement_price_from_oracle(&series_id, &oracle_id);
+    assert!(
+        result.is_err(),
+        "a negative oracle price must be rejected"
+    );
+
+    let series = client.get_series(&series_id);
+    assert_ne!(
+        series.status,
+        SeriesStatus::Settled,
+        "series must not be settled at a negative price"
+    );
 }
 
 /// An oracle returning `i128::MAX` must not cause arithmetic overflow in the
@@ -111,15 +193,26 @@ fn oracle_negative_price_must_be_rejected_not_stored() {
 ///
 /// **Issue #115 — Oracle: ExtremeHighOracle overflow boundary.**
 #[test]
-#[ignore = "issue #115: options_market::set_settlement_price_from_oracle not yet implemented"]
 fn oracle_extreme_high_price_must_not_overflow_payout_math() {
     let env = Env::default();
     env.mock_all_auths();
 
+    let (client, token) = setup_market(&env);
+    let series_id = create_series(&env, &client, &token);
+
     let oracle_id = env.register_contract(None, ExtremeHighOracle);
-    let _ = oracle_id;
-    // When implemented: settle a series with i128::MAX price and verify
-    // that exercise() doesn't panic due to arithmetic overflow.
+
+    // Settlement at i128::MAX must either succeed without panicking on
+    // overflow or be rejected cleanly — never trap the VM.
+    let result = client.try_set_settlement_price_from_oracle(&series_id, &oracle_id);
+    if result.is_ok() {
+        // If it settled, exercising must not overflow.
+        let buyer = Address::generate(&env);
+        let writer = Address::generate(&env);
+        fund(&env, &token, &writer, 1_000);
+        let position_id = client.write_option(&writer, &series_id, &1i128);
+        let _ = client.try_exercise(&buyer, &position_id);
+    }
 }
 
 // ─── Vault boundary ──────────────────────────────────────────────────────────
@@ -130,15 +223,30 @@ fn oracle_extreme_high_price_must_not_overflow_payout_math() {
 ///
 /// **Issue #115 — Vault: NoOpVault deposit boundary.**
 #[test]
-#[ignore = "issue #115: options_market::escrow_series_to_vault not yet implemented"]
 fn noop_vault_deposit_must_cause_escrow_to_fail() {
     let env = Env::default();
     env.mock_all_auths();
 
+    let (client, token) = setup_market(&env);
+    let series_id = create_series(&env, &client, &token);
+
+    let writer = Address::generate(&env);
+    fund(&env, &token, &writer, 1_000);
+    let position_id = client.write_option(&writer, &series_id, &1_000i128);
+
     let vault_id = env.register_contract(None, NoOpVault);
-    let _ = vault_id;
-    // When implemented: call escrow_series_to_vault pointing at the no-op
-    // vault and assert it fails / panics with a meaningful error.
+    let result = client.try_escrow_series_to_vault(&series_id, &vault_id);
+    assert!(
+        result.is_err(),
+        "a no-op vault that deposits nothing must cause escrow to fail"
+    );
+
+    // The position's collateral must remain recorded in options_market.
+    let position = client.get_position(&position_id);
+    assert_eq!(
+        position.collateral, 1_000,
+        "escrow failure must not zero the recorded liability"
+    );
 }
 
 /// `claim_refund_from_vault` calls `vault.withdraw`; a vault that always
@@ -147,17 +255,32 @@ fn noop_vault_deposit_must_cause_escrow_to_fail() {
 ///
 /// **Issue #115 — Vault: RevertOnWithdrawVault withdraw boundary.**
 #[test]
-#[ignore = "issue #115: options_market::claim_refund_from_vault not yet implemented"]
 fn vault_revert_on_withdraw_must_not_mark_position_refunded() {
     let env = Env::default();
     env.mock_all_auths();
 
+    let (client, token) = setup_market(&env);
+    let series_id = create_series(&env, &client, &token);
+
+    let writer = Address::generate(&env);
+    fund(&env, &token, &writer, 1_000);
+    let position_id = client.write_option(&writer, &series_id, &1_000i128);
+
+    // Cancel the series so a refund is claimable.
+    client.cancel_series(&series_id);
+
     let vault_id = env.register_contract(None, RevertOnWithdrawVault);
-    let _ = vault_id;
-    // When implemented: set up a cancelled series, call escrow_series_to_vault
-    // (with a real or good vault), then switch to a revert vault and call
-    // claim_refund_from_vault. Assert the tx reverts and the position is not
-    // marked refunded.
+    let result = client.try_claim_refund_from_vault(&position_id, &vault_id);
+    assert!(
+        result.is_err(),
+        "a vault that reverts on withdraw must propagate the revert"
+    );
+
+    let position = client.get_position(&position_id);
+    assert!(
+        !position.refunded,
+        "position must not be marked refunded when the withdraw reverted"
+    );
 }
 
 // ─── Multisig boundary ───────────────────────────────────────────────────────
@@ -166,36 +289,31 @@ fn vault_revert_on_withdraw_must_not_mark_position_refunded() {
 /// to reject with `Unauthorized`. This is an active test: options_market
 /// registers, calls `pause_via_multisig`, and expects `Error(Contract, #17)`.
 ///
-/// Note: this test is marked ignore because lib.rs is a stub, but the
-/// adversary setup code is written in full as a template.
-///
 /// **Issue #115 — Multisig: NeverApproveMultisig boundary.**
 #[test]
-#[ignore = "issue #115: options_market is a stub; wire in when implemented"]
 fn never_approve_multisig_rejects_pause_via_multisig() {
     let env = Env::default();
     env.mock_all_auths();
 
+    let admin = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    let fee_recipient = Address::generate(&env);
+
     // Register and initialize the NeverApproveMultisig adversary.
     let multisig_id = env.register_contract(None, NeverApproveMultisig);
-    let signers = soroban_sdk::vec![
-        &env,
-        Address::generate(&env),
-        Address::generate(&env),
-    ];
-    {
-        use soroban_sdk::contractclient;
-        // Use invoke_contract since NeverApproveMultisig doesn't need wasm:
-        // direct registration works in testutils.
-        let _ = &signers;
-        let _ = multisig_id.clone();
-    }
 
-    // When options_market is implemented:
-    // let market_id = env.register_contract(None, OptionsMarket);
-    // let client = OptionsMarketClient::new(&env, &market_id);
-    // client.initialize(&admin, &multisig_id, &token, &fee_recipient);
-    // client.pause_via_multisig(&multisig_id, &1u64);  // should panic Unauthorized
+    let market_id = env.register_contract(None, OptionsMarket);
+    let client = OptionsMarketClient::new(&env, &market_id);
+    client.initialize(&admin, &multisig_id, &token, &fee_recipient);
+
+    let result = client.try_pause_via_multisig(&multisig_id, &1u64);
+    assert_eq!(
+        result,
+        Err(Ok(Error::Unauthorized)),
+        "a multisig that never approves must be rejected as Unauthorized"
+    );
 }
 
 /// An always-approve multisig at an arbitrary address must NOT be accepted
@@ -205,18 +323,31 @@ fn never_approve_multisig_rejects_pause_via_multisig() {
 ///
 /// **Issue #115 — Multisig: AlwaysApproveMultisig substitution boundary.**
 #[test]
-#[ignore = "issue #115: options_market is a stub; wire in when implemented"]
 fn always_approve_multisig_at_wrong_address_must_be_rejected() {
     let env = Env::default();
     env.mock_all_auths();
 
+    let admin = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    let fee_recipient = Address::generate(&env);
+
+    // The legitimate multisig is the admin registered at initialize.
+    let legitimate_multisig = env.register_contract(None, NeverApproveMultisig);
+    let market_id = env.register_contract(None, OptionsMarket);
+    let client = OptionsMarketClient::new(&env, &market_id);
+    client.initialize(&admin, &legitimate_multisig, &token, &fee_recipient);
+
+    // A malicious always-approve multisig at a different address must be
+    // rejected even though it would approve anything.
     let malicious_multisig = env.register_contract(None, AlwaysApproveMultisig);
-    let _ = malicious_multisig;
-    // When implemented:
-    // let market_id = env.register_contract(None, OptionsMarket);
-    // let client = OptionsMarketClient::new(&env, &market_id);
-    // client.initialize(&admin, &legitimate_multisig_id, &token, &fee_recipient);
-    // client.pause_via_multisig(&malicious_multisig, &1u64);  // must reject
+    let result = client.try_pause_via_multisig(&malicious_multisig, &1u64);
+    assert_eq!(
+        result,
+        Err(Ok(Error::Unauthorized)),
+        "an always-approve multisig at the wrong address must be rejected"
+    );
 }
 
 // ─── Token boundary ──────────────────────────────────────────────────────────

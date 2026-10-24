@@ -90,3 +90,100 @@ the fix PRs.
 | `options_market` | `src/test_adversaries.rs` | Oracle (`set_settlement_price_from_oracle`), Vault (`escrow_series_to_vault`, `claim_refund_from_vault`), Multisig (all `_via_multisig`), Token (collateral / premium) |
 | `price_oracle` | `src/test_adversaries.rs` | Multisig (all `_via_multisig`), Oracle-adapter (both sources) |
 | `vault` | `src/test_adversaries.rs` | Token (`safe_inbound_transfer` delta-check), Multisig (all `_via_multisig`) |
+
+---
+
+## Per-contract adversary suites (issue #234)
+
+The catalog above is the *mock* library. The suites below are the *scenarios* that drive
+those mocks (and the real contracts) through the public entrypoints only — no back doors
+into storage. Each suite lives in its own module under `test_adversaries/src/` and is
+declared from `test_adversaries/src/lib.rs`.
+
+Unlike the original `vault` suite, these suites are **not** `#[ignore]`d: they run in CI
+and appear in the CI report as executed. A suite that would pass only because the
+contract under test is still a stub is not acceptable, so any module whose target
+contract is not yet reconstructed is **gated** (see [Gated modules](#gated-modules))
+rather than silently skipped.
+
+All suites are deterministic: no wall-clock reads and no RNG. Where a scenario needs
+"time", it advances the ledger sequence/timestamp explicitly through the test `Env`
+(e.g. `env.ledger().with_mut(|l| l.sequence_number += n)`), so results are reproducible.
+
+| Module | Target contract | Scenarios covered |
+|---|---|---|
+| `price_oracle_adversaries` | `price_oracle` | Stale feeder in a `min_reports` quorum; minority/outlier feeder skewing the aggregate; feeder set that cannot reach quorum; duplicate feeder reports; negative/extreme prices from a single feeder |
+| `timelock_adversaries` | `timelock` | Executing a proposal before its predecessor (ordering bypass); executing out of `eta` window (too early / expired); role bypass — non-admin scheduling or cancelling; re-execution of an already-executed proposal |
+| `multisig_adversaries` | `multisig` | Duplicate/replayed approvals from the same signer; approvals past `approval_ttl`; approval race where a signer revokes then re-approves; threshold reached then a signer removed; execution of an action that never reached threshold |
+| `options_market_adversaries` | `options_market` | Double-claim of settlement payout; under-collateralized write/settle path; settlement price manipulation via a single oracle source; collateral abuse through a fee-on-transfer / lying-balance token |
+
+### `price_oracle_adversaries`
+
+Constructs a `price_oracle` instance with a known feeder set and `min_reports` quorum,
+then attacks the aggregation:
+
+- **Stale feeder**: one feeder's report is aged past the staleness window while the
+  others are fresh; asserts the stale report does not count toward quorum.
+- **Minority skew**: a single outlier feeder reports an extreme price; asserts the
+  aggregate stays within the honest feeders' band and the outlier cannot move it alone.
+- **Quorum starvation**: fewer fresh reports than `min_reports`; asserts the read fails
+  closed rather than returning a partial aggregate.
+- **Duplicate reports**: the same feeder reports twice in one round; asserts the second
+  report does not double-count toward quorum.
+
+### `timelock_adversaries`
+
+Drives `timelock` through `schedule` / `execute` / `cancel` only:
+
+- **Predecessor bypass**: attempts to `execute` a proposal whose declared predecessor
+  has not executed; asserts the call is rejected.
+- **Window bypass**: attempts to `execute` before `eta` and after expiry; asserts both
+  are rejected.
+- **Role bypass**: a non-admin attempts `schedule` and `cancel`; asserts `Unauthorized`.
+- **Replay**: attempts to `execute` an already-executed proposal; asserts rejection.
+
+### `multisig_adversaries`
+
+Exercises `multisig` approval bookkeeping:
+
+- **Duplicate approval**: the same signer approves twice; asserts the approval count
+  does not increment past one.
+- **Expired approval**: an approval is recorded, the ledger advances past
+  `approval_ttl`, then execution is attempted; asserts the stale approval no longer
+  counts.
+- **Approval race**: a signer approves, revokes, then re-approves; asserts the final
+  state reflects exactly one live approval.
+- **Threshold churn**: threshold is reached, then a signer is removed; asserts the
+  action is no longer executable.
+- **Below threshold**: execution is attempted with fewer than threshold approvals;
+  asserts rejection.
+
+### `options_market_adversaries`
+
+Attacks `options_market` settlement and collateral through `buy_option` /
+`write_option` / settlement / claim entrypoints:
+
+- **Double claim**: a holder claims settlement payout twice; asserts the second claim
+  fails and the position is marked settled.
+- **Under-collateralized settlement**: a writer settles a position whose collateral is
+  below the payout; asserts the market does not pay out more than is escrowed.
+- **Oracle manipulation**: settlement price is set from a single manipulated source;
+  asserts the market's price validation rejects it.
+- **Collateral abuse**: a fee-on-transfer / lying-balance token is used as collateral;
+  asserts the market measures the real delta and does not over-credit the writer.
+
+---
+
+## Gated modules
+
+The following modules are added but **gated** because the contract they attack is not
+yet reconstructed. They are compiled behind a feature flag and listed explicitly in the
+CI report (as `gated`, not `skipped`) so the gap stays visible. When the target contract
+lands, remove the gate and the suite runs like the others.
+
+| Module | Gate | Reason | Un-gate when |
+|---|---|---|---|
+| `options_market_adversaries` | `#[cfg(feature = "options_market_ready")]` | `options_market` settlement/collateral entrypoints are still being reconstructed; the suite must not pass against a stub | `options_market` settlement + collateral paths are reconstructed and the `vault` adversarial suite (issue #115) is un-ignored |
+
+The `price_oracle`, `timelock`, and `multisig` suites are **not** gated and run
+unconditionally in CI.
