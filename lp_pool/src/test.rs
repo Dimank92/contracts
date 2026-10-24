@@ -3,7 +3,7 @@
 extern crate std;
 
 use crate::types::DataKey as PoolKey;
-use crate::{LpPool, LpPoolClient, MIN_DEPOSIT, VIRTUAL_SHARES};
+use crate::{Error, LpPool, LpPoolClient, MIN_DEPOSIT, VIRTUAL_SHARES};
 use soroban_sdk::{
     contract, contractimpl, contracttype,
     testutils::{Address as _, MockAuth, MockAuthInvoke},
@@ -95,6 +95,12 @@ impl Harness<'_> {
     /// market's nested `transfer(pool, market, collateral)` must be covered
     /// by the pool's own `authorize_as_current_contract`.
     fn write(&self, series_id: u64, contracts: i128, collateral: i128) -> u64 {
+        self.try_write(series_id, contracts, collateral)
+            .unwrap_or_else(|e| panic!("write_option failed: {e:?}"))
+    }
+
+    /// `write`, returning the pool's typed error instead of panicking.
+    fn try_write(&self, series_id: u64, contracts: i128, collateral: i128) -> Result<u64, Error> {
         let args = (series_id, contracts, collateral, 0_i128);
         self.env.mock_auths(&[MockAuth {
             address: &self.keeper,
@@ -105,11 +111,15 @@ impl Harness<'_> {
                 sub_invokes: &[],
             },
         }]);
-        let id = self
+        let result = self
             .pool
-            .write_option(&series_id, &contracts, &collateral, &0);
+            .try_write_option(&series_id, &contracts, &collateral, &0);
         self.env.mock_all_auths();
-        id
+        match result {
+            Ok(id) => Ok(id.unwrap()),
+            Err(Ok(e)) => Err(e),
+            Err(Err(e)) => panic!("write_option failed in the host: {e:?}"),
+        }
     }
 }
 
@@ -244,14 +254,16 @@ fn withdraw_requested_mid_epoch_waits_for_the_epoch_to_close() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #9)")] // PositionsStillOpen
 fn epoch_cannot_close_with_open_positions() {
     let h = setup();
     let alice = user(&h, 1_000_000);
     h.pool.deposit(&alice, &1_000_000);
     h.pool.process_epoch();
     h.write(1, 10, 100_000);
-    h.pool.process_epoch();
+    assert_eq!(
+        h.pool.try_process_epoch(),
+        Err(Ok(Error::PositionsStillOpen))
+    );
 }
 
 #[test]
@@ -280,25 +292,25 @@ fn first_depositor_inflation_attack_is_neutralized() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #13)")] // BelowMinimumDeposit
 fn dust_deposits_are_rejected() {
     let h = setup();
     let u = user(&h, 10);
-    h.pool.deposit(&u, &1);
+    assert_eq!(
+        h.pool.try_deposit(&u, &1),
+        Err(Ok(Error::BelowMinimumDeposit))
+    );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #5)")] // SeriesNotWhitelisted
 fn writes_only_into_whitelisted_series() {
     let h = setup();
     let u = user(&h, 1_000_000);
     h.pool.deposit(&u, &1_000_000);
     h.pool.process_epoch();
-    h.write(2, 1, 1_000);
+    assert_eq!(h.try_write(2, 1, 1_000), Err(Error::SeriesNotWhitelisted));
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #6)")] // SeriesCapExceeded
 fn per_series_cap_is_enforced() {
     let h = setup();
     h.pool.set_series_cap(&1, &150_000);
@@ -306,37 +318,70 @@ fn per_series_cap_is_enforced() {
     h.pool.deposit(&u, &1_000_000);
     h.pool.process_epoch();
     h.write(1, 1, 100_000);
-    h.write(1, 1, 60_000);
+    assert_eq!(h.try_write(1, 1, 60_000), Err(Error::SeriesCapExceeded));
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #7)")] // UtilizationCapExceeded
 fn utilization_cap_is_enforced() {
     let h = setup();
     let u = user(&h, 1_000_000);
     h.pool.deposit(&u, &1_000_000);
     h.pool.process_epoch();
-    h.write(1, 1, 800_001);
+    assert_eq!(
+        h.try_write(1, 1, 800_001),
+        Err(Error::UtilizationCapExceeded)
+    );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #8)")] // InsufficientIdle
 fn pending_deposits_cannot_be_used_as_collateral() {
     let h = setup();
     let u = user(&h, 1_000_000);
     h.pool.deposit(&u, &1_000_000);
-    h.write(1, 1, 1_000);
+    assert_eq!(h.try_write(1, 1, 1_000), Err(Error::InsufficientIdle));
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #4)")] // InsufficientShares
 fn cannot_withdraw_more_shares_than_owned() {
     let h = setup();
     let u = user(&h, 1_000_000);
     h.pool.deposit(&u, &1_000_000);
     h.pool.process_epoch();
-    h.pool
-        .request_withdraw(&u, &(1_000_000 * VIRTUAL_SHARES + 1));
+    assert_eq!(
+        h.pool
+            .try_request_withdraw(&u, &(1_000_000 * VIRTUAL_SHARES + 1)),
+        Err(Ok(Error::InsufficientShares))
+    );
+}
+
+#[test]
+fn reinitialize_and_unknown_positions_are_typed_errors() {
+    let h = setup();
+    let a = Address::generate(&h.env);
+    assert_eq!(
+        h.pool.try_initialize(&a, &a, &a, &a, &8_000),
+        Err(Ok(Error::AlreadyInitialized))
+    );
+    assert_eq!(h.pool.try_reclaim(&42), Err(Ok(Error::PositionNotFound)));
+    assert_eq!(
+        h.pool.try_set_max_utilization(&0),
+        Err(Ok(Error::InvalidUtilization))
+    );
+}
+
+#[test]
+fn uninitialized_pool_reports_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let pool = LpPoolClient::new(&env, &env.register_contract(None, LpPool));
+    assert_eq!(
+        pool.try_set_keeper(&Address::generate(&env)),
+        Err(Ok(Error::NotInitialized))
+    );
+    assert_eq!(
+        pool.try_deposit(&Address::generate(&env), &MIN_DEPOSIT),
+        Err(Ok(Error::NotInitialized))
+    );
 }
 
 #[test]

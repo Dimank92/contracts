@@ -2,9 +2,9 @@
 
 extern crate std;
 
-use crate::{GrantsEscrow, GrantsEscrowClient, MilestoneStatus, GRACE_PERIOD};
+use crate::{Error, GrantsEscrow, GrantsEscrowClient, MilestoneStatus, GRACE_PERIOD};
 use soroban_sdk::{
-    testutils::{Address as _, Events as _, Ledger},
+    testutils::{Address as _, Ledger},
     token, vec, Address, BytesN, Env, Symbol, TryFromVal, Vec,
 };
 
@@ -97,7 +97,7 @@ fn full_grant_lifecycle_releases_every_milestone() {
         assert_eq!(m.evidence_hash, evidence(&h));
     }
 
-    let (_, topics, _) = h.env.events().all().last().unwrap();
+    let (topics, _) = event_spec::last_event(&h.env, &h.client.address);
     let name = Symbol::try_from_val(&h.env, &topics.get(0).unwrap()).unwrap();
     assert_eq!(name, Symbol::new(&h.env, "milestone_released"));
 }
@@ -107,32 +107,33 @@ fn quorum_is_required_before_release() {
     let h = setup();
     let id = create(&h);
     // Can't approve before submission.
-    assert!(h
-        .client
-        .try_approve_milestone(&id, &0, &h.reviewers[0])
-        .is_err());
+    assert_eq!(
+        h.client.try_approve_milestone(&id, &0, &h.reviewers[0]),
+        Err(Ok(Error::InvalidMilestoneState))
+    );
 
     h.client.submit_milestone(&id, &0, &evidence(&h));
     h.client.approve_milestone(&id, &0, &h.reviewers[0]);
     assert_eq!(balance(&h, &h.grantee), 0);
     // The same reviewer can't count twice, and outsiders can't count at all.
-    assert!(h
-        .client
-        .try_approve_milestone(&id, &0, &h.reviewers[0])
-        .is_err());
-    assert!(h
-        .client
-        .try_approve_milestone(&id, &0, &Address::generate(&h.env))
-        .is_err());
+    assert_eq!(
+        h.client.try_approve_milestone(&id, &0, &h.reviewers[0]),
+        Err(Ok(Error::AlreadyApproved))
+    );
+    assert_eq!(
+        h.client
+            .try_approve_milestone(&id, &0, &Address::generate(&h.env)),
+        Err(Ok(Error::NotAReviewer))
+    );
     assert!(h.client.has_approved(&id, &0, &h.reviewers[0]));
 
     h.client.approve_milestone(&id, &0, &h.reviewers[1]);
     assert_eq!(balance(&h, &h.grantee), 1_000);
     // Released milestones take no further approvals.
-    assert!(h
-        .client
-        .try_approve_milestone(&id, &0, &h.reviewers[2])
-        .is_err());
+    assert_eq!(
+        h.client.try_approve_milestone(&id, &0, &h.reviewers[2]),
+        Err(Ok(Error::InvalidMilestoneState))
+    );
 }
 
 #[test]
@@ -147,7 +148,7 @@ fn reviewer_cannot_be_the_grantee() {
         &vec![&h.env, h.reviewers[0].clone(), h.grantee.clone()],
         &1,
     );
-    assert!(result.is_err());
+    assert_eq!(result, Err(Ok(Error::ReviewerIsGrantee)));
 }
 
 #[test]
@@ -156,29 +157,33 @@ fn create_grant_validates_inputs() {
     let now = h.env.ledger().timestamp();
     let ms = vec![&h.env, (1_000i128, now + DAY)];
     // Quorum above committee size, zero quorum, duplicate reviewer.
-    assert!(h
-        .client
-        .try_create_grant(&h.funder, &h.grantee, &h.token, &ms, &reviewers(&h), &4)
-        .is_err());
-    assert!(h
-        .client
-        .try_create_grant(&h.funder, &h.grantee, &h.token, &ms, &reviewers(&h), &0)
-        .is_err());
+    assert_eq!(
+        h.client
+            .try_create_grant(&h.funder, &h.grantee, &h.token, &ms, &reviewers(&h), &4),
+        Err(Ok(Error::InvalidQuorum))
+    );
+    assert_eq!(
+        h.client
+            .try_create_grant(&h.funder, &h.grantee, &h.token, &ms, &reviewers(&h), &0),
+        Err(Ok(Error::InvalidQuorum))
+    );
     let dup = vec![&h.env, h.reviewers[0].clone(), h.reviewers[0].clone()];
-    assert!(h
-        .client
-        .try_create_grant(&h.funder, &h.grantee, &h.token, &ms, &dup, &1)
-        .is_err());
+    assert_eq!(
+        h.client
+            .try_create_grant(&h.funder, &h.grantee, &h.token, &ms, &dup, &1),
+        Err(Ok(Error::InvalidReviewers))
+    );
     // Zero amount, past deadline, no milestones.
     for bad in [
         vec![&h.env, (0i128, now + DAY)],
         vec![&h.env, (1_000i128, now)],
         Vec::new(&h.env),
     ] {
-        assert!(h
-            .client
-            .try_create_grant(&h.funder, &h.grantee, &h.token, &bad, &reviewers(&h), &1)
-            .is_err());
+        assert_eq!(
+            h.client
+                .try_create_grant(&h.funder, &h.grantee, &h.token, &bad, &reviewers(&h), &1),
+            Err(Ok(Error::InvalidMilestones))
+        );
     }
 }
 
@@ -196,12 +201,12 @@ fn missed_deadline_is_reclaimable_only_after_grace() {
         .deadline;
 
     h.env.ledger().with_mut(|l| l.timestamp = deadline + 1);
-    assert!(h
-        .client
-        .try_submit_milestone(&id, &0, &evidence(&h))
-        .is_err());
+    assert_eq!(
+        h.client.try_submit_milestone(&id, &0, &evidence(&h)),
+        Err(Ok(Error::DeadlinePassed))
+    );
     // Within the grace period nothing is reclaimable yet.
-    assert!(h.client.try_reclaim(&id).is_err());
+    assert_eq!(h.client.try_reclaim(&id), Err(Ok(Error::NothingToReclaim)));
 
     h.env
         .ledger()
@@ -214,7 +219,7 @@ fn missed_deadline_is_reclaimable_only_after_grace() {
     h.client.approve_milestone(&id, &1, &h.reviewers[0]);
     h.client.approve_milestone(&id, &1, &h.reviewers[1]);
     assert_eq!(balance(&h, &h.grantee), 2_000);
-    assert!(h.client.try_reclaim(&id).is_err());
+    assert_eq!(h.client.try_reclaim(&id), Err(Ok(Error::NothingToReclaim)));
 }
 
 #[test]
@@ -236,10 +241,10 @@ fn submitted_but_unapproved_milestone_is_reclaimable_after_grace() {
         .ledger()
         .with_mut(|l| l.timestamp = deadline + GRACE_PERIOD + 1);
     assert_eq!(h.client.reclaim(&id), 1_000);
-    assert!(h
-        .client
-        .try_approve_milestone(&id, &0, &h.reviewers[1])
-        .is_err());
+    assert_eq!(
+        h.client.try_approve_milestone(&id, &0, &h.reviewers[1]),
+        Err(Ok(Error::InvalidMilestoneState))
+    );
 }
 
 #[test]

@@ -78,6 +78,12 @@ a migration is in flight. The keys belong to a private enum in
 
 ## Upgrades
 
+Every upgrade now goes through the wasm hash allowlist and the
+post-upgrade check described in [upgrades.md](upgrades.md): propose the
+hash, wait out the delay, `upgrade`, `migrate`, then `post_upgrade_check`.
+`post_upgrade_check` requires the migration to be finished, so `migrate`
+always comes first.
+
 `upgrade(new_wasm_hash)` (admin) and `upgrade_via_multisig(action_id, new_wasm_hash)`
 exist on options_market, price_oracle and vault. The shared implementation
 is `zenith_common::upgrade`.
@@ -100,10 +106,11 @@ is `zenith_common::upgrade`.
 A Soroban wasm swap takes effect once the invocation that performed it
 returns. Therefore:
 
-- **Via the timelock:** put `[target.upgrade(hash), target.migrate(n-1, n)]`
-  in **one** operation. The two are separate invocations of the target,
-  so `migrate` runs the new code, and the upgrade is atomic with its
-  migration.
+- **Via the timelock:** put `[target.upgrade(hash), target.migrate(n-1, n),
+  target.post_upgrade_check()]` in **one** operation, after the hash's
+  allowlist delay has passed. They are separate invocations of the
+  target, so `migrate` and the check run the new code, and the upgrade
+  is atomic with its migration.
 - **Via admin or multisig:** submit `upgrade`, then `migrate`, as
   separate transactions. The contract is blocked (error 102) in between.
 - **The timelock itself:** the upgrade and the `migrate` self-call must
@@ -187,12 +194,18 @@ they run.
 
 ## Status
 
-The lib.rs of options_market, price_oracle, vault, multisig and timelock
-is empty on `main`: it was emptied by #148, #149 and #150, together with
-several of those crates' `types.rs` / `error.rs`. The framework, step
-registries, upgrade/migrate entrypoints and error codes for those crates
-are in their `src/migrations.rs` (and `multisig/src/upgrade.rs`), as
-separate `#[contractimpl]` blocks. Each file's header lists the lines to
-add (`mod migrations;`, `init_schema` in `initialize`, error variants)
-once those sources are restored. governor, params, staking, streams and
-grants_escrow are fully wired.
+governor, params, staking, streams, grants_escrow and multisig are fully
+wired. multisig's `migrations.rs` and `upgrade.rs` are now part of the
+crate, including the allowlist and the post-upgrade check.
+
+The lib.rs of options_market, price_oracle, vault and timelock is still
+empty or truncated on `main`: it was emptied by #148, #149 and #150,
+together with several of those crates' `types.rs` / `error.rs`. Their
+step registries and upgrade/migrate entrypoints are in their
+`src/migrations.rs`, as separate `#[contractimpl]` blocks. Each file's
+header lists the lines to add (`mod migrations;`, `init_schema` in
+`initialize`, error variants) once those sources are restored. They
+predate this PR's API changes too. Steps and guards now return `Result`,
+and `upgrade::upgrade` is replaced by `require_auth` + `propose_wasm` +
+`install` + `post_upgrade_check`, so the files must be ported with the
+rest of each crate.

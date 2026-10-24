@@ -15,18 +15,42 @@
 //!   `expiration_ledger`, so an expired allowance reads as zero and is
 //!   reclaimed by the network without anyone paying to delete it;
 //! - events use the SEP-41 topics: `approve`, `transfer`, `mint`, `burn`.
+//!   These keep the standard layout (no schema-version topic) so wallets
+//!   and indexers recognize them; only `initialized` follows Zenith's
+//!   event schema v2 (docs/events.md).
+//!
+//! The `token::Interface` functions keep their SEP-41 signatures, so they
+//! fail with `panic_with_error!` (still a typed `Error`); every other
+//! entrypoint returns `Result` (docs/errors.md).
 
 use soroban_sdk::token::{self, Interface as _};
-use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, String, Symbol};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, panic_with_error, Address, Env, String, Symbol,
+};
+use zenith_common::events::topics;
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod test_events;
 
 mod error;
 mod storage;
 
-use error::Error;
+pub use error::Error;
 use storage::{AllowanceKey, AllowanceValue, DataKey};
+
+zenith_common::contract_meta!();
+
+/// Data of the `initialized` event (schema v2).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InitializedEvent {
+    pub pool: Address,
+    pub decimals: u32,
+    pub name: String,
+    pub symbol: String,
+}
 
 #[contract]
 pub struct LpToken;
@@ -36,17 +60,19 @@ impl LpToken {
     /// Pins `pool` as the only address that may mint. Requires the
     /// pool's own authorization so a front-runner can't claim a freshly
     /// deployed token for a pool that never agreed to it.
-    pub fn initialize(env: Env, pool: Address, decimal: u32, name: String, symbol: String) {
-        zenith_common::require_uninitialized(
-            &env,
-            &DataKey::Initialized,
-            &DataKey::Pool,
-            Error::AlreadyInitialized,
-        );
-        zenith_common::mark_initialized(&env, &DataKey::Initialized);
+    pub fn initialize(
+        env: Env,
+        pool: Address,
+        decimal: u32,
+        name: String,
+        symbol: String,
+    ) -> Result<(), Error> {
+        if env.storage().instance().has(&DataKey::Pool) {
+            return Err(Error::AlreadyInitialized);
+        }
         pool.require_auth();
         if decimal > u8::MAX.into() {
-            panic_with_error!(&env, Error::InvalidDecimals);
+            return Err(Error::InvalidDecimals);
         }
         storage::extend_instance(&env);
         let instance = env.storage().instance();
@@ -54,24 +80,40 @@ impl LpToken {
         instance.set(&DataKey::Decimals, &decimal);
         instance.set(&DataKey::Name, &name);
         instance.set(&DataKey::Symbol, &symbol);
+        env.events().publish(
+            topics(&env, "initialized"),
+            InitializedEvent {
+                pool,
+                decimals: decimal,
+                name,
+                symbol,
+            },
+        );
+        Ok(())
     }
 
     /// Mints `amount` new shares to `to`. Only the pinned pool.
-    pub fn mint(env: Env, to: Address, amount: i128) {
-        check_nonnegative(&env, amount);
-        let pool = Self::pool(env.clone());
+    pub fn mint(env: Env, to: Address, amount: i128) -> Result<(), Error> {
+        if amount < 0 {
+            return Err(Error::NegativeAmount);
+        }
+        let pool = Self::pool(env.clone())?;
         pool.require_auth();
         storage::extend_instance(&env);
-        receive(&env, &to, amount);
+        let balance = storage::read_balance(&env, &to)
+            .checked_add(amount)
+            .ok_or(Error::Overflow)?;
+        storage::write_balance(&env, &to, balance);
         env.events()
             .publish((Symbol::new(&env, "mint"), pool, to), amount);
+        Ok(())
     }
 
-    pub fn pool(env: Env) -> Address {
+    pub fn pool(env: Env) -> Result<Address, Error> {
         env.storage()
             .instance()
             .get(&DataKey::Pool)
-            .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized))
+            .ok_or(Error::NotInitialized)
     }
 }
 
@@ -139,16 +181,24 @@ impl token::Interface for LpToken {
     }
 
     fn decimals(env: Env) -> u32 {
-        env.storage().instance().get(&DataKey::Decimals).unwrap()
+        metadata(&env, &DataKey::Decimals)
     }
 
     fn name(env: Env) -> String {
-        env.storage().instance().get(&DataKey::Name).unwrap()
+        metadata(&env, &DataKey::Name)
     }
 
     fn symbol(env: Env) -> String {
-        env.storage().instance().get(&DataKey::Symbol).unwrap()
+        metadata(&env, &DataKey::Symbol)
     }
+}
+
+/// A metadata entry `initialize` wrote, or a typed `NotInitialized`.
+fn metadata<V: soroban_sdk::TryFromVal<Env, soroban_sdk::Val>>(env: &Env, key: &DataKey) -> V {
+    env.storage()
+        .instance()
+        .get(key)
+        .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized))
 }
 
 fn check_nonnegative(env: &Env, amount: i128) {

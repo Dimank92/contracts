@@ -3,8 +3,6 @@ use soroban_sdk::{contracttype, Address, BytesN, Symbol, Val, Vec};
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
-    /// One-shot initialize flag; see `zenith_common::require_uninitialized`.
-    Initialized,
     /// O(1) membership check — see issue #101.
     IsSigner(Address),
     /// Map<Address, u32>: every signer and their voting weight.
@@ -49,9 +47,6 @@ pub enum DataKey {
     SignerChange(BytesN<32>),
     /// change_id -> timestamp at which a queued change becomes executable.
     SignerChangeReadyAt(BytesN<32>),
-    /// action class -> seconds of timelock layered on top of `is_approved`
-    /// before the action becomes executable. Absent means no timelock.
-    ClassTimelock(Symbol),
 }
 
 #[contracttype]
@@ -117,11 +112,15 @@ pub struct ActionApprovals {
     pub timestamps: Vec<u64>,
 }
 
-/// Per-class timelock configuration read by `is_executable`. `delay` is in
-/// seconds and is measured from the moment the action reached threshold.
+/// The post-upgrade guard (docs/upgrades.md), as `get_upgrade_status`
+/// returns it: present from install until `post_upgrade_check` passes.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ClassTimelock {
-    pub class: Symbol,
-    pub delay: u64,
+pub struct UpgradeStatus {
+    pub wasm_hash: BytesN<32>,
+    pub installed_at: u64,
+    /// The last `post_upgrade_check` failed; the contract stays closed.
+    pub failed: bool,
+    /// Error code of the failed check (see docs/errors.md), else zero.
+    pub reason: u32,
 }

@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use crate::{Staking, StakingClient};
+use crate::{Error, Staking, StakingClient};
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger as _},
     token, Address, Env, IntoVal, Symbol,
@@ -131,18 +131,25 @@ fn unstake_respects_cooldown_and_stops_earning() {
     assert_eq!(h.client.earned(&a, &h.usdc.address), 0);
     assert_eq!(h.client.earned(&b, &h.usdc.address), 1_000);
 
-    assert!(h.client.try_withdraw(&a).is_err());
+    assert_eq!(h.client.try_withdraw(&a), Err(Ok(Error::CooldownActive)));
     h.env.ledger().set_timestamp(COOLDOWN);
     assert_eq!(h.client.withdraw(&a), 100);
     assert_eq!(h.zen.balance(&a), 100);
-    assert!(h.client.try_withdraw(&a).is_err());
+    assert_eq!(h.client.try_withdraw(&a), Err(Ok(Error::NothingToWithdraw)));
 }
 
 #[test]
 fn cannot_unstake_more_than_staked() {
     let h = setup();
     let a = h.staker(100);
-    assert!(h.client.try_request_unstake(&a, &101).is_err());
+    assert_eq!(
+        h.client.try_request_unstake(&a, &101),
+        Err(Ok(Error::InsufficientStake))
+    );
+    assert_eq!(
+        h.client.try_request_unstake(&a, &0),
+        Err(Ok(Error::InvalidAmount))
+    );
 }
 
 #[test]
@@ -150,7 +157,46 @@ fn only_splitter_can_notify() {
     let h = setup();
     h.staker(100);
     h.env.set_auths(&[]);
-    assert!(h.client.try_notify_reward(&h.usdc.address, &1_000).is_err());
+    // No splitter signature: the host rejects the auth check.
+    assert!(matches!(
+        h.client.try_notify_reward(&h.usdc.address, &1_000),
+        Err(Err(_))
+    ));
+}
+
+#[test]
+fn reward_token_cap_and_reinitialize_are_typed_errors() {
+    let h = setup();
+    h.staker(100);
+    for _ in 1..crate::MAX_REWARD_TOKENS {
+        let t = new_token(&h.env);
+        mint(&h.env, &t, &h.splitter, 1);
+        h.client.notify_reward(&t.address, &1);
+    }
+    h.client.notify_reward(&h.usdc.address, &1);
+    let extra = new_token(&h.env);
+    mint(&h.env, &extra, &h.splitter, 1);
+    assert_eq!(
+        h.client.try_notify_reward(&extra.address, &1),
+        Err(Ok(Error::TooManyRewardTokens))
+    );
+    assert_eq!(
+        h.client
+            .try_initialize(&h.zen.address, &h.splitter, &COOLDOWN),
+        Err(Ok(Error::AlreadyInitialized))
+    );
+}
+
+#[test]
+fn uninitialized_contract_reports_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = StakingClient::new(&env, &env.register_contract(None, Staking));
+    assert_eq!(client.try_get_splitter(), Err(Ok(Error::NotInitialized)));
+    assert_eq!(
+        client.try_stake(&Address::generate(&env), &1),
+        Err(Ok(Error::NotInitialized))
+    );
 }
 
 #[test]

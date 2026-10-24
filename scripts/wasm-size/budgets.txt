@@ -5,7 +5,14 @@
 # Regenerate after a deliberate change (and explain it in the PR):
 #   scripts/wasm-size/check.sh --update <crate>
 #
-# Not yet recorded: these need one build on a machine with the toolchain,
-#   for c in multisig price_oracle vault params; do (cd $c && cargo build --target wasm32-unknown-unknown --release); done
-#   for c in options_market streams staking governor grants_escrow; do (cd $c && cargo build --target wasm32-unknown-unknown --release); done
-#   scripts/wasm-size/check.sh --update
+# Recorded with `cargo xtask build && scripts/wasm-size/check.sh --update`
+# (wasm-opt). options_market, price_oracle, vault and timelock aren't
+# recorded: their sources are incomplete on main (README "Known gaps").
+governor 39082
+grants_escrow 32388
+lp_pool 43228
+lp_token 13281
+multisig 81008
+params 28582
+staking 33127
+streams 29611

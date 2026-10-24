@@ -4,6 +4,10 @@
 //! allowed and listed. Functions whose signature is intentionally
 //! changed can be exempted with `--allow <name>`.
 //!
+//! `--allow '*'` allows every function's signature to change (functions
+//! still can't be removed), for a PR that deliberately changes a whole
+//! contract's ABI.
+//!
 //! Usage: spec-diff <base.wasm> <head.wasm> [--allow <fn>]...
 
 use std::{collections::BTreeMap, process::exit};
@@ -111,7 +115,9 @@ fn main() {
                 failed = true;
             }
             Some(h) if !compatible(b, h) => {
-                if allowed.contains(k) {
+                let any_fn =
+                    k.starts_with("FunctionV0:") && allowed.iter().any(|a| a == "FunctionV0:*");
+                if any_fn || allowed.contains(k) {
                     println!("changed  {k} (allowed)");
                 } else {
                     println!("CHANGED  {k}");

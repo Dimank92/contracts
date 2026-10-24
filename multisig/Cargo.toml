@@ -3,6 +3,9 @@ name = "zenith-multisig"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+repository.workspace = true
+# Embeds name/version/repo/commit as contractmeta (#125).
+build = "../common/build_meta.rs"
 
 [lib]
 # rlib alongside cdylib so other contracts (options_market) can depend on
@@ -16,7 +19,17 @@ zenith-common = { workspace = true }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
+# Checks emitted events against events.json (#126).
+event-spec = { path = "../tools/event-spec" }
 ed25519-dalek = { workspace = true }
 
 [features]
 testutils = ["soroban-sdk/testutils"]
+# Runs src/test_upgrade.rs: the full upgrade flow (allowlist, install,
+# post-upgrade check) against this crate's own built wasm. `cargo xtask
+# test` builds the wasm first (self-wasm below) and runs it.
+upgrade-wasm = []
+
+[package.metadata.zenith]
+self-wasm = true
+extra-test = { features = ["upgrade-wasm"] }

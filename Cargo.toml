@@ -19,15 +19,32 @@ members = [
     "streams",
     "timelock",
     "vault",
+    "tools/event-spec",
     "tools/spec-diff",
     "tools/vault-ops",
     "xtask",
+]
+
+# Crates whose sources are missing on main (their lib.rs was emptied or
+# truncated by earlier merges; see README "Known gaps"). `cargo xtask`
+# skips them unless one is named with -p, so the rest of the workspace
+# can be built, linted and tested.
+[workspace.metadata.zenith]
+incomplete = [
+    "zenith-integration-tests",
+    "zenith-options-market",
+    "zenith-price-oracle",
+    "zenith-test-adversaries",
+    "zenith-timelock",
+    "zenith-vault",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 publish = false
+# Embedded in every wasm as `source_repo` (common/build_meta.rs).
+repository = "https://github.com/Zenith-options/contracts"
 
 [workspace.dependencies]
 soroban-sdk = { version = "21.7.7" }

@@ -1,0 +1,5 @@
+{
+  "$comment": "Deployed contract ids per network, keyed by contract (the bindings/src/contracts/ names). Fill in after each deployment; the bindings read this through networks.ts.",
+  "testnet": {},
+  "mainnet": {}
+}

@@ -1,0 +1,70 @@
+name: Release
+
+# Pushing a tag `v<semver>` (e.g. `v0.2.0`, or `v0.2.0-rc.1` for a
+# pre-release) builds every contract, checks the committed bindings match
+# them, and publishes @zenith/contracts at that version. Pre-release tags
+# (with a `-`) publish under the npm dist-tag `next`, releases under
+# `latest`. Needs the `NPM_TOKEN` repository secret (an npm automation
+# token with publish rights to the @zenith scope).
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+  ZENITH_GIT_COMMIT: ${{ github.sha }}
+  STELLAR_CLI_VERSION: 28.1.0
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y binaryen
+      - name: Install stellar-cli
+        run: |
+          curl -sSfL -o /tmp/stellar.tgz \
+            "https://github.com/stellar/stellar-cli/releases/download/v${STELLAR_CLI_VERSION}/stellar-cli-${STELLAR_CLI_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          mkdir -p "$HOME/.local/bin" && tar xzf /tmp/stellar.tgz -C "$HOME/.local/bin" stellar
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      # Released bindings must match the released contracts exactly.
+      - run: cargo xtask bindings --check
+      - run: cargo xtask check-wasm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: bindings/package-lock.json
+      - name: Build and test the package
+        working-directory: bindings
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+      - name: Publish @zenith/contracts
+        working-directory: bindings
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          npm version --no-git-tag-version "$version"
+          case "$version" in
+            *-*) tag=next ;;
+            *) tag=latest ;;
+          esac
+          npm publish --provenance --access public --tag "$tag"
+      - name: Attach wasm to the GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/wasm32-unknown-unknown/release/*.wasm
+          prerelease: ${{ contains(github.ref_name, '-') }}

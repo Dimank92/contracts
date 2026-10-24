@@ -3,7 +3,7 @@
 //! `zenith_common::migrations`; this file only registers steps. See
 //! docs/migrations.md for how to author one.
 
-use soroban_sdk::{panic_with_error, Env};
+use soroban_sdk::Env;
 use zenith_common::migrations::{self, MigrationErrors, Step};
 
 use crate::error::Error;
@@ -29,15 +29,15 @@ pub const ERRORS: MigrationErrors<Error> = MigrationErrors {
 ///
 /// A step over unbounded data processes items `[cursor, cursor + limit)`
 /// and returns `Step::More(cursor + processed)` until it's done.
-pub fn step(env: &Env, to: u32, cursor: u32, limit: u32) -> Step {
-    let _ = (cursor, limit);
+pub fn step(env: &Env, to: u32, cursor: u32, limit: u32) -> Result<Step, Error> {
+    let _ = (env, cursor, limit);
     #[allow(clippy::match_single_binding)]
     match to {
-        _ => panic_with_error!(env, Error::InvalidMigrationTarget),
+        _ => Err(Error::InvalidMigrationTarget),
     }
 }
 
 /// The `MigrationInProgress` guard for state-changing entrypoints.
-pub fn require_current(env: &Env) {
-    migrations::require_schema_current(env, CURRENT_SCHEMA_VERSION, Error::MigrationInProgress);
+pub fn require_current(env: &Env) -> Result<(), Error> {
+    migrations::require_schema_current(env, CURRENT_SCHEMA_VERSION, Error::MigrationInProgress)
 }

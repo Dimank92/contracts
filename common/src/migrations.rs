@@ -28,7 +28,9 @@
 //! exposed permissionlessly: it can only advance a migration an
 //! authorized `migrate` already started.
 
-use soroban_sdk::{contracttype, panic_with_error, Env, Symbol};
+use soroban_sdk::{contracttype, Env};
+
+use crate::events;
 
 /// Version assumed for a contract deployed before this framework existed
 /// (no `SchemaVersion` key in storage), and the version every contract
@@ -74,8 +76,8 @@ pub enum Step {
 
 /// A contract's step registry: `(env, to_version, cursor, limit)`. Called
 /// only for `to_version` in `BASELINE_SCHEMA_VERSION+1 ..= current`; must
-/// panic for a version it has no step for.
-pub type StepFn = fn(&Env, u32, u32, u32) -> Step;
+/// return `Err(invalid_target)` for a version it has no step for.
+pub type StepFn<E> = fn(&Env, u32, u32, u32) -> Result<Step, E>;
 
 /// Each contract's own error codes for the failure cases below, so errors
 /// show up in that contract's spec rather than as foreign codes.
@@ -117,16 +119,14 @@ pub fn is_migrating(env: &Env) -> bool {
     env.storage().instance().has(&MigrationKey::MigrationState)
 }
 
-/// The `MigrationInProgress` guard for normal entrypoints: panics with
-/// `err` while a paginated migration is mid-flight or while the stored
-/// schema is older than the running code's `current`.
-pub fn require_schema_current<E>(env: &Env, current: u32, err: E)
-where
-    E: Into<soroban_sdk::Error>,
-{
+/// The `MigrationInProgress` guard for normal entrypoints: `Err(err)`
+/// while a paginated migration is mid-flight or while the stored schema
+/// is older than the running code's `current`.
+pub fn require_schema_current<E>(env: &Env, current: u32, err: E) -> Result<(), E> {
     if is_migrating(env) || schema_version(env) != current {
-        panic_with_error!(env, err);
+        return Err(err);
     }
+    Ok(())
 }
 
 /// Runs steps `from+1 ..= to` in order. Returns the schema version
@@ -137,20 +137,20 @@ pub fn migrate<E>(
     from: u32,
     to: u32,
     current: u32,
-    step: StepFn,
+    step: StepFn<E>,
     errs: &MigrationErrors<E>,
-) -> u32
+) -> Result<u32, E>
 where
-    E: Copy + Into<soroban_sdk::Error>,
+    E: Copy,
 {
     if is_migrating(env) {
-        panic_with_error!(env, errs.in_progress);
+        return Err(errs.in_progress);
     }
     if schema_version(env) != from {
-        panic_with_error!(env, errs.version_mismatch);
+        return Err(errs.version_mismatch);
     }
     if to <= from || to > current {
-        panic_with_error!(env, errs.invalid_target);
+        return Err(errs.invalid_target);
     }
     run(env, from, to, 0, DEFAULT_MIGRATION_BATCH, step, errs)
 }
@@ -162,15 +162,15 @@ pub fn migrate_batch<E>(
     env: &Env,
     cursor: u32,
     limit: u32,
-    step: StepFn,
+    step: StepFn<E>,
     errs: &MigrationErrors<E>,
-) -> u32
+) -> Result<u32, E>
 where
-    E: Copy + Into<soroban_sdk::Error>,
+    E: Copy,
 {
-    let state = load_state(env).unwrap_or_else(|| panic_with_error!(env, errs.not_in_progress));
+    let state = load_state(env).ok_or(errs.not_in_progress)?;
     if cursor != state.cursor || limit == 0 || limit > MAX_MIGRATION_BATCH {
-        panic_with_error!(env, errs.invalid_batch);
+        return Err(errs.invalid_batch);
     }
     run(
         env,
@@ -189,25 +189,24 @@ fn run<E>(
     target: u32,
     mut cursor: u32,
     limit: u32,
-    step: StepFn,
+    step: StepFn<E>,
     errs: &MigrationErrors<E>,
-) -> u32
+) -> Result<u32, E>
 where
-    E: Copy + Into<soroban_sdk::Error>,
+    E: Copy,
 {
     while version < target {
         let next = version + 1;
-        match step(env, next, cursor, limit) {
+        match step(env, next, cursor, limit)? {
             Step::Done => {
                 init_schema(env, next);
-                env.events()
-                    .publish((Symbol::new(env, "schema_migrated"),), (version, next));
+                events::schema_migrated(env, version, next);
                 version = next;
                 cursor = 0;
             }
             Step::More(resume) => {
                 if resume <= cursor {
-                    panic_with_error!(env, errs.invalid_batch);
+                    return Err(errs.invalid_batch);
                 }
                 env.storage().instance().set(
                     &MigrationKey::MigrationState,
@@ -216,16 +215,15 @@ where
                         cursor: resume,
                     },
                 );
-                env.events()
-                    .publish((Symbol::new(env, "migration_progress"), next), resume);
-                return version;
+                events::migration_progress(env, next, target, resume);
+                return Ok(version);
             }
         }
     }
     env.storage()
         .instance()
         .remove(&MigrationKey::MigrationState);
-    version
+    Ok(version)
 }
 
 fn load_state(env: &Env) -> Option<MigrationState> {
