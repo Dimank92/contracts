@@ -9,6 +9,8 @@ members = [
     "governor",
     "grants_escrow",
     "integration_tests",
+    "lp_pool",
+    "lp_token",
     "multisig",
     "options_market",
     "params",
@@ -37,6 +39,8 @@ ed25519-dalek = "2"
 # plus the zenith-common rlib.
 zenith-common = { path = "common" }
 governor = { package = "zenith-governor", path = "governor" }
+lp_pool = { package = "zenith-lp-pool", path = "lp_pool" }
+lp_token = { package = "zenith-lp-token", path = "lp_token" }
 multisig = { package = "zenith-multisig", path = "multisig" }
 options_market = { package = "zenith-options-market", path = "options_market" }
 params = { package = "zenith-params", path = "params" }

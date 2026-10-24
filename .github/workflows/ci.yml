@@ -34,14 +34,29 @@ env:
 # so both need multisig's wasm built first too — that's also why the
 # multisig build step above runs before the vault build step, not just
 # before options_market's.
-#
-        crate: [options_market, price_oracle, vault, multisig, streams, staking, timelock, governor, lp_token, lp_pool, integration_tests]
+
 jobs:
+  # Hard gate: the workspace must compile cleanly, every crate must have a
+  # compilable target, and no #[ignore] annotation is permitted without a
+  # tracking-issue reference. This catches stub/empty crates and stale
+  # test skips that would otherwise keep CI green while code drifts.
+  workspace-compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Build workspace (all targets)
+        run: cargo build --workspace --all-targets
+      - name: Dry-run workspace tests (no-run)
+        run: cargo test --workspace --no-run
+      - name: Check #[ignore] annotations reference a tracking issue
+        run: cargo xtask check-ignore
+
   fmt:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        crate: [options_market, price_oracle, vault, multisig, common, streams, staking, timelock, governor, params, grants_escrow, lp_token, lp_pool, integration_tests, tools/spec-diff, tools/resource-sna
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -52,9 +67,6 @@ jobs:
 
   clippy:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        crate: [options_market, price_oracle, vault, multisig, common, streams, staking, timelock, governor, params, grants_escrow, lp_token, lp_pool, integration_tests, tools/spec-diff, tools/resource-snapshot]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -69,45 +81,16 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [options_market, price_oracle, vault, multisig, common, streams, staking, timelock, governor, params, grants_escrow, lp_token, lp_pool, integration_tests, tools/resource-snapshot]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - run: cargo fmt --check
-        working-directory: ${{ matrix.crate }}
-
-  wasm:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        crate: [options_market, price_oracle, vault, multisig, streams, staking, timelock, governor, params, grants_escrow, lp_token, lp_pool, integration_tests]
+        crate: [options_market, price_oracle, vault, multisig, common, streams,
+                staking, timelock, governor, params, grants_escrow, lp_token,
+                lp_pool, integration_tests, tools/resource-snapshot]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - run: cargo xtask test
-
-  wasm:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo xtask build
-      # Fails if soroban-sdk/testutils
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo xtask test
+      - run: cargo xtask test -p ${{ matrix.crate }}
 
   wasm:
     runs-on: ubuntu-latest
