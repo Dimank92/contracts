@@ -1,5 +1,18 @@
 #![no_std]
 
+//! # Checks-effects-interactions checklist
+//!
+//! All mutating entrypoints sharing collateral/premium/settlement liabilities
+//! must use one `zenith_common::guard` key. Acquire before auth (including
+//! `Auth::Multisig`), oracle discovery, vault calls, and token balance reads.
+//! Complete validation and checked arithmetic before effects; persist terminal
+//! state and debit claims before token/vault payouts. Keep the guard until all
+//! interactions finish; propagate failures as contract errors for rollback.
+//! Batch methods should acquire once and call private, non-acquiring helpers.
+//! Never invoke a guarded public method from another guarded method.
+//!
+//! Integration is pending: this checkout's entrypoint implementation is absent.
+
 //! Zenith Protocol — Decentralized Options Market on Stellar Soroban
 //!
 //! Supports European-style put and call options on XLM, BTC, ETH, and SOL.

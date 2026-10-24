@@ -1,0 +1,17 @@
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   /home/user/contracts/options_market/Cargo.toml
+workspace: /home/user/contracts/Cargo.toml
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   /home/user/contracts/price_oracle/Cargo.toml
+workspace: /home/user/contracts/Cargo.toml
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   /home/user/contracts/streams/Cargo.toml
+workspace: /home/user/contracts/Cargo.toml
+   Compiling stellar-xdr v21.2.0
+   Compiling soroban-env-common v21.2.1
+   Compiling soroban-env-host v21.2.1
+   Compiling soroban-sdk-macros v21.7.7
+   Compiling soroban-sdk v21.7.7
+   Compiling soroban-ledger-snapshot v21.7.7
+   Compiling zenith-common v0.1.0 (/home/user/contracts/common)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 23.40s

@@ -1,0 +1,467 @@
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   /home/user/contracts/options_market/Cargo.toml
+workspace: /home/user/contracts/Cargo.toml
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   /home/user/contracts/price_oracle/Cargo.toml
+workspace: /home/user/contracts/Cargo.toml
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   /home/user/contracts/streams/Cargo.toml
+workspace: /home/user/contracts/Cargo.toml
+   Compiling stellar-xdr v21.2.0
+   Compiling soroban-spec v21.7.7
+   Compiling soroban-spec-rust v21.7.7
+   Compiling soroban-sdk-macros v21.7.7
+   Compiling xtask v0.1.0 (/home/user/contracts/xtask)
+   Compiling zenith-integration-tests v0.1.0 (/home/user/contracts/integration_tests)
+   Compiling soroban-env-common v21.2.1
+   Compiling soroban-env-host v21.2.1
+   Compiling spec-diff v0.1.0 (/home/user/contracts/tools/spec-diff)
+   Compiling soroban-ledger-snapshot v21.7.7
+   Compiling soroban-sdk v21.7.7
+   Compiling zenith-common v0.1.0 (/home/user/contracts/common)
+   Compiling zenith-multisig v0.1.0 (/home/user/contracts/multisig)
+   Compiling zenith-vault v0.1.0 (/home/user/contracts/vault)
+warning: the `#![no_std]` attribute can only be used at the crate root
+ --> vault/src/token_validation.rs:1:1
+  |
+1 | #![no_std]
+  | ^^^^^^^^^^
+  |
+  = help: the crate root is at `vault/src/lib.rs`
+  = note: `#[warn(unused_attributes)]` (part of `#[warn(unused)]`) on by default
+
+warning: `zenith-vault` (lib) generated 1 warning
+   Compiling zenith-grants-escrow v0.1.0 (/home/user/contracts/grants_escrow)
+   Compiling zenith-price-oracle v0.1.0 (/home/user/contracts/price_oracle)
+   Compiling zenith-options-market v0.1.0 (/home/user/contracts/options_market)
+error: expected `;`, found `#`
+  --> options_market/src/lib.rs:30:2
+   |
+30 | }
+   |  ^ help: add `;` here
+31 |
+32 | #[cfg(test)]
+   | - unexpected token
+
+error[E0753]: expected outer doc comment
+  --> options_market/src/lib.rs:35:1
+   |
+35 | //! Zenith Protocol — Decentralized Options Market on Stellar Soroban
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: inner doc comments like this (starting with `//!` or `/*!`) can only appear before items
+help: you might have meant to write a regular comment
+   |
+35 - //! Zenith Protocol — Decentralized Options Market on Stellar Soroban
+35 + // Zenith Protocol — Decentralized Options Market on Stellar Soroban
+   |
+
+error[E0753]: expected outer doc comment
+  --> options_market/src/lib.rs:36:1
+   |
+36 | //!
+   | ^^^
+   |
+   = note: inner doc comments like this (starting with `//!` or `/*!`) can only appear before items
+help: you might have meant to write a regular comment
+   |
+36 - //!
+36 + //
+   |
+
+error[E0753]: expected outer doc comment
+  --> options_market/src/lib.rs:37:1
+   |
+37 | //! Supports European-style put and call options on XLM, BTC, ETH, and SOL.
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: inner doc comments like this (starting with `//!` or `/*!`) can only appear before items
+help: you might have meant to write a regular comment
+   |
+37 - //! Supports European-style put and call options on XLM, BTC, ETH, and SOL.
+37 + // Supports European-style put and call options on XLM, BTC, ETH, and SOL.
+   |
+
+error[E0753]: expected outer doc comment
+  --> options_market/src/lib.rs:38:1
+   |
+38 | //! Premium is set by the admin (computed off-chain via Black-Scholes).
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: inner doc comments like this (starting with `//!` or `/*!`) can only appear before items
+help: you might have meant to write a regular comment
+   |
+38 - //! Premium is set by the admin (computed off-chain via Black-Scholes).
+38 + // Premium is set by the admin (computed off-chain via Black-Scholes).
+   |
+
+error[E0753]: expected outer doc comment
+  --> options_market/src/lib.rs:39:1
+   |
+39 |   //! Writers lock collateral; buyers pay premium. Settlement at expiry via oracle.
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+40 |
+41 | / use soroban_sdk::{
+42 | |     contract, contractimpl, panic_with_error, token, Address, BytesN, Env, Symbol, Vec,
+43 | | };
+   | |__- the inner doc comment doesn't annotate this `use` import
+   |
+help: to annotate the `use` import, change the doc comment from inner to outer style
+   |
+39 - //! Writers lock collateral; buyers pay premium. Settlement at expiry via oracle.
+39 + /// Writers lock collateral; buyers pay premium. Settlement at expiry via oracle.
+   |
+
+error[E0428]: the name `error` is defined multiple times
+  --> options_market/src/lib.rs:45:1
+   |
+13 | mod error;
+   | ---------- previous definition of the module `error` here
+...
+45 | mod error;
+   | ^^^^^^^^^^ `error` redefined here
+   |
+   = note: `error` must be defined only once in the type namespace of this module
+
+error[E0428]: the name `events` is defined multiple times
+  --> options_market/src/lib.rs:46:1
+   |
+14 | mod events;
+   | ----------- previous definition of the module `events` here
+...
+46 | mod events;
+   | ^^^^^^^^^^^ `events` redefined here
+   |
+   = note: `events` must be defined only once in the type namespace of this module
+
+error[E0428]: the name `math` is defined multiple times
+  --> options_market/src/lib.rs:47:1
+   |
+15 | mod math;
+   | --------- previous definition of the module `math` here
+...
+47 | mod math;
+   | ^^^^^^^^^ `math` redefined here
+   |
+   = note: `math` must be defined only once in the type namespace of this module
+
+error[E0428]: the name `multisig_client` is defined multiple times
+  --> options_market/src/lib.rs:48:1
+   |
+16 | mod multisig_client;
+   | -------------------- previous definition of the module `multisig_client` here
+...
+48 | mod multisig_client;
+   | ^^^^^^^^^^^^^^^^^^^^ `multisig_client` redefined here
+   |
+   = note: `multisig_client` must be defined only once in the type namespace of this module
+
+error[E0428]: the name `price_oracle_client` is defined multiple times
+  --> options_market/src/lib.rs:49:1
+   |
+17 | mod price_oracle_client;
+   | ------------------------ previous definition of the module `price_oracle_client` here
+...
+49 | mod price_oracle_client;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^ `price_oracle_client` redefined here
+   |
+   = note: `price_oracle_client` must be defined only once in the type namespace of this module
+
+error[E0428]: the name `storage` is defined multiple times
+  --> options_market/src/lib.rs:50:1
+   |
+18 | mod storage;
+   | ------------ previous definition of the module `storage` here
+...
+50 | mod storage;
+   | ^^^^^^^^^^^^ `storage` redefined here
+   |
+   = note: `storage` must be defined only once in the type namespace of this module
+
+error[E0428]: the name `types` is defined multiple times
+  --> options_market/src/lib.rs:51:1
+   |
+19 | mod types;
+   | ---------- previous definition of the module `types` here
+...
+51 | mod types;
+   | ^^^^^^^^^^ `types` redefined here
+   |
+   = note: `types` must be defined only once in the type namespace of this module
+
+error[E0428]: the name `vault_client` is defined multiple times
+  --> options_market/src/lib.rs:52:1
+   |
+20 | mod vault_client;
+   | ----------------- previous definition of the module `vault_client` here
+...
+52 | mod vault_client;
+   | ^^^^^^^^^^^^^^^^^ `vault_client` redefined here
+   |
+   = note: `vault_client` must be defined only once in the type namespace of this module
+
+error[E0252]: the name `contract` is defined multiple times
+  --> options_market/src/lib.rs:42:5
+   |
+10 |     contract, contractimpl, panic_with_error, token, Address, BytesN, Env, Symbol, Vec,
+   |     ----------
+   |     |
+   |     previous import of the macro `contract` here
+   |     help: remove unnecessary import
+...
+42 |     contract, contractimpl, panic_with_error, token, Address, BytesN, Env, Symbol, Vec,
+   |     ^^^^^^^^ `contract` reimported here
+   |
+   = note: `contract` must be defined only once in the macro namespace of this module
+
+error[E0252]: the name `contractimpl` is defined multiple times
+  --> options_market/src/lib.rs:42:15
+   |
+10 |     contract, contractimpl, panic_with_error, token, Address, BytesN, Env, Symbol, Vec,
+   |               --------------
+   |               |
+   |               previous import of the macro `contractimpl` here
+   |               help: remove unnecessary import
+...
+42 |     contract, contractimpl, panic_with_error, token, Address, BytesN, Env, Symbol, Vec,
+   |               ^^^^^^^^^^^^ `contractimpl` reimported here
+   |
+   = note: `contractimpl` must be defined only once in the macro namespace of this module
+
+error[E0252]: the name `panic_with_error` is defined multiple times
+  --> options_market/src/lib.rs:42:29
+   |
+10 |     contract, contractimpl, panic_with_error, token, Address, BytesN, Env, Symbol, Vec,
+   |                             ------------------
+   |                             |
+   |                             previous import of the macro `panic_with_error` here
+   |                             help: remove unnecessary import
+...
+42 |     contract, contractimpl, panic_with_error, token, Address, BytesN, Env, Symbol, Vec,
+   |                             ^^^^^^^^^^^^^^^^ `panic_with_error` reimported here
+   |
+   = note: `panic_with_error` must be defined only once in the macro namespace of this module
+
+error[E0252]: the name `token` is defined multiple times
+  --> options_market/src/lib.rs:42:47
+   |
+10 |     contract, contractimpl, panic_with_error, token, Address, BytesN, Env, Symbol, Vec,
+   |                                               -------
+   |                                               |
+   |                                               previous import of the module `token` here
+   |                                               help: remove unnecessary import
+...
+42 |     contract, contractimpl, panic_with_error, token, Address, BytesN, Env, Symbol, Vec,
+   |                                               ^^^^^ `token` reimported here
+   |
+   = note: `token` must be defined only once in the type namespace of this module
+
+error[E0252]: the name `Address` is defined multiple times
+  --> options_market/src/lib.rs:42:54
+   |
+10 |     contract, contractimpl, panic_with_error, token, Address, BytesN, Env, Symbol, Vec,
+   |                                                      ---------
+   |                                                      |
+   |                                                      previous import of the type `Address` here
+   |                                                      help: remove unnecessary import
+...
+42 |     contract, contractimpl, panic_with_error, token, Address, BytesN, Env, Symbol, Vec,
+   |                                                      ^^^^^^^ `Address` reimported here
+   |
+   = note: `Address` must be defined only once in the type namespace of this module
+
+error[E0252]: the name `BytesN` is defined multiple times
+  --> options_market/src/lib.rs:42:63
+   |
+10 |     contract, contractimpl, panic_with_error, token, Address, BytesN, Env, Symbol, Vec,
+   |                                                               --------
+   |                                                               |
+   |                                                               previous import of the type `BytesN` here
+   |                                                               help: remove unnecessary import
+...
+42 |     contract, contractimpl, panic_with_error, token, Address, BytesN, Env, Symbol, Vec,
+   |                                                               ^^^^^^ `BytesN` reimported here
+   |
+   = note: `BytesN` must be defined only once in the type namespace of this module
+
+error[E0252]: the name `Env` is defined multiple times
+  --> options_market/src/lib.rs:42:71
+   |
+10 |     contract, contractimpl, panic_with_error, token, Address, BytesN, Env, Symbol, Vec,
+   |                                                                       -----
+   |                                                                       |
+   |                                                                       previous import of the type `Env` here
+   |                                                                       help: remove unnecessary import
+...
+42 |     contract, contractimpl, panic_with_error, token, Address, BytesN, Env, Symbol, Vec,
+   |                                                                       ^^^ `Env` reimported here
+   |
+   = note: `Env` must be defined only once in the type namespace of this module
+
+error[E0252]: the name `Symbol` is defined multiple times
+  --> options_market/src/lib.rs:42:76
+   |
+10 |     contract, contractimpl, panic_with_error, token, Address, BytesN, Env, Symbol, Vec,
+   |                                                                            --------
+   |                                                                            |
+   |                                                                            previous import of the type `Symbol` here
+   |                                                                            help: remove unnecessary import
+...
+42 |     contract, contractimpl, panic_with_error, token, Address, BytesN, Env, Symbol, Vec,
+   |                                                                            ^^^^^^ `Symbol` reimported here
+   |
+   = note: `Symbol` must be defined only once in the type namespace of this module
+
+error[E0252]: the name `Vec` is defined multiple times
+  --> options_market/src/lib.rs:42:84
+   |
+10 |     contract, contractimpl, panic_with_error, token, Address, BytesN, Env, Symbol, Vec,
+   |                                                                                    ----
+   |                                                                                    |
+   |                                                                                    previous import of the type `Vec` here
+   |                                                                                    help: remove unnecessary import
+...
+42 |     contract, contractimpl, panic_with_error, token, Address, BytesN, Env, Symbol, Vec,
+   |                                                                                    ^^^ `Vec` reimported here
+   |
+   = note: `Vec` must be defined only once in the type namespace of this module
+
+error: No such file or directory (os error 2)
+  --> options_market/src/multisig_client.rs:11:1
+   |
+11 | / soroban_sdk::contractimport!(
+12 | |     file = "../multisig/target/wasm32-unknown-unknown/release/zenith_multisig.wasm"
+13 | | );
+   | |_^
+   |
+   = note: this error originates in the macro `soroban_sdk::contractimport` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: No such file or directory (os error 2)
+  --> options_market/src/price_oracle_client.rs:14:1
+   |
+14 | / soroban_sdk::contractimport!(
+15 | |     file = "../target/wasm32-unknown-unknown/release/zenith_price_oracle.wasm"
+16 | | );
+   | |_^
+   |
+   = note: this error originates in the macro `soroban_sdk::contractimport` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: No such file or directory (os error 2)
+  --> options_market/src/vault_client.rs:10:1
+   |
+10 | / soroban_sdk::contractimport!(
+11 | |     file = "../target/wasm32-unknown-unknown/release/zenith_vault.wasm"
+12 | | );
+   | |_^
+   |
+   = note: this error originates in the macro `soroban_sdk::contractimport` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0252]: the name `Error` is defined multiple times
+  --> options_market/src/lib.rs:54:5
+   |
+22 | use error::Error;
+   |     ------------ previous import of the type `Error` here
+...
+54 | use error::Error;
+   |     ^^^^^^^^^^^^ `Error` reimported here
+   |
+   = note: `Error` must be defined only once in the type namespace of this module
+
+error[E0432]: unresolved imports `math::calc_fee`, `math::calc_payout`, `math::DEFAULT_FEE_RATE_BPS`, `math::MAX_BATCH_SIZE`, `math::MAX_FEE_RATE_BPS`, `math::MAX_SERIES_PER_UNDERLYING`, `math::MIN_COLLATERAL_RATIO`, `math::PRICE_PRECISION`, `math::RATE_PRECISION`, `math::SETTLEMENT_WINDOW`
+  --> options_market/src/lib.rs:24:5
+   |
+24 |     calc_fee, calc_payout, DEFAULT_FEE_RATE_BPS, MAX_BATCH_SIZE, MAX_FEE_RATE_BPS,
+   |     ^^^^^^^^  ^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^ no `MAX_FEE_RATE_BPS` in `math`
+   |     |         |            |                     |
+   |     |         |            |                     no `MAX_BATCH_SIZE` in `math`
+   |     |         |            no `DEFAULT_FEE_RATE_BPS` in `math`
+   |     |         no `calc_payout` in `math`
+   |     no `calc_fee` in `math`
+25 |     MAX_SERIES_PER_UNDERLYING, MIN_COLLATERAL_RATIO, PRICE_PRECISION, RATE_PRECISION,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^ no `RATE_PRECISION` in `math`
+   |     |                          |                     |
+   |     |                          |                     no `PRICE_PRECISION` in `math`
+   |     |                          no `MIN_COLLATERAL_RATIO` in `math`
+   |     no `MAX_SERIES_PER_UNDERLYING` in `math`
+26 |     SETTLEMENT_WINDOW,
+   |     ^^^^^^^^^^^^^^^^^ no `SETTLEMENT_WINDOW` in `math`
+
+error[E0432]: unresolved imports `storage::add_user_position`, `storage::fee_rate_bps`, `storage::next_position_id`, `storage::require_active_series`, `storage::require_not_paused`
+  --> options_market/src/lib.rs:29:5
+   |
+29 |     add_user_position, fee_rate_bps, next_position_id, require_active_series, require_not_paused,
+   |     ^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^ no `require_not_paused` in `storage`
+   |     |                  |             |                 |
+   |     |                  |             |                 no `require_active_series` in `storage`
+   |     |                  |             no `next_position_id` in `storage`
+   |     |                  no `fee_rate_bps` in `storage`
+   |     no `add_user_position` in `storage`
+
+error[E0432]: unresolved imports `math::calc_fee`, `math::calc_payout`, `math::DEFAULT_FEE_RATE_BPS`, `math::MAX_BATCH_SIZE`, `math::MAX_FEE_RATE_BPS`, `math::MAX_SERIES_PER_UNDERLYING`, `math::MIN_COLLATERAL_RATIO`, `math::PRICE_PRECISION`, `math::RATE_PRECISION`, `math::SETTLEMENT_WINDOW`
+  --> options_market/src/lib.rs:56:5
+   |
+56 |     calc_fee, calc_payout, DEFAULT_FEE_RATE_BPS, MAX_BATCH_SIZE, MAX_FEE_RATE_BPS,
+   |     ^^^^^^^^  ^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^ no `MAX_FEE_RATE_BPS` in `math`
+   |     |         |            |                     |
+   |     |         |            |                     no `MAX_BATCH_SIZE` in `math`
+   |     |         |            no `DEFAULT_FEE_RATE_BPS` in `math`
+   |     |         no `calc_payout` in `math`
+   |     no `calc_fee` in `math`
+57 |     MAX_SERIES_PER_UNDERLYING, MIN_COLLATERAL_RATIO, PRICE_PRECISION, RATE_PRECISION,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^ no `RATE_PRECISION` in `math`
+   |     |                          |                     |
+   |     |                          |                     no `PRICE_PRECISION` in `math`
+   |     |                          no `MIN_COLLATERAL_RATIO` in `math`
+   |     no `MAX_SERIES_PER_UNDERLYING` in `math`
+58 |     SETTLEMENT_WINDOW,
+   |     ^^^^^^^^^^^^^^^^^ no `SETTLEMENT_WINDOW` in `math`
+
+error[E0432]: unresolved imports `storage::add_user_position`, `storage::fee_rate_bps`, `storage::next_position_id`, `storage::require_active_series`, `storage::require_not_paused`
+  --> options_market/src/lib.rs:61:5
+   |
+61 |     add_user_position, fee_rate_bps, next_position_id, require_active_series, require_not_paused,
+   |     ^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^ no `require_not_paused` in `storage`
+   |     |                  |             |                 |
+   |     |                  |             |                 no `require_active_series` in `storage`
+   |     |                  |             no `next_position_id` in `storage`
+   |     |                  no `fee_rate_bps` in `storage`
+   |     no `add_user_position` in `storage`
+
+warning: unused imports: `Address`, `BytesN`, `Env`, `Symbol`, `Vec`, `contract`, `contractimpl`, `panic_with_error`, and `token`
+  --> options_market/src/lib.rs:10:5
+   |
+10 |     contract, contractimpl, panic_with_error, token, Address, BytesN, Env, Symbol, Vec,
+   |     ^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^  ^^^^^  ^^^^^^^  ^^^^^^  ^^^  ^^^^^^  ^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `error::Error`
+  --> options_market/src/lib.rs:22:5
+   |
+22 | use error::Error;
+   |     ^^^^^^^^^^^^
+
+warning: unused imports: `Address`, `BytesN`, `Env`, `Symbol`, `Vec`, `contract`, `contractimpl`, `panic_with_error`, and `token`
+  --> options_market/src/lib.rs:42:5
+   |
+42 |     contract, contractimpl, panic_with_error, token, Address, BytesN, Env, Symbol, Vec,
+   |     ^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^  ^^^^^  ^^^^^^^  ^^^^^^  ^^^  ^^^^^^  ^^^
+
+warning: unused import: `error::Error`
+  --> options_market/src/lib.rs:54:5
+   |
+54 | use error::Error;
+   |     ^^^^^^^^^^^^
+
+warning: unused imports: `DataKey`, `OptionPosition`, `OptionSeries`, `OptionType`, `PositionSide`, and `SeriesState`
+  --> options_market/src/lib.rs:63:13
+   |
+63 | use types::{DataKey, OptionPosition, OptionSeries, OptionType, PositionSide, SeriesState};
+   |             ^^^^^^^  ^^^^^^^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^^^^
+
+   Compiling zenith-governor v0.1.0 (/home/user/contracts/governor)
+Some errors have detailed explanations: E0252, E0428, E0432, E0753.
+For more information about an error, try `rustc --explain E0252`.
+warning: `zenith-options-market` (lib) generated 5 warnings
+error: could not compile `zenith-options-market` (lib) due to 34 previous errors; 5 warnings emitted
+warning: build failed, waiting for other jobs to finish...

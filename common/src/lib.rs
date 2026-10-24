@@ -22,6 +22,7 @@
 //! trap untyped (docs/errors.md).
 
 pub mod events;
+pub mod guard;
 pub mod migrations;
 pub mod upgrade;
 
