@@ -31,7 +31,7 @@ pub enum UpgradeAuth {
     /// The address stored under the contract's admin key signs.
     Admin,
     /// The pinned multisig reports `action_id` executable as `Critical`.
-    PinnedMultisig(u64),
+    PinnedMultisig(BytesN<32>),
 }
 
 /// Pins (or re-pins) the multisig `upgrade_via_multisig` trusts. The
@@ -49,16 +49,13 @@ pub fn pinned_multisig(env: &Env) -> Option<Address> {
 }
 
 /// The multisig `action_id` that authorizes upgrading *this* contract to
-/// `new_wasm_hash`: the first 8 bytes (big-endian) of
+/// `new_wasm_hash`:
 /// `sha256("zenith.upgrade" || xdr(this_contract) || new_wasm_hash)`.
-pub fn upgrade_action_id(env: &Env, new_wasm_hash: &BytesN<32>) -> u64 {
+pub fn upgrade_action_id(env: &Env, new_wasm_hash: &BytesN<32>) -> BytesN<32> {
     let mut preimage = Bytes::from_slice(env, b"zenith.upgrade");
     preimage.append(&env.current_contract_address().to_xdr(env));
     preimage.append(&Bytes::from_array(env, &new_wasm_hash.to_array()));
-    let digest = env.crypto().sha256(&preimage).to_array();
-    let mut id = [0u8; 8];
-    id.copy_from_slice(&digest[..8]);
-    u64::from_be_bytes(id)
+    env.crypto().sha256(&preimage).into()
 }
 
 /// Checks `auth`, then swaps this contract's executable for
@@ -80,7 +77,7 @@ pub fn upgrade<K, E>(
             let multisig =
                 pinned_multisig(env).unwrap_or_else(|| panic_with_error!(env, unauthorized));
             if action_id != upgrade_action_id(env, &new_wasm_hash)
-                || !is_executable(env, &multisig, action_id, ActionClass::Critical)
+                || !is_executable(env, &multisig, &action_id, ActionClass::Critical)
             {
                 panic_with_error!(env, unauthorized);
             }

@@ -96,7 +96,7 @@ impl OptionsMarket {
     /// multisig. `Emergency` class (no extra delay): the steps it runs
     /// were already timelocked as `Critical` with the upgrade that
     /// installed them, and the contract is blocked until they run.
-    pub fn migrate_via_multisig(env: Env, action_id: u64, from: u32, to: u32) -> u32 {
+    pub fn migrate_via_multisig(env: Env, action_id: BytesN<32>, from: u32, to: u32) -> u32 {
         ttl::extend_instance(&env);
         let multisig = upgrade::pinned_multisig(&env)
             .unwrap_or_else(|| panic_with_error!(&env, Error::Unauthorized));
