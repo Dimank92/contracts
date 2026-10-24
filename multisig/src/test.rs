@@ -1846,3 +1846,30 @@ fn is_executable_is_false_for_an_unknown_action_id() {
     let unknown = aid(&h.env, 0xFF);
     assert!(!h.client.is_executable(&unknown, &0));
 }
+
+#[test]
+fn cancel_retires_action_permanently() {
+    let h = setup();
+    let id = aid(&h.env, 7);
+    h.client.approve(&h.signers[0], &id);
+    h.client.approve(&h.signers[1], &id);
+    assert!(h.client.is_approved(&id));
+    h.client.cancel(&h.signers[2], &id);
+    assert!(!h.client.is_approved(&id));
+    assert_eq!(
+        h.client.get_action(&id).unwrap().status,
+        ActionStatus::Cancelled
+    );
+    // Reusing the same id: approvals and re-registration are rejected.
+    assert!(h.client.try_approve(&h.signers[0], &id).is_err());
+    assert!(h
+        .client
+        .try_register_action(&h.signers[0], &id, &aid(&h.env, 9))
+        .is_err());
+    assert!(!h.client.is_approved(&id));
+    assert!(h.client.try_cancel(&h.signers[2], &id).is_err());
+    assert!(h
+        .client
+        .try_cancel(&Address::generate(&h.env), &aid(&h.env, 8))
+        .is_err());
+}

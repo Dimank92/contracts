@@ -80,6 +80,7 @@ pub enum ActionStatus {
     Reset = 2,
     Expired = 3,
     Vetoed = 4,
+    Cancelled = 5,
 }
 
 #[contracttype]

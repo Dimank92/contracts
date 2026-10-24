@@ -270,3 +270,10 @@ pub fn upgrade_revoked(env: &Env, wasm_hash: BytesN<32>, data: UpgradeRevokedEve
     env.events()
         .publish(keyed(env, "upgrade_revoked", wasm_hash), data);
 }
+
+pub fn cancelled(env: &Env, signer: Address, action_id: BytesN<32>, description_hash: BytesN<32>) {
+    env.events().publish(
+        (Symbol::new(env, "cancelled"), signer, action_id),
+        description_hash,
+    );
+}
