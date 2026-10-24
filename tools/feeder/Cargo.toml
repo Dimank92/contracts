@@ -1,0 +1,18 @@
+[package]
+name = "zenith-feeder"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Reference off-chain feeder daemon for price_oracle report submission"
+
+[lib]
+name = "zenith_feeder"
+path = "src/lib.rs"
+
+[[bin]]
+name = "zenith-feeder"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

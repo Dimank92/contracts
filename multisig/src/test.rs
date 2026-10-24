@@ -1094,6 +1094,26 @@ fn weighted_threshold_matrix() {
 }
 
 #[test]
+fn quorum_is_reached_only_by_subsets_whose_weight_meets_the_threshold() {
+    // Exhaustive over every voter subset: approved iff summed weight >= 5,
+    // covering exactly-met (5) and one-unit-short (4) boundaries.
+    let weights = [3u32, 2, 2, 1, 1];
+    for mask in 1u32..(1 << weights.len()) {
+        let (env, client, s) = setup_weighted(&weights, 5);
+        let id = aid(&env, 1);
+        let mut sum = 0;
+        for (i, w) in weights.iter().enumerate() {
+            if mask & (1 << i) != 0 {
+                client.approve(&s[i], &id);
+                sum += w;
+            }
+        }
+        assert_eq!(client.get_approval_weight(&id), sum);
+        assert_eq!(client.is_approved(&id), sum >= 5, "mask {mask:#b}");
+    }
+}
+
+#[test]
 fn a_signer_heavy_enough_to_act_alone_emits_a_warning() {
     let (env, client, s) = setup_weighted(&[5, 1, 1], 5);
     assert!(has_event(&env, "single_key_quorum"));
