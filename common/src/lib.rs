@@ -20,6 +20,8 @@ pub mod upgrade;
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod test_auth;
 
 use soroban_sdk::{
     contracttype, panic_with_error, vec, Address, BytesN, Env, IntoVal, Symbol, Val,

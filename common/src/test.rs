@@ -66,12 +66,14 @@ impl Harness {
         migrations::init_schema(&env, version);
     }
 
-    pub fn migrate(env: Env, from: u32, to: u32) -> u32 {
-        migrations::migrate(&env, from, to, CURRENT, step, &ERRORS)
+    pub fn migrate(env: Env, from: u32, to: u32) -> Result<u32, HarnessError> {
+        Ok(migrations::migrate(&env, from, to, CURRENT, step, &ERRORS))
     }
 
-    pub fn migrate_batch(env: Env, cursor: u32, limit: u32) -> u32 {
-        migrations::migrate_batch(&env, cursor, limit, step, &ERRORS)
+    pub fn migrate_batch(env: Env, cursor: u32, limit: u32) -> Result<u32, HarnessError> {
+        Ok(migrations::migrate_batch(
+            &env, cursor, limit, step, &ERRORS,
+        ))
     }
 
     pub fn version(env: Env) -> u32 {
@@ -82,8 +84,9 @@ impl Harness {
         migrations::migration_state(&env)
     }
 
-    pub fn guarded(env: Env) {
+    pub fn guarded(env: Env) -> Result<(), HarnessError> {
         migrations::require_schema_current(&env, CURRENT, HarnessError::MigrationInProgress);
+        Ok(())
     }
 
     pub fn processed(env: Env) -> u32 {

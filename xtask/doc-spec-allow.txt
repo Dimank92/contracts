@@ -1,0 +1,54 @@
+# Known README-vs-spec gaps checked by `cargo xtask doc-spec-check`.
+# Format: <dir> <missing|undocumented|drift> <fn> | <dir> no-docs | <dir> no-spec
+# Entries that stop matching fail the check, so this list only shrinks.
+governor no-docs  # docs/governor.md has no function tables yet
+price_oracle no-spec  # source not restored on main: wasm has no contract spec
+grants_escrow undocumented bump
+grants_escrow undocumented get_grant
+grants_escrow undocumented get_grant_count
+grants_escrow undocumented get_grantee_grant_count
+grants_escrow undocumented get_grants_by_grantee
+grants_escrow undocumented has_approved
+grants_escrow undocumented migrate
+grants_escrow undocumented migrate_batch
+grants_escrow undocumented migration_state
+grants_escrow undocumented schema_version
+multisig undocumented bump
+multisig undocumented get_action
+multisig undocumented get_approval_count
+multisig undocumented get_approval_ttl
+multisig undocumented get_approval_weight
+multisig undocumented get_execute_by
+multisig undocumented get_pending_actions
+multisig undocumented get_pending_count
+multisig undocumented get_proposal
+multisig undocumented get_rotation_delay
+multisig undocumented get_rotation_threshold
+multisig undocumented get_signer_change
+multisig undocumented get_signer_change_ready_at
+multisig undocumented get_signer_count
+multisig undocumented get_signer_epoch
+multisig undocumented get_signer_weight
+multisig undocumented get_signers
+multisig undocumented get_threshold
+multisig undocumented get_total_weight
+multisig undocumented get_vetoer
+multisig undocumented has_approved
+multisig undocumented is_approved
+multisig undocumented is_signer
+multisig undocumented prune
+multisig undocumented set_execute_by
+multisig undocumented set_vetoer
+multisig undocumented veto
+timelock undocumented get_min_delay
+timelock undocumented get_timestamp
+timelock undocumented has_role
+timelock undocumented hash_operation
+timelock undocumented is_open_executor
+timelock undocumented is_operation
+timelock undocumented is_operation_done
+timelock undocumented is_operation_pending
+timelock undocumented is_operation_ready
+timelock undocumented migrate_batch
+timelock undocumented migration_state
+timelock undocumented schema_version

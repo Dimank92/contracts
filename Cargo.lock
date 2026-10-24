@@ -1855,6 +1855,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
 
 [[package]]
+name = "vault-ops"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2039,6 +2046,8 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "serde_json",
+ "soroban-spec",
+ "stellar-xdr",
 ]
 
 [[package]]
@@ -2157,6 +2166,7 @@ name = "zenith-timelock"
 version = "0.1.0"
 dependencies = [
  "soroban-sdk",
+ "zenith-common",
 ]
 
 [[package]]
