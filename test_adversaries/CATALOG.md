@@ -16,7 +16,7 @@ test_adversaries = { package = "zenith-test-adversaries", path = "../test_advers
 
 Then register any adversary in a test `Env`:
 
-```rust
+```rust,ignore
 use test_adversaries::tokens::FeeOnTransferToken;
 let bad_token = env.register_contract(None, FeeOnTransferToken);
 ```
@@ -37,6 +37,8 @@ work against them transparently.
 | `ReentrantToken` | 115 | On `transfer`, attempts a re-entrant call back into a pre-configured target contract before completing. | options_market reentrancy guard |
 | `ZeroBalanceToken` | 115 | `balance()` always returns 0 even after receiving tokens. The measured balance delta is always 0. | vault `safe_inbound_transfer` zero-delta guard |
 | `OverflowToken` | 115 | `balance()` returns `i128::MAX`; `transfer()` is a no-op. | options_market / vault arithmetic overflow paths |
+| `NoMoveToken` | 264 | `transfer()` returns cleanly but moves nothing (honest balances). | vault `deposit`, streams funding |
+| `BlacklistToken` | 264 | `transfer()` reverts when sender or recipient is blacklisted (`set_blacklisted`). | vault `withdraw`, streams `withdraw` / `cancel` |
 
 ---
 

@@ -12,6 +12,28 @@ pub enum MilestoneStatus {
     Released,  // quorum reached, paid to the grantee
     /// Deadline and grace missed, returned to the funder.
     Reclaimed, // deadline + grace missed, returned to the funder
+    Disputed,  // frozen: funder or grantee opened a dispute, awaiting the arbiter
+    Refunded,  // dispute rejected, returned to the funder
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DisputeOutcome {
+    Release, // pay the whole milestone to the grantee
+    Reject,  // refund the whole milestone to the funder
+    Split,   // `split_bps` to the grantee, the remainder to the funder
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Dispute {
+    pub opened_by: Address,
+    pub opened_at: u64,
+    pub resolved: bool,
+    /// Only meaningful once `resolved`.
+    pub outcome: DisputeOutcome,
+    /// Basis points paid to the grantee; meaningful for `Split`.
+    pub split_bps: u32,
 }
 
 /// One payable step of a grant.
@@ -61,4 +83,8 @@ pub enum DataKey {
     Approval(u64, u32, Address),
     /// Every grant id ever created for a grantee, in creation order.
     GranteeGrants(Address),
+    /// Instance: the dispute arbiter, set once by `initialize`.
+    Arbiter,
+    /// Dispute record for milestone `idx` of a grant.
+    Dispute(u64, u32),
 }

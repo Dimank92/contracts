@@ -40,17 +40,36 @@ addresses — any `Address` that can `require_auth`.
 ## Monitoring
 
 Index these events: `grant_created`, `milestone_submitted`,
-`milestone_approved`, `milestone_released`, `funds_reclaimed`. Grantee
+`milestone_approved`, `milestone_released`, `funds_reclaimed`,
+`dispute_opened`, `dispute_resolved`, `refunded`. Grantee
 dashboards page through `get_grants_by_grantee(grantee, start, limit)`
 (max 50 per page) with `get_grantee_grant_count` for the total.
 
 ## Disputes
 
-There is no on-chain rejection flow. If reviewers do not accept a
-submission, they simply do not approve it; the grantee can address the
-feedback off-chain, but the milestone cannot be resubmitted with a new
-hash. Unresolved milestones fall through to `reclaim` after the grace
-period. Evidence hosting is off-chain and out of scope.
+An arbiter is set once with `initialize(arbiter)`. While a milestone is
+`Submitted`, the funder or the grantee may call `open_dispute(grant_id,
+idx, caller)`; it becomes `Disputed`, can no longer be approved, and is
+excluded from `reclaim` (its funds are held for the arbiter). A second
+open reverts with `DisputeAlreadyOpen`. Anyone else reverts with
+`NotDisputeParty`.
+
+The arbiter (or an executable multisig action, via
+`resolve_dispute_via_multisig`) calls `resolve_dispute(grant_id, idx,
+outcome, split_bps)`, with no deadline:
+
+| Outcome | Effect |
+|---|---|
+| `Release` | Whole amount to the grantee; milestone `Released`. |
+| `Reject` | Whole amount back to the funder; milestone `Refunded`. The grant's other milestones continue unchanged. |
+| `Split` | `split_bps` (1..=9 999) to the grantee, rounded down; the remainder to the funder. Milestone `Released`. |
+
+`split_bps` must be 0 for `Release`/`Reject`. If the arbiter is the
+grant's funder or grantee, resolution reverts with `ArbiterConflict`.
+Events: `dispute_opened`, `dispute_resolved`, `refunded`; read state with
+`get_dispute(grant_id, idx)` and the milestone `status` in `get_grant`.
+Escrowed funds always equal the sum of `Pending`, `Submitted` and
+`Disputed` milestone amounts.
 
 ## Keeping grants live
 

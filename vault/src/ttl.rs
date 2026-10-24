@@ -32,6 +32,7 @@ pub fn extend_persistent<K: IntoVal<Env, Val>>(env: &Env, key: &K) {
 
 /// Extends `key` only if it exists — for keeper-driven `bump` calls
 /// that may name keys that were never written.
+#[allow(dead_code)]
 pub fn extend_persistent_if_present<K: IntoVal<Env, Val>>(env: &Env, key: &K) {
     if env.storage().persistent().has(key) {
         extend_persistent(env, key);

@@ -266,3 +266,208 @@ fn grants_are_paginated_per_grantee() {
     );
     assert_eq!(h.client.get_grant_count(), 3);
 }
+
+// ── Disputes ────────────────────────────────────────────────────────────────
+
+use crate::DisputeOutcome;
+
+/// Arbiter initialised; milestone 0 (1_000) submitted and disputed.
+fn disputed(h: &Harness) -> (u64, Address) {
+    let arbiter = Address::generate(&h.env);
+    h.client.initialize(&arbiter);
+    let id = create(h);
+    h.client.submit_milestone(&id, &0, &evidence(h));
+    h.client.open_dispute(&id, &0, &h.grantee);
+    (id, arbiter)
+}
+
+fn status(h: &Harness, id: u64, idx: u32) -> MilestoneStatus {
+    h.client
+        .get_grant(&id)
+        .unwrap()
+        .milestones
+        .get(idx)
+        .unwrap()
+        .status
+}
+
+#[test]
+fn dispute_release_pays_grantee() {
+    let h = setup();
+    let (id, _) = disputed(&h);
+    assert_eq!(status(&h, id, 0), MilestoneStatus::Disputed);
+    assert!(!h.client.get_dispute(&id, &0).unwrap().resolved);
+    h.client
+        .resolve_dispute(&id, &0, &DisputeOutcome::Release, &0);
+    assert_eq!(status(&h, id, 0), MilestoneStatus::Released);
+    assert_eq!(balance(&h, &h.grantee), 1_000);
+    let d = h.client.get_dispute(&id, &0).unwrap();
+    assert!(d.resolved);
+    assert_eq!(d.outcome, DisputeOutcome::Release);
+}
+
+#[test]
+fn dispute_reject_refunds_funder_and_later_milestones_continue() {
+    let h = setup();
+    let (id, _) = disputed(&h);
+    let before = balance(&h, &h.funder);
+    h.client
+        .resolve_dispute(&id, &0, &DisputeOutcome::Reject, &0);
+    assert_eq!(status(&h, id, 0), MilestoneStatus::Refunded);
+    assert_eq!(balance(&h, &h.funder) - before, 1_000);
+    assert_eq!(balance(&h, &h.grantee), 0);
+    // policy: the grant continues
+    h.client.submit_milestone(&id, &1, &evidence(&h));
+    h.client.approve_milestone(&id, &1, &h.reviewers[0]);
+    h.client.approve_milestone(&id, &1, &h.reviewers[1]);
+    assert_eq!(balance(&h, &h.grantee), 2_000);
+}
+
+#[test]
+fn dispute_split_never_overpays_and_rounds_to_funder() {
+    for (bps, grantee_gets) in [(1u32, 0i128), (2_500, 250), (9_999, 999)] {
+        let h = setup();
+        let (id, _) = disputed(&h);
+        let funder_before = balance(&h, &h.funder);
+        h.client
+            .resolve_dispute(&id, &0, &DisputeOutcome::Split, &bps);
+        assert_eq!(balance(&h, &h.grantee), grantee_gets);
+        assert_eq!(balance(&h, &h.funder) - funder_before, 1_000 - grantee_gets);
+        assert_eq!(status(&h, id, 0), MilestoneStatus::Released);
+    }
+}
+
+#[test]
+fn split_bps_bounds_are_enforced() {
+    let h = setup();
+    let (id, _) = disputed(&h);
+    for bps in [0u32, 10_000, 10_001] {
+        assert!(h
+            .client
+            .try_resolve_dispute(&id, &0, &DisputeOutcome::Split, &bps)
+            .is_err());
+    }
+    assert!(h
+        .client
+        .try_resolve_dispute(&id, &0, &DisputeOutcome::Release, &5)
+        .is_err());
+    assert_eq!(status(&h, id, 0), MilestoneStatus::Disputed);
+}
+
+#[test]
+fn only_parties_open_and_only_submitted_milestones() {
+    let h = setup();
+    h.client.initialize(&Address::generate(&h.env));
+    let id = create(&h);
+    // pending: not in review
+    assert!(h.client.try_open_dispute(&id, &0, &h.funder).is_err());
+    h.client.submit_milestone(&id, &0, &evidence(&h));
+    let stranger = Address::generate(&h.env);
+    assert!(h.client.try_open_dispute(&id, &0, &stranger).is_err());
+    assert!(h.client.try_open_dispute(&id, &0, &h.reviewers[0]).is_err());
+    h.client.open_dispute(&id, &0, &h.funder);
+    // second open is rejected
+    assert!(h.client.try_open_dispute(&id, &0, &h.grantee).is_err());
+    // disputed milestones can't be approved or reclaimed
+    assert!(h
+        .client
+        .try_approve_milestone(&id, &0, &h.reviewers[0])
+        .is_err());
+    h.env
+        .ledger()
+        .set_timestamp(h.env.ledger().timestamp() + 30 * DAY + GRACE_PERIOD);
+    h.client.reclaim(&id); // only the pending second milestone
+    assert_eq!(status(&h, id, 0), MilestoneStatus::Disputed);
+    // a released milestone can't be disputed
+    let id2 = create(&h);
+    h.client.submit_milestone(&id2, &0, &evidence(&h));
+    h.client.approve_milestone(&id2, &0, &h.reviewers[0]);
+    h.client.approve_milestone(&id2, &0, &h.reviewers[1]);
+    assert!(h.client.try_open_dispute(&id2, &0, &h.grantee).is_err());
+}
+
+#[test]
+fn resolve_requires_arbiter_and_a_disputed_milestone() {
+    let h = setup();
+    let id = create(&h);
+    h.client.submit_milestone(&id, &0, &evidence(&h));
+    // no arbiter configured yet
+    assert!(h
+        .client
+        .try_resolve_dispute(&id, &0, &DisputeOutcome::Release, &0)
+        .is_err());
+    let arbiter = Address::generate(&h.env);
+    h.client.initialize(&arbiter);
+    assert!(h.client.try_initialize(&arbiter).is_err());
+    assert_eq!(h.client.get_arbiter(), Some(arbiter));
+    // not disputed
+    assert!(h
+        .client
+        .try_resolve_dispute(&id, &0, &DisputeOutcome::Release, &0)
+        .is_err());
+
+    // auth is checked against the arbiter, not anyone else
+    h.client.open_dispute(&id, &0, &h.grantee);
+    h.env.set_auths(&[]);
+    assert!(h
+        .client
+        .try_resolve_dispute(&id, &0, &DisputeOutcome::Release, &0)
+        .is_err());
+}
+
+#[test]
+fn arbiter_who_is_a_party_cannot_resolve() {
+    for funder_is_arbiter in [true, false] {
+        let h = setup();
+        let id = {
+            h.client.initialize(&if funder_is_arbiter {
+                h.funder.clone()
+            } else {
+                h.grantee.clone()
+            });
+            create(&h)
+        };
+        h.client.submit_milestone(&id, &0, &evidence(&h));
+        h.client.open_dispute(&id, &0, &h.funder);
+        assert!(h
+            .client
+            .try_resolve_dispute(&id, &0, &DisputeOutcome::Release, &0)
+            .is_err());
+        assert_eq!(status(&h, id, 0), MilestoneStatus::Disputed);
+    }
+}
+
+#[test]
+fn escrow_balance_equals_unresolved_milestones_through_any_sequence() {
+    let h = setup();
+    let (id, _) = disputed(&h);
+    let contract = h.client.address.clone();
+    let unresolved = |h: &Harness| -> i128 {
+        h.client
+            .get_grant(&id)
+            .unwrap()
+            .milestones
+            .iter()
+            .filter(|m| {
+                matches!(
+                    m.status,
+                    MilestoneStatus::Pending
+                        | MilestoneStatus::Submitted
+                        | MilestoneStatus::Disputed
+                )
+            })
+            .map(|m| m.amount)
+            .sum()
+    };
+    assert_eq!(balance(&h, &contract), unresolved(&h));
+    h.client
+        .resolve_dispute(&id, &0, &DisputeOutcome::Split, &3_333);
+    assert_eq!(balance(&h, &contract), unresolved(&h));
+    h.client.submit_milestone(&id, &1, &evidence(&h));
+    h.client.open_dispute(&id, &1, &h.funder);
+    assert_eq!(balance(&h, &contract), unresolved(&h));
+    h.client
+        .resolve_dispute(&id, &1, &DisputeOutcome::Reject, &0);
+    assert_eq!(balance(&h, &contract), 0);
+    assert_eq!(unresolved(&h), 0);
+}
