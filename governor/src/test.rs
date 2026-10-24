@@ -79,7 +79,14 @@ fn setup<'a>() -> Harness<'a> {
     let gov_id = env.register_contract(None, Governor);
     let tl = MockTimelockClient::new(&env, &env.register_contract(None, MockTimelock));
     let guardian = Address::generate(&env);
-    tl.initialize(&gov_id, &guardian, &TL_DELAY, &TL_GRACE);
+    // The governor proposes and cancels; the guardian is the outside veto.
+    tl.initialize(
+        &TL_DELAY,
+        &TL_GRACE,
+        &vec![&env, gov_id.clone()],
+        &vec![&env],
+        &vec![&env, gov_id.clone(), guardian.clone()],
+    );
     let gov = GovernorClient::new(&env, &gov_id);
     gov.initialize(
         &votes.address,
@@ -134,6 +141,14 @@ impl Harness<'_> {
         )
     }
 
+    /// The timelock operation a queued proposal maps to. The timelock derives
+    /// an operation's id from the batch, the predecessor and the salt, and
+    /// the governor queues a proposal under the proposal's own id as salt.
+    fn tl_op_id(&self, id: &BytesN<32>, bps: u32) -> BytesN<32> {
+        let (t, f, a) = self.quorum_action(bps);
+        self.tl.hash_operation(&t, &f, &a, &None, id)
+    }
+
     fn quorum_action(&self, bps: u32) -> (Vec<Address>, Vec<Symbol>, Vec<Vec<Val>>) {
         let e = &self.env;
         (
@@ -181,11 +196,12 @@ fn full_lifecycle_through_timelock() {
     let eta = h.gov.queue(&id);
     assert_eq!(eta, h.env.ledger().timestamp() + TL_DELAY);
     assert_eq!(h.gov.state(&id), ProposalState::Queued);
-    assert!(h.tl.try_execute(&id).is_err()); // delay not elapsed
+    let (t, f, a) = h.quorum_action(500);
+    let op = h.tl.hash_operation(&t, &f, &a, &None, &id);
+    assert!(h.tl.try_execute(&h.alice, &op).is_err()); // delay not elapsed
 
     h.warp(TL_DELAY);
-    h.env.set_auths(&[]); // execution needs no signature at all
-    h.tl.execute(&id);
+    h.tl.execute(&h.alice, &op);
     assert_eq!(h.gov.state(&id), ProposalState::Executed);
     assert_eq!(h.gov.quorum_bps(), 500);
 }
@@ -337,9 +353,10 @@ fn anyone_cancels_when_proposer_drops_below_threshold() {
     h.roll(1);
     h.gov.cancel(&stranger, &id);
     assert_eq!(h.gov.state(&id), ProposalState::Canceled);
-    assert!(h.tl.get_operation(&id).is_none());
+    let op = h.tl_op_id(&id, 500);
+    assert!(h.tl.get_operation(&op).is_none());
     h.warp(TL_DELAY);
-    assert!(h.tl.try_execute(&id).is_err());
+    assert!(h.tl.try_execute(&h.alice, &op).is_err());
 }
 
 #[test]
@@ -349,7 +366,8 @@ fn queued_proposal_expires() {
     h.gov.queue(&id);
     h.warp(TL_DELAY + TL_GRACE + 1);
     assert_eq!(h.gov.state(&id), ProposalState::Expired);
-    assert!(h.tl.try_execute(&id).is_err());
+    let op = h.tl_op_id(&id, 500);
+    assert!(h.tl.try_execute(&h.alice, &op).is_err());
 }
 
 #[test]
@@ -357,9 +375,10 @@ fn guardian_can_veto_queued_proposal() {
     let h = setup();
     let id = h.passed();
     h.gov.queue(&id);
-    h.tl.cancel(&h.guardian, &id);
+    let op = h.tl_op_id(&id, 500);
+    h.tl.cancel(&h.guardian, &op);
     h.warp(TL_DELAY);
-    assert!(h.tl.try_execute(&id).is_err());
+    assert!(h.tl.try_execute(&h.alice, &op).is_err());
 }
 
 #[test]

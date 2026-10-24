@@ -12,24 +12,30 @@ and runs each stage and each rollback. Scripts are in `scripts/governance/`.
 - **Deployer**: the EOA that initialized the contracts.
 - **Multisig account**: a native Stellar account with M-of-N signers (the
   same signer set as the on-chain `multisig` contract). It holds admin in
-  stage 1 and is the timelock **proposer** and **guardian** from stage 2 on.
+  stage 1 and is the timelock **proposer** and **canceller** from stage 2 on.
   A native account is used because the `multisig` contract only counts
   approvals and never makes calls, so it can't sign `admin.require_auth()`.
 - **Multisig contract**: backs every `*_via_multisig` recovery path. It is
   not moved by the handover.
-- **Timelock**: `proposer`, `guardian` (removed at lock-in), `min_delay`,
-  `grace_period`.
+- **Timelock**: `proposer`, `executor` and `canceller` role sets, `min_delay`
+  and `grace_period`. The multisig's two roles are revoked at lock-in.
 - **Governor**: ZEN-holder voting. See [governance.md](governance.md).
 
 ## Stages
 
-| Stage | options_market / price_oracle admin | Timelock proposer | Guardian | Who can roll back | How |
-|------:|-------------------------------------|-------------------|----------|-------------------|-----|
+| Stage | options_market / price_oracle admin | Timelock proposer | Timelock canceller | Who can roll back | How |
+|------:|-------------------------------------|-------------------|--------------------|-------------------|-----|
 | 0 | Deployer | — | — | — | — |
 | 1 | Multisig account | — | — | Multisig | `transfer_admin(deployer)`: `stage1_rollback.sh` |
 | 2 | Timelock | Multisig account | Multisig account | Multisig | Schedules `transfer_admin(multisig)` through the timelock: `stage2_rollback.sh`. It can also cancel any pending op. |
-| 3 | Timelock | Governor | Multisig account | Guardian (multisig) | `cancel` + `guardian_set_proposer(multisig)`, which takes effect immediately: `stage3_rollback.sh` |
+| 3 | Timelock | Multisig account **and** the governor | Multisig account | Multisig | Cancels the governor's queued op and schedules the corrective one: `stage3_rollback.sh`. |
 | 4 | Timelock | Governor | **none** | Governor only | Ordinary proposals. No emergency path. |
+
+Stage 3 *adds* the governor as a proposer rather than replacing the multisig:
+the multisig keeps its proposer role until lock-in, which is what keeps the
+stage reversible. A role can only be granted or revoked by a delayed
+operation, so there is no instant path back to the multisig once the
+governor holds the role alone.
 
 **Vault:** its admin is `options_market` at every stage and must stay that
 way, because `options_market` moves escrow through it. The vault's only
@@ -43,9 +49,9 @@ still works after lock-in.
 | Transition | Script | Mechanism |
 |------------|--------|-----------|
 | 0 → 1 | `stage1_admin_to_multisig.sh` | The deployer calls `transfer_admin(multisig_account)` on options_market and price_oracle. |
-| 1 → 2 | `stage2_admin_to_timelock.sh` | The multisig calls `transfer_admin(timelock)`. First confirm that the timelock's proposer and guardian are the multisig account. |
-| 2 → 3 | `stage3_proposer_to_governor.sh` | The multisig schedules a timelock self-call `set_prop(governor)`, then anyone executes it after `min_delay`. |
-| 3 → 4 | `stage4_lock_in.sh` | A governor proposal calls the timelock's `lock_in()`. |
+| 1 → 2 | `stage2_admin_to_timelock.sh` | The multisig calls `transfer_admin(timelock)`. First confirm that the timelock's proposer and canceller are the multisig account. |
+| 2 → 3 | `stage3_proposer_to_governor.sh` | The multisig schedules a timelock self-call `grant_role(Proposer, governor)`, then anyone executes it after `min_delay`. |
+| 3 → 4 | `stage4_lock_in.sh` | A governor proposal calls the timelock's `revoke_role(Proposer, multisig)` and `revoke_role(Canceller, multisig)`. |
 
 ### Lock-in conditions
 
@@ -57,9 +63,10 @@ Run stage 4 only when all of the following are true:
 2. ZEN voting power is distributed widely enough that quorum can't be met by
    a single holder.
 3. No queued timelock operation is pending review.
-4. The multisig signers have signed off on removing their own guardian role.
+4. The multisig signers have signed off on removing their own timelock roles.
 
-After lock-in, `guardian_set_proposer` and guardian `cancel` fail for good.
+After lock-in the multisig holds neither role, so it can neither cancel a
+queued operation nor schedule one, for good.
 
 ## Running the scripts
 
@@ -94,3 +101,4 @@ accept any `multisig_contract` address from the caller. They don't pin one
 at initialize, so they don't restrict who can act. This was already the case
 before this handover and is out of scope here. It should be fixed, by pinning
 the multisig at initialize, before mainnet.
+

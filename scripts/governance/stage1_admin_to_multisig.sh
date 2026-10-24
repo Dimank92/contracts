@@ -8,3 +8,4 @@ show_admins
 invoke "$MARKET_ID" "$DEPLOYER" transfer_admin --new_admin "$MULTISIG_ACCOUNT"
 invoke "$ORACLE_ID" "$DEPLOYER" transfer_admin --new_admin "$MULTISIG_ACCOUNT"
 show_admins
+

@@ -64,19 +64,49 @@ show_admins() {
 }
 
 # Schedules a timelock batch as $1 (the current proposer). Remaining args:
-# op_id targets_json fns_json args_json.
+# targets_json fns_json args_json salt_hex.
+#
+# There is no operation id to pass in: the timelock derives it from the
+# batch and the salt, and `schedule` returns it.
 tl_schedule() {
-  local proposer="$1" op_id="$2" targets="$3" fns="$4" args="$5"
+  local proposer="$1" targets="$2" fns="$3" args="$4" salt="$5"
   invoke "$TIMELOCK_ID" "$proposer" schedule \
-    --op_id "$op_id" --targets "$targets" --fns "$fns" --args "$args" \
+    --targets "$targets" --fns "$fns" --args "$args" \
+    --salt "$salt" \
     --delay "${TL_DELAY:?TL_DELAY must be set}"
 }
 
-tl_execute() {
-  invoke "$TIMELOCK_ID" "${EXECUTOR:-$1}" execute --op_id "$2"
+# The id of the operation a batch and a salt describe. The timelock derives
+# it the same way, so this is what `execute` takes.
+tl_op_id() {
+  local targets="$1" fns="$2" args="$3" salt="$4"
+  view "$TIMELOCK_ID" hash_operation \
+    --targets "$targets" --fns "$fns" --args "$args" \
+    --predecessor null --salt "$salt"
 }
 
-# 32-byte hex op id derived from a label, so reruns are deterministic.
-op_id() {
+# Executes a ready operation. The id is the one `tl_schedule` returned, or
+# the one `tl_op_id` computes.
+tl_execute() {
+  local executor="$1" id="$2"
+  invoke "$TIMELOCK_ID" "$executor" execute \
+    --executor "$executor" --id "$id"
+}
+
+# 32-byte hex salt derived from a label, so reruns are deterministic. The
+# salt is what makes two otherwise identical batches distinct operations.
+salt() {
   printf '%s' "$1" | sha256sum | cut -d' ' -f1
 }
+
+# The timelock's roles are a contract-type enum: Proposer = 0, Executor = 1,
+# Canceller = 2.
+role() {
+  case "$1" in
+    proposer) echo 0 ;;
+    executor) echo 1 ;;
+    canceller) echo 2 ;;
+    *) echo "unknown role: $1" >&2; exit 1 ;;
+  esac
+}
+
