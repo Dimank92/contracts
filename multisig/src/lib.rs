@@ -994,7 +994,7 @@ impl Multisig {
     fn timelock(env: &Env, class: &Symbol) -> Option<u64> {
         env.storage()
             .instance()
-            .get(&DataKey::Timelock(class.clone()))
+            .get(&DataKey::ClassTimelock(class.clone()))
     }
 
     fn signer_index(env: &Env, signer: &Address) -> u32 {
