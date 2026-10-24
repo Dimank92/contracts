@@ -579,6 +579,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40404c3f5f511ec4da6fe866ddf6a717c309fdbb69fbbad7b0f3edab8f2e835f"
 
 [[package]]
+name = "event-spec"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "soroban-sdk",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1855,13 +1864,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
 
 [[package]]
-name = "vault-ops"
-version = "0.1.0"
-dependencies = [
- "serde_json",
-]
-
-[[package]]
 name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2054,6 +2056,7 @@ dependencies = [
 name = "zenith-common"
 version = "0.1.0"
 dependencies = [
+ "event-spec",
  "soroban-sdk",
 ]
 
@@ -2121,7 +2124,6 @@ dependencies = [
  "zenith-multisig",
  "zenith-params",
  "zenith-price-oracle",
- "zenith-test-adversaries",
  "zenith-vault",
 ]
 
@@ -2137,6 +2139,7 @@ dependencies = [
 name = "zenith-price-oracle"
 version = "0.1.0"
 dependencies = [
+ "proptest",
  "soroban-sdk",
  "zenith-common",
  "zenith-multisig",
@@ -2182,6 +2185,7 @@ dependencies = [
  "soroban-sdk",
  "zenith-common",
  "zenith-multisig",
+ "zenith-test-adversaries",
 ]
 
 [[package]]

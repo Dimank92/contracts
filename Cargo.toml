@@ -17,12 +17,10 @@ members = [
     "price_oracle",
     "staking",
     "streams",
-    "test_adversaries",
     "timelock",
     "vault",
     "tools/event-spec",
     "tools/spec-diff",
-    "tools/vault-ops",
     "xtask",
 ]
 
@@ -50,7 +48,6 @@ repository = "https://github.com/Zenith-options/contracts"
 [workspace.dependencies]
 soroban-sdk = { version = "21.7.7" }
 ed25519-dalek = "2"
-proptest = "1"
 
 # Internal crates. Contracts that call each other on-chain use
 # `contractimport!` against the compiled wasm (see
@@ -59,8 +56,6 @@ proptest = "1"
 # plus the zenith-common rlib.
 zenith-common = { path = "common" }
 governor = { package = "zenith-governor", path = "governor" }
-lp_pool = { package = "zenith-lp-pool", path = "lp_pool" }
-lp_token = { package = "zenith-lp-token", path = "lp_token" }
 multisig = { package = "zenith-multisig", path = "multisig" }
 options_market = { package = "zenith-options-market", path = "options_market" }
 params = { package = "zenith-params", path = "params" }
@@ -79,13 +74,6 @@ debug-assertions = false
 panic = "abort"
 codegen-units = 1
 
-# Coverage instrumentation for the CI coverage gate (issue #221).
-# `cargo llvm-cov` reads this profile; keeping it in the workspace root means
-# the per-crate thresholds in `.github/coverage-thresholds.toml` are measured
-# against a stable, reproducible build. `debug = 1` keeps line tables so
-# llvm-cov can map regions back to source without bloating artifacts.
-[profile.coverage]
-inherits = "dev"
-opt-level = 0
-debug = 1
-incremental = false
+[workspace.lints.rust]
+
+[workspace.lints.clippy]

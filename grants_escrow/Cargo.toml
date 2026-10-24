@@ -3,21 +3,13 @@ name = "zenith-grants-escrow"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
-repository.workspace = true
-# Embeds name/version/repo/commit as contractmeta (#125).
-build = "../common/build_meta.rs"
 
 [lib]
 crate-type = ["cdylib"]
 
-[lints]
-workspace = true
-
 [dependencies]
 soroban-sdk = { workspace = true }
-zenith-common = { workspace = true }
+zenith-common = { path = "../common" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
-# Checks emitted events against events.json (#126).
-event-spec = { path = "../tools/event-spec" }
