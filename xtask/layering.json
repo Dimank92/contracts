@@ -1,0 +1,18 @@
+{
+  "shared": ["zenith-common"],
+  "allowed": {
+    "zenith-common": [],
+    "zenith-governor": ["zenith-common"],
+    "zenith-grants-escrow": ["zenith-common"],
+    "zenith-integration-tests": [],
+    "zenith-multisig": [],
+    "zenith-options-market": ["zenith-common"],
+    "zenith-params": [],
+    "zenith-price-oracle": ["zenith-common"],
+    "zenith-staking": [],
+    "zenith-streams": [],
+    "zenith-timelock": [],
+    "zenith-vault": ["zenith-common"],
+    "xtask": []
+  }
+}
