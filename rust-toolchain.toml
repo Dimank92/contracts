@@ -1,0 +1,10 @@
+# Pinned so every builder compiles with the exact same rustc. 1.81 is the
+# newest stable whose wasm32-unknown-unknown output soroban-sdk 21 accepts
+# (1.82+ emits reference-types/multivalue the Soroban host rejects).
+# Bump deliberately, together with the sdk, and re-run
+# scripts/reproducible-build/verify.sh.
+[toolchain]
+channel = "1.81.0"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]
+profile = "minimal"
