@@ -17,6 +17,7 @@ members = [
     "price_oracle",
     "staking",
     "streams",
+    "test_adversaries",
     "timelock",
     "vault",
     "tools/event-spec",
