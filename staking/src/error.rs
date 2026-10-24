@@ -10,6 +10,11 @@ pub enum Error {
     NothingToWithdraw = 4,
     CooldownActive = 5,
     TooManyRewardTokens = 6,
+    // Admin surface (reward rate, cooldown, emergency controls).
+    Unauthorized = 7,
+    InvalidRewardRate = 8,
+    InvalidCooldown = 9,
+    StakesBlocked = 10,
     // Schema migrations (zenith_common::migrations) — same codes in
     // every Zenith contract. See docs/migrations.md.
     SchemaVersionMismatch = 100,

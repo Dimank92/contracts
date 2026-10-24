@@ -1,0 +1,23 @@
+[package]
+name = "premium_vectors"
+version = "0.1.0"
+edition = "2021"
+description = "Deterministic off-chain Black-Scholes premium fixture generator for options_market"
+publish = false
+
+# This crate is intentionally excluded from the workspace so it never affects
+# the wasm size of the contract crates. Build it standalone with:
+#   cargo run --manifest-path tools/premium_vectors/Cargo.toml
+[workspace]
+
+[[bin]]
+name = "premium_vectors"
+path = "src/main.rs"
+
+[lib]
+name = "premium_vectors"
+path = "src/lib.rs"
+
+[dependencies]
+
+[dev-dependencies]

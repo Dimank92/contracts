@@ -30,4 +30,11 @@ pub enum DataKey {
     /// Rewards accrued to `user` in `token` but not yet claimed.
     Owed(Address, Address),
     PendingUnstake(Address),
+    /// Admin address authorized via `common::require_admin_or_multisig`.
+    Admin,
+    /// Reward rate (emission parameter) applied to newly accrued rewards.
+    RewardRate,
+    /// Emergency mode flag: when set, new stakes are blocked and stakers
+    /// may exit immediately.
+    EmergencyMode,
 }

@@ -176,6 +176,9 @@ impl Multisig {
         Self::signers(&env).get(address).unwrap_or(0)
     }
 
+    /// The fixed signer set as an address→weight map. Bounded: the set is
+    /// capped at `MAX_SIGNERS` (32) at initialization and every rotation,
+    /// so enumerating it is always cheap. Read-only and unauthenticated.
     pub fn get_signers(env: Env) -> Map<Address, u32> {
         ttl::extend_instance(&env);
         Self::signers(&env)
@@ -191,7 +194,7 @@ impl Multisig {
         Self::total_weight(&env, &Self::signers(&env))
     }
 
-    /// Approval weight `is_approved` requires.
+    /// Approval weight `is_approved` requires. Read-only and unauthenticated.
     pub fn get_threshold(env: Env) -> u32 {
         ttl::extend_instance(&env);
         env.storage().instance().get(&DataKey::Threshold).unwrap()
@@ -218,6 +221,8 @@ impl Multisig {
         Self::epoch(&env)
     }
 
+    /// The immutable `approval_ttl` set at initialization. Zero means
+    /// approvals never expire. Read-only and unauthenticated.
     pub fn get_approval_ttl(env: Env) -> u64 {
         ttl::extend_instance(&env);
         env.storage().instance().get(&DataKey::ApprovalTtl).unwrap()
@@ -306,7 +311,8 @@ impl Multisig {
     }
 
     /// Number of signers with a fresh approval of `action_id`, regardless
-    /// of their weight.
+    /// of their weight. An unknown `action_id` returns 0 rather than
+    /// panicking. Read-only and unauthenticated.
     pub fn get_approval_count(env: Env, action_id: BytesN<32>) -> u32 {
         ttl::extend_instance(&env);
         Self::tally(&env, &action_id).0
@@ -322,13 +328,61 @@ impl Multisig {
 
     /// False once the action is vetoed (its approvals are cleared and it
     /// can never be approved again) or its `execute_by` deadline passed.
+    /// An unknown `action_id` is simply unapproved. Read-only and
+    /// unauthenticated.
     pub fn is_approved(env: Env, action_id: BytesN<32>) -> bool {
         ttl::extend_instance(&env);
-        let weight = Self::tally(&env, &action_id).1;
-        let threshold: u32 = env.storage().instance().get(&DataKey::Threshold).unwrap();
-        // The deadline is only read once quorum is otherwise met, keeping
-        // the common path at a single approvals read.
-        weight >= threshold && !Self::past_deadline(&env, &action_id)
+        Self::approved(&env, &action_id)
+    }
+
+    /// Ledger timestamp at which `action_id`'s approvals stop counting,
+    /// evaluated against the current ledger time at call time. Returns
+    /// `None` when approvals never expire (`approval_ttl == 0`) or when
+    /// the action has no fresh approval left (never approved, unknown
+    /// action, or already expired) — distinct from an expired approval,
+    /// which reports the past timestamp it lapsed at. Read-only and
+    /// unauthenticated.
+    pub fn get_approval_expiry(env: Env, action_id: BytesN<32>) -> Option<u64> {
+        ttl::extend_instance(&env);
+        let ttl = Self::approval_ttl(&env);
+        if ttl == 0 {
+            return None;
+        }
+        let approvals = Self::load_approvals(&env, &action_id);
+        if approvals.bitmap == 0 {
+            return None;
+        }
+        let now = env.ledger().timestamp();
+        let mut latest: Option<u64> = None;
+        for (i, _) in Self::signers(&env).iter().enumerate() {
+            let idx = i as u32;
+            if approvals.bitmap & (1 << idx) == 0 {
+                continue;
+            }
+            let at = approvals.timestamps.get(idx).unwrap_or(0);
+            if now.checked_sub(at).unwrap_or(u64::MAX) <= ttl {
+                latest = Some(latest.map_or(at, |l| l.max(at)));
+            }
+        }
+        latest.map(|at| at.saturating_add(ttl))
+    }
+
+    /// Whether `action_id` is approved AND its per-class timelock has
+    /// elapsed. Layers the timelock on top of `is_approved`, so an
+    /// unknown `class` (no timelock configured) is never executable.
+    /// Read-only and unauthenticated.
+    pub fn is_executable(env: Env, action_id: BytesN<32>, class: Symbol) -> bool {
+        ttl::extend_instance(&env);
+        if !Self::approved(&env, &action_id) {
+            return false;
+        }
+        let Some(delay) = Self::timelock(&env, &class) else {
+            return false;
+        };
+        let Some(meta) = Self::get_action(env.clone(), action_id) else {
+            return false;
+        };
+        env.ledger().timestamp() >= meta.created_at.saturating_add(delay)
     }
 
     /// Clears every signer's approval of `action_id` — for whoever
@@ -924,6 +978,23 @@ impl Multisig {
 
     fn approval_ttl(env: &Env) -> u64 {
         env.storage().instance().get(&DataKey::ApprovalTtl).unwrap()
+    }
+
+    /// The single definition of "approved" shared by the on-chain flow
+    /// and the query entrypoints.
+    fn approved(env: &Env, action_id: &BytesN<32>) -> bool {
+        let weight = Self::tally(env, action_id).1;
+        let threshold: u32 = env.storage().instance().get(&DataKey::Threshold).unwrap();
+        // The deadline is only read once quorum is otherwise met, keeping
+        // the common path at a single approvals read.
+        weight >= threshold && !Self::past_deadline(env, action_id)
+    }
+
+    /// Per-class timelock delay in seconds, if one is configured.
+    fn timelock(env: &Env, class: &Symbol) -> Option<u64> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Timelock(class.clone()))
     }
 
     fn signer_index(env: &Env, signer: &Address) -> u32 {

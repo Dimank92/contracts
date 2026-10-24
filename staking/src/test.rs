@@ -2,11 +2,12 @@
 
 use crate::{Staking, StakingClient};
 use soroban_sdk::{
-    testutils::{Address as _, Ledger as _},
-    token, Address, Env,
+    testutils::{Address as _, Events as _, Ledger as _},
+    token, Address, Env, IntoVal, Symbol,
 };
 
 const COOLDOWN: u64 = 7 * 86_400;
+const MAX_REWARD_RATE: u32 = 10_000;
 
 struct Harness<'a> {
     env: Env,
@@ -55,6 +56,17 @@ impl Harness<'_> {
             self.client.stake(&user, &amount);
         }
         user
+    }
+
+    /// Returns true if the most recent event batch contains an event emitted
+    /// by the staking contract with the given topic symbol.
+    fn emitted(&self, topic: &str) -> bool {
+        let sym = Symbol::new(&self.env, topic);
+        self.env.events().all().iter().any(|(id, topics, _)| {
+            id == self.client.address
+                && topics.len() == 1
+                && topics.get(0).unwrap() == sym.into_val(&self.env)
+        })
     }
 }
 
@@ -215,4 +227,127 @@ fn prop_no_staker_claims_more_than_share() {
         assert!(accounted <= notified);
         assert!(h.usdc.balance(&h.client.address) >= notified - accounted);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Admin controls: reward rate, cooldown, emergency unstake
+// ---------------------------------------------------------------------------
+
+#[test]
+fn set_reward_rate_updates_getter_and_emits_event() {
+    let h = setup();
+    assert_eq!(h.client.reward_rate(), 0);
+    h.client.set_reward_rate(&500);
+    assert_eq!(h.client.reward_rate(), 500);
+    assert!(h.emitted("reward_rate_set"));
+}
+
+#[test]
+fn set_reward_rate_allows_zero_explicitly() {
+    let h = setup();
+    h.client.set_reward_rate(&1_000);
+    h.client.set_reward_rate(&0);
+    assert_eq!(h.client.reward_rate(), 0);
+}
+
+#[test]
+fn set_reward_rate_allows_maximum() {
+    let h = setup();
+    h.client.set_reward_rate(&MAX_REWARD_RATE);
+    assert_eq!(h.client.reward_rate(), MAX_REWARD_RATE);
+}
+
+#[test]
+fn set_reward_rate_rejects_out_of_range() {
+    let h = setup();
+    assert!(h.client.try_set_reward_rate(&(MAX_REWARD_RATE + 1)).is_err());
+    assert_eq!(h.client.reward_rate(), 0);
+}
+
+#[test]
+fn set_reward_rate_requires_admin() {
+    let h = setup();
+    h.env.set_auths(&[]);
+    assert!(h.client.try_set_reward_rate(&500).is_err());
+    assert_eq!(h.client.reward_rate(), 0);
+}
+
+#[test]
+fn set_cooldown_updates_getter_and_emits_event() {
+    let h = setup();
+    assert_eq!(h.client.cooldown(), COOLDOWN);
+    h.client.set_cooldown(&(COOLDOWN * 2));
+    assert_eq!(h.client.cooldown(), COOLDOWN * 2);
+    assert!(h.emitted("cooldown_set"));
+}
+
+#[test]
+fn set_cooldown_requires_admin() {
+    let h = setup();
+    h.env.set_auths(&[]);
+    assert!(h.client.try_set_cooldown(&1).is_err());
+    assert_eq!(h.client.cooldown(), COOLDOWN);
+}
+
+#[test]
+fn cooldown_change_does_not_affect_in_flight_unbonds() {
+    let h = setup();
+    let a = h.staker(100);
+    h.client.request_unstake(&a, &100);
+    // Shorten the cooldown after the unbond was initiated.
+    h.client.set_cooldown(&1);
+    assert_eq!(h.client.cooldown(), 1);
+    // The existing unbond keeps its original unlock time.
+    h.env.ledger().set_timestamp(COOLDOWN - 1);
+    assert!(h.client.try_withdraw(&a).is_err());
+    h.env.ledger().set_timestamp(COOLDOWN);
+    assert_eq!(h.client.withdraw(&a), 100);
+    assert_eq!(h.zen.balance(&a), 100);
+}
+
+#[test]
+fn cooldown_lengthening_does_not_delay_in_flight_unbonds() {
+    let h = setup();
+    let a = h.staker(100);
+    h.client.request_unstake(&a, &100);
+    h.client.set_cooldown(&(COOLDOWN * 10));
+    h.env.ledger().set_timestamp(COOLDOWN);
+    assert_eq!(h.client.withdraw(&a), 100);
+}
+
+#[test]
+fn emergency_unstake_lets_staker_exit_immediately() {
+    let h = setup();
+    let a = h.staker(100);
+    h.client.set_emergency_unstake(&true);
+    assert!(h.client.emergency_unstake_enabled());
+    assert!(h.emitted("emergency_unstake_set"));
+    assert_eq!(h.client.emergency_unstake(&a), 100);
+    assert_eq!(h.zen.balance(&a), 100);
+    // No double withdrawal.
+    assert!(h.client.try_emergency_unstake(&a).is_err());
+    assert_eq!(h.zen.balance(&a), 100);
+}
+
+#[test]
+fn emergency_unstake_blocks_new_stakes() {
+    let h = setup();
+    h.client.set_emergency_unstake(&true);
+    let user = Address::generate(&h.env);
+    mint(&h.env, &h.zen, &user, 100);
+    assert!(h.client.try_stake(&user, &100).is_err());
+}
+
+#[test]
+fn emergency_unstake_disabled_by_default() {
+    let h = setup();
+    assert!(!h.client.emergency_unstake_enabled());
+}
+
+#[test]
+fn set_emergency_unstake_requires_admin() {
+    let h = setup();
+    h.env.set_auths(&[]);
+    assert!(h.client.try_set_emergency_unstake(&true).is_err());
+    assert!(!h.client.emergency_unstake_enabled());
 }

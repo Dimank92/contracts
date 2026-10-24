@@ -1,0 +1,85 @@
+# `options_market`
+
+European-style options market: the admin writes option series (strike, expiry, premium, side) and holders buy, exercise, or let them expire. Premiums are computed **off-chain** with Black-Scholes and committed on-chain by the admin; the contract never prices an option itself.
+
+> Risk notes for this crate live in [`THREAT_MODEL.md`](../THREAT_MODEL.md). This page documents the interface only.
+
+## Purpose
+
+- Custody and settle European call/put positions against a single underlying.
+- Enforce expiry and exercise rules deterministically on-chain.
+- Record the admin-set premium per series so settlement math is auditable against the off-chain model.
+
+## Entrypoints
+
+All entrypoints are `pub fn` on the contract type in `options_market/src/lib.rs`. Auth requirements are stated per entrypoint.
+
+| Entrypoint | Arguments | Auth | Notes |
+| --- | --- | --- | --- |
+| `initialize` | `admin: Address` | `admin.require_auth()` | One-shot. Sets the admin used by the admin path below. |
+| `create_series` | `admin: Address`, `series_id: u32`, `strike: i128`, `expiry: u64`, `is_put: bool`, `premium: i128` | `admin.require_auth()` + admin match | Registers an option series. `premium` is the off-chain Black-Scholes value (see below). |
+| `buy` | `holder: Address`, `series_id: u32`, `quantity: i128` | `holder.require_auth()` | Transfers `premium * quantity` from holder to the market and mints the position. |
+| `exercise` | `holder: Address`, `series_id: u32`, `quantity: i128`, `spot: i128` | `holder.require_auth()` | Only valid before `expiry`. Payoff is computed by `options_market/src/math.rs`. |
+| `expire` | `series_id: u32` | none | Marks a series past `expiry` as settled; idempotent. |
+| `set_admin` | `current: Address`, `new_admin: Address` | `current.require_auth()` + admin match | Rotates the admin. |
+
+> **Pending:** the admin premium-configuration entrypoints (per-series premium overrides, fee configuration) are **not implemented**. Tracked in the `options_market` reconstruction issue; do not document them as available until the source lands.
+
+Every entrypoint above has been checked against `options_market/src/lib.rs`. If a signature here disagrees with the source, the source is authoritative and this page is a bug.
+
+## Storage layout summary
+
+Keys are defined in `options_market/src/lib.rs`; the summary below is descriptive, not a spec.
+
+| Key | Value | Written by |
+| --- | --- | --- |
+| `Admin` | `Address` | `initialize`, `set_admin` |
+| `Series(series_id)` | `{ strike, expiry, is_put, premium, settled }` | `create_series`, `expire` |
+| `Position(holder, series_id)` | `{ quantity }` | `buy`, `exercise` |
+
+The repo-wide storage key layout document is tracked separately and is out of scope for this page.
+
+## Error codes
+
+Defined in `options_market/src/lib.rs` as `Error` variants. Codes are stable once shipped; new variants are appended.
+
+| Code | Variant | Raised when |
+| --- | --- | --- |
+| 1 | `NotInitialized` | An entrypoint requiring `Admin` runs before `initialize`. |
+| 2 | `AlreadyInitialized` | `initialize` called twice. |
+| 3 | `Unauthorized` | Caller is not the stored admin on an admin-gated entrypoint. |
+| 4 | `SeriesExists` | `create_series` reuses a `series_id`. |
+| 5 | `UnknownSeries` | `series_id` has no `Series` entry. |
+| 6 | `Expired` | `exercise` after `expiry`. |
+| 7 | `NotExpired` | `expire` before `expiry`. |
+| 8 | `InsufficientPosition` | `exercise` quantity exceeds the holder's position. |
+| 9 | `InvalidAmount` | Non-positive `quantity` or `premium`. |
+
+## Emitted events
+
+Events are emitted via `env.events().publish(...)` in `options_market/src/lib.rs`.
+
+| Event | Topics | Data |
+| --- | --- | --- |
+| `series_created` | `("series", series_id)` | `{ strike, expiry, is_put, premium }` |
+| `bought` | `("buy", holder, series_id)` | `{ quantity, premium_paid }` |
+| `exercised` | `("exercise", holder, series_id)` | `{ quantity, spot, payoff }` |
+| `expired` | `("expire", series_id)` | `{}` |
+| `admin_changed` | `("admin",)` | `{ old, new }` |
+
+## Admin / multisig path
+
+- `initialize` sets the initial admin; in production this is the multisig address, not a single key.
+- `create_series` and `set_admin` are admin-gated and must be routed through the multisig (see [`multisig.md`](./multisig.md)).
+- `expire` is permissionless and idempotent so anyone can settle a lapsed series; it does not require the admin.
+- Rotating the admin (`set_admin`) is itself a multisig proposal; there is no single-key override.
+
+## Off-chain premium model
+
+Premiums are **not** computed on-chain. The admin computes the European Black-Scholes premium off-chain and passes it to `create_series` as `premium`. The on-chain math in `options_market/src/math.rs` only computes payoff and settlement from the stored `premium`, `strike`, and the supplied `spot`.
+
+The off-chain model is pinned by checked-in fixture vectors generated by the tool under `tools/premium_vectors/` (see #235). The `options_market` test suite loads those vectors and asserts the on-chain payoff math matches at the documented fixed-point scale and rounding direction. If you change the premium scale or rounding, regenerate the vectors in the same PR — a mismatch produces permanent test noise.
+
+## Machine-derivable interface
+
+The contract spec dump produced by the `xtask` crate is the source of truth for entrypoint signatures and error codes. Regenerate it before editing this page so the tables above stay in sync with the source.
