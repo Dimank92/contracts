@@ -14,7 +14,7 @@
 //! paid everything accrued but not yet withdrawn, and the funder is
 //! refunded the unstreamed remainder.
 
-use soroban_sdk::{contract, contractimpl, panic_with_error, token, Address, Env};
+use soroban_sdk::{contract, contractimpl, panic_with_error, token, Address, Env, Vec};
 
 #[cfg(test)]
 mod test;
@@ -27,10 +27,15 @@ mod types;
 
 use error::Error;
 pub use migrations::CURRENT_SCHEMA_VERSION;
-use types::{DataKey, Stream};
+use types::{DataKey, Stream, StreamStatus};
 
 #[contract]
 pub struct Streams;
+
+/// Hard cap on the number of streams returned by a single enumeration
+/// page. Callers paginate with the returned cursor; no query ever returns
+/// more than this many entries.
+const MAX_PAGE_SIZE: u32 = 50;
 
 fn load(env: &Env, stream_id: u64) -> Stream {
     env.storage()
@@ -58,6 +63,96 @@ fn streamed_at(stream: &Stream, now: u64) -> i128 {
         (now - stream.start) as i128,
         (stream.end - stream.start) as i128,
     )
+}
+
+/// Vested-but-unwithdrawn amount for `stream` as of `now`. This is the
+/// single source of truth shared by `withdraw` and `withdrawable`.
+fn withdrawable_at(stream: &Stream, now: u64) -> i128 {
+    streamed_at(stream, now) - stream.withdrawn
+}
+
+/// Terminal status of a stream: cancelled, fully withdrawn, or live.
+fn status_of(stream: &Stream) -> StreamStatus {
+    if stream.canceled {
+        StreamStatus::Canceled
+    } else if stream.withdrawn >= stream.total {
+        StreamStatus::Completed
+    } else {
+        StreamStatus::Active
+    }
+}
+
+/// Appends `stream_id` to the sender/recipient index for `stream` and
+/// extends the index entry's TTL so it cannot expire before the stream.
+fn index_stream(env: &Env, stream_id: u64, stream: &Stream) {
+    let mut sender_ids: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::SenderStreams(stream.funder.clone()))
+        .unwrap_or_else(|| Vec::new(env));
+    sender_ids.push_back(stream_id);
+    env.storage()
+        .persistent()
+        .set(&DataKey::SenderStreams(stream.funder.clone()), &sender_ids);
+
+    let mut recipient_ids: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::RecipientStreams(stream.recipient.clone()))
+        .unwrap_or_else(|| Vec::new(env));
+    recipient_ids.push_back(stream_id);
+    env.storage()
+        .persistent()
+        .set(&DataKey::RecipientStreams(stream.recipient.clone()), &recipient_ids);
+}
+
+/// Removes `stream_id` from the recipient index for `old` and adds it to
+/// the index for `new`, keeping enumeration in sync with the record.
+fn reindex_recipient(env: &Env, stream_id: u64, old: &Address, new: &Address) {
+    let mut old_ids: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::RecipientStreams(old.clone()))
+        .unwrap_or_else(|| Vec::new(env));
+    let mut kept: Vec<u64> = Vec::new(env);
+    for id in old_ids.iter() {
+        if id != stream_id {
+            kept.push_back(id);
+        }
+    }
+    old_ids = kept;
+    env.storage()
+        .persistent()
+        .set(&DataKey::RecipientStreams(old.clone()), &old_ids);
+
+    let mut new_ids: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::RecipientStreams(new.clone()))
+        .unwrap_or_else(|| Vec::new(env));
+    new_ids.push_back(stream_id);
+    env.storage()
+        .persistent()
+        .set(&DataKey::RecipientStreams(new.clone()), &new_ids);
+}
+
+/// Returns up to `limit` (capped at `MAX_PAGE_SIZE`) ids from `ids`
+/// starting at `cursor`, plus the next cursor (or `None` when exhausted).
+fn paginate(env: &Env, ids: &Vec<u64>, cursor: u32, limit: u32) -> (Vec<u64>, Option<u32>) {
+    let cap = if limit == 0 || limit > MAX_PAGE_SIZE {
+        MAX_PAGE_SIZE
+    } else {
+        limit
+    };
+    let len = ids.len();
+    let mut page: Vec<u64> = Vec::new(env);
+    let mut i = cursor;
+    while i < len && page.len() < cap {
+        page.push_back(ids.get(i).unwrap());
+        i += 1;
+    }
+    let next = if i < len { Some(i) } else { None };
+    (page, next)
 }
 
 #[contractimpl]
@@ -112,21 +207,19 @@ impl Streams {
             .instance()
             .set(&DataKey::StreamCounter, &(stream_id + 1));
 
-        save(
-            &env,
-            stream_id,
-            &Stream {
-                funder: funder.clone(),
-                recipient: recipient.clone(),
-                token,
-                total,
-                start,
-                cliff,
-                end,
-                withdrawn: 0,
-                canceled: false,
-            },
-        );
+        let stream = Stream {
+            funder: funder.clone(),
+            recipient: recipient.clone(),
+            token,
+            total,
+            start,
+            cliff,
+            end,
+            withdrawn: 0,
+            canceled: false,
+        };
+        save(&env, stream_id, &stream);
+        index_stream(&env, stream_id, &stream);
         events::created(&env, stream_id, funder, recipient, total);
         stream_id
     }
@@ -139,7 +232,7 @@ impl Streams {
         if amount <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
         }
-        let available = streamed_at(&stream, env.ledger().timestamp()) - stream.withdrawn;
+        let available = withdrawable_at(&stream, env.ledger().timestamp());
         if amount > available {
             panic_with_error!(&env, Error::InsufficientBalance);
         }
@@ -200,7 +293,63 @@ impl Streams {
         let old = stream.recipient.clone();
         stream.recipient = new_recipient.clone();
         save(&env, stream_id, &stream);
+        reindex_recipient(&env, stream_id, &old, &new_recipient);
         events::transferred(&env, stream_id, old, new_recipient);
+    }
+
+    // ── Read-only introspection ─────────────────────────────────────────────
+
+    /// Returns the full stream record for `stream_id`. Cancelled and
+    /// fully-withdrawn streams remain queryable; an unknown id panics with
+    /// `Error::StreamNotFound`.
+    pub fn get_stream(env: Env, stream_id: u64) -> Stream {
+        load(&env, stream_id)
+    }
+
+    /// Returns the vested-but-unwithdrawn amount for `stream_id` as of the
+    /// current ledger timestamp. Uses the same computation as `withdraw`.
+    pub fn withdrawable(env: Env, stream_id: u64) -> i128 {
+        let stream = load(&env, stream_id);
+        withdrawable_at(&stream, env.ledger().timestamp())
+    }
+
+    /// Returns the terminal/live status of `stream_id`.
+    pub fn get_stream_status(env: Env, stream_id: u64) -> StreamStatus {
+        status_of(&load(&env, stream_id))
+    }
+
+    /// Cursor-paginated enumeration of streams funded by `address`.
+    /// Returns at most `MAX_PAGE_SIZE` ids and the next cursor (`None` when
+    /// exhausted).
+    pub fn get_sender_streams(
+        env: Env,
+        address: Address,
+        cursor: u32,
+        limit: u32,
+    ) -> (Vec<u64>, Option<u32>) {
+        let ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SenderStreams(address))
+            .unwrap_or_else(|| Vec::new(&env));
+        paginate(&env, &ids, cursor, limit)
+    }
+
+    /// Cursor-paginated enumeration of streams paying `address`.
+    /// Returns at most `MAX_PAGE_SIZE` ids and the next cursor (`None` when
+    /// exhausted).
+    pub fn get_recipient_streams(
+        env: Env,
+        address: Address,
+        cursor: u32,
+        limit: u32,
+    ) -> (Vec<u64>, Option<u32>) {
+        let ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RecipientStreams(address))
+            .unwrap_or_else(|| Vec::new(&env));
+        paginate(&env, &ids, cursor, limit)
     }
 
     // ── Schema migrations (docs/migrations.md) ──────────────────────────────
@@ -234,30 +383,5 @@ impl Streams {
 
     pub fn schema_version(env: Env) -> u32 {
         zenith_common::migrations::schema_version(&env)
-    }
-
-    /// `(target, cursor)` while a paginated migration is in progress.
-    pub fn migration_state(env: Env) -> Option<(u32, u32)> {
-        zenith_common::migrations::migration_state(&env)
-    }
-
-    /// `(recipient_withdrawable, funder_refundable)` as of now: what the
-    /// recipient could withdraw right now, and what the funder would get
-    /// back if the stream were cancelled right now.
-    pub fn balance_of(env: Env, stream_id: u64) -> (i128, i128) {
-        let stream = load(&env, stream_id);
-        let streamed = streamed_at(&stream, env.ledger().timestamp());
-        (streamed - stream.withdrawn, stream.total - streamed)
-    }
-
-    pub fn get_stream(env: Env, stream_id: u64) -> Option<Stream> {
-        env.storage().persistent().get(&DataKey::Stream(stream_id))
-    }
-
-    pub fn get_stream_count(env: Env) -> u64 {
-        env.storage()
-            .instance()
-            .get(&DataKey::StreamCounter)
-            .unwrap()
     }
 }
