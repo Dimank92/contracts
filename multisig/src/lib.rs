@@ -30,7 +30,8 @@
 //! entrypoint returns `Result<_, Error>` (docs/errors.md).
 
 use soroban_sdk::{
-    contract, contractimpl, xdr::ToXdr, Address, BytesN, Env, Map, Symbol, Val, Vec,
+    contract, contractimpl, xdr::ToXdr, Address, BytesN, Env, IntoVal, Map, Symbol, TryFromVal,
+    Val, Vec,
 };
 
 #[cfg(test)]
@@ -676,7 +677,11 @@ impl Multisig {
         let hash = Self::finish(&env, &proposal_id, ActionStatus::Executed)?;
         events::executed(&env, proposal_id, hash);
 
-        Ok(env.invoke_contract::<Val>(&proposal.target, &proposal.function, proposal.args))
+        if proposal.target == env.current_contract_address() {
+            Self::execute_self_call(&env, &proposal.function, proposal.args)
+        } else {
+            Ok(env.invoke_contract::<Val>(&proposal.target, &proposal.function, proposal.args))
+        }
     }
 
     pub fn get_proposal(env: Env, proposal_id: BytesN<32>) -> Result<Option<Proposal>, Error> {
@@ -818,7 +823,6 @@ impl Multisig {
         Ok(ttl::get_persistent(&env, &DataKey::SignerChange(change_id)))
     }
 
-    /// Timestamp at which a queued change becomes executable.
     pub fn get_signer_change_ready_at(
         env: Env,
         change_id: BytesN<32>,
@@ -828,9 +832,343 @@ impl Multisig {
             &DataKey::SignerChangeReadyAt(change_id),
         ))
     }
+
+    // ── Admin-gated signer management and threshold updates ───────────────────
+
+    /// Admin entrypoint to add a new signer. Must be called by the multisig
+    /// contract itself (routed through `propose` -> `approve` -> `execute`).
+    /// Inactivates prior approvals by bumping the signer epoch.
+    pub fn add_signer(env: Env, caller: Address, signer: Address) -> Result<(), Error> {
+        Self::add_signer_weighted(env, caller, signer, 1)
+    }
+
+    /// Admin entrypoint to add a new signer with a specific voting weight.
+    /// Must be called by the multisig contract itself.
+    pub fn add_signer_weighted(
+        env: Env,
+        caller: Address,
+        signer: Address,
+        weight: u32,
+    ) -> Result<(), Error> {
+        ttl::extend_instance(&env);
+        if caller != env.current_contract_address() {
+            return Err(Error::DirectAdminCall);
+        }
+        caller.require_auth();
+        migrations::require_current(&env)?;
+
+        if weight == 0 {
+            return Err(Error::InvalidWeight);
+        }
+        let mut signers = Self::signers(&env)?;
+        if signers.len() >= MAX_SIGNERS {
+            return Err(Error::TooManySigners);
+        }
+        if signers.contains_key(signer.clone()) {
+            return Err(Error::DuplicateSigner);
+        }
+        signers.set(signer.clone(), weight);
+
+        let threshold: u32 = Self::config(&env, &DataKey::Threshold)?;
+        let rotation_threshold: u32 = Self::config(&env, &DataKey::RotationThreshold)?;
+        Self::validate_thresholds(&signers, threshold, rotation_threshold)?;
+
+        let epoch = Self::epoch(&env).saturating_add(1);
+        let storage = env.storage().instance();
+        storage.set(&DataKey::Signers, &signers);
+        storage.set(&DataKey::SignerEpoch, &epoch);
+        Self::warn_single_key_quorum(&env, &signers, threshold);
+
+        let change_id: BytesN<32> = env.crypto().sha256(&signer.to_xdr(&env)).into();
+        events::signers_rotated(
+            &env,
+            change_id,
+            SignersRotatedEvent {
+                epoch,
+                signers,
+                threshold,
+                rotation_threshold,
+            },
+        );
+        Ok(())
+    }
+
+    /// Admin entrypoint to remove an existing signer. Must be called by the multisig
+    /// contract itself (routed through `propose` -> `approve` -> `execute`).
+    /// Inactivates prior approvals by bumping the signer epoch.
+    /// Reverts with `InvalidThreshold` if removal would drop the signer count
+    /// or total weight below the threshold.
+    pub fn remove_signer(env: Env, caller: Address, signer: Address) -> Result<(), Error> {
+        ttl::extend_instance(&env);
+        if caller != env.current_contract_address() {
+            return Err(Error::DirectAdminCall);
+        }
+        caller.require_auth();
+        migrations::require_current(&env)?;
+
+        let mut signers = Self::signers(&env)?;
+        if !signers.contains_key(signer.clone()) {
+            return Err(Error::NotASigner);
+        }
+        signers.remove(signer.clone());
+
+        let threshold: u32 = Self::config(&env, &DataKey::Threshold)?;
+        let total = Self::total_weight(&signers)?;
+        if signers.is_empty() || threshold == 0 || threshold > total || signers.len() < threshold {
+            return Err(Error::InvalidThreshold);
+        }
+
+        let mut rotation_threshold: u32 = Self::config(&env, &DataKey::RotationThreshold)?;
+        if rotation_threshold > total {
+            rotation_threshold = total;
+        }
+        Self::validate_thresholds(&signers, threshold, rotation_threshold)?;
+
+        let epoch = Self::epoch(&env).saturating_add(1);
+        let storage = env.storage().instance();
+        storage.set(&DataKey::Signers, &signers);
+        storage.set(&DataKey::RotationThreshold, &rotation_threshold);
+        storage.set(&DataKey::SignerEpoch, &epoch);
+        Self::warn_single_key_quorum(&env, &signers, threshold);
+
+        let change_id: BytesN<32> = env.crypto().sha256(&signer.to_xdr(&env)).into();
+        events::signers_rotated(
+            &env,
+            change_id,
+            SignersRotatedEvent {
+                epoch,
+                signers,
+                threshold,
+                rotation_threshold,
+            },
+        );
+        Ok(())
+    }
+
+    /// Admin entrypoint to update the approval threshold. Must be called by the multisig
+    /// contract itself (routed through `propose` -> `approve` -> `execute`).
+    /// Rejects 0 or threshold greater than total signer weight or signer count.
+    /// Inactivates prior approvals by bumping the signer epoch.
+    pub fn set_threshold(env: Env, caller: Address, threshold: u32) -> Result<(), Error> {
+        ttl::extend_instance(&env);
+        if caller != env.current_contract_address() {
+            return Err(Error::DirectAdminCall);
+        }
+        caller.require_auth();
+        migrations::require_current(&env)?;
+
+        let signers = Self::signers(&env)?;
+        let total = Self::total_weight(&signers)?;
+        if threshold == 0 || threshold > total || threshold > signers.len() {
+            return Err(Error::InvalidThreshold);
+        }
+
+        let current_rot: u32 = Self::config(&env, &DataKey::RotationThreshold)?;
+        let rotation_threshold = if current_rot > threshold && current_rot <= total {
+            current_rot
+        } else if threshold >= total {
+            total
+        } else {
+            (threshold + 1).min(total)
+        };
+        Self::validate_thresholds(&signers, threshold, rotation_threshold)?;
+
+        let epoch = Self::epoch(&env).saturating_add(1);
+        let storage = env.storage().instance();
+        storage.set(&DataKey::Threshold, &threshold);
+        storage.set(&DataKey::RotationThreshold, &rotation_threshold);
+        storage.set(&DataKey::SignerEpoch, &epoch);
+        Self::warn_single_key_quorum(&env, &signers, threshold);
+
+        let change_id: BytesN<32> = env.crypto().sha256(&threshold.to_xdr(&env)).into();
+        events::signers_rotated(
+            &env,
+            change_id,
+            SignersRotatedEvent {
+                epoch,
+                signers,
+                threshold,
+                rotation_threshold,
+            },
+        );
+        Ok(())
+    }
+
+    /// Admin entrypoint to atomically remove a signer and update the threshold in a single
+    /// action, preventing the contract from entering an invalid state where threshold > count.
+    /// Must be called by the multisig contract itself (routed through `propose` -> `approve` -> `execute`).
+    pub fn remove_signer_and_set_threshold(
+        env: Env,
+        caller: Address,
+        signer: Address,
+        new_threshold: u32,
+    ) -> Result<(), Error> {
+        ttl::extend_instance(&env);
+        if caller != env.current_contract_address() {
+            return Err(Error::DirectAdminCall);
+        }
+        caller.require_auth();
+        migrations::require_current(&env)?;
+
+        let mut signers = Self::signers(&env)?;
+        if !signers.contains_key(signer.clone()) {
+            return Err(Error::NotASigner);
+        }
+        signers.remove(signer.clone());
+
+        let total = Self::total_weight(&signers)?;
+        if signers.is_empty()
+            || new_threshold == 0
+            || new_threshold > total
+            || new_threshold > signers.len()
+        {
+            return Err(Error::InvalidThreshold);
+        }
+
+        let current_rot: u32 = Self::config(&env, &DataKey::RotationThreshold)?;
+        let rotation_threshold = if current_rot > new_threshold && current_rot <= total {
+            current_rot
+        } else if new_threshold >= total {
+            total
+        } else {
+            (new_threshold + 1).min(total)
+        };
+        Self::validate_thresholds(&signers, new_threshold, rotation_threshold)?;
+
+        let epoch = Self::epoch(&env).saturating_add(1);
+        let storage = env.storage().instance();
+        storage.set(&DataKey::Signers, &signers);
+        storage.set(&DataKey::Threshold, &new_threshold);
+        storage.set(&DataKey::RotationThreshold, &rotation_threshold);
+        storage.set(&DataKey::SignerEpoch, &epoch);
+        Self::warn_single_key_quorum(&env, &signers, new_threshold);
+
+        let change_id: BytesN<32> = env.crypto().sha256(&signer.to_xdr(&env)).into();
+        events::signers_rotated(
+            &env,
+            change_id,
+            SignersRotatedEvent {
+                epoch,
+                signers,
+                threshold: new_threshold,
+                rotation_threshold,
+            },
+        );
+        Ok(())
+    }
 }
 
 impl Multisig {
+    fn execute_self_call(env: &Env, function: &Symbol, args: Vec<Val>) -> Result<Val, Error> {
+        let f_str = function.clone();
+        if f_str == Symbol::new(env, "add_signer") {
+            let (caller, signer) = if args.len() == 1 {
+                (
+                    env.current_contract_address(),
+                    Address::try_from_val(env, &args.get(0).unwrap())
+                        .map_err(|_| Error::ContextNotAllowed)?,
+                )
+            } else if args.len() == 2 {
+                (
+                    Address::try_from_val(env, &args.get(0).unwrap())
+                        .map_err(|_| Error::ContextNotAllowed)?,
+                    Address::try_from_val(env, &args.get(1).unwrap())
+                        .map_err(|_| Error::ContextNotAllowed)?,
+                )
+            } else {
+                return Err(Error::ContextNotAllowed);
+            };
+            Self::add_signer(env.clone(), caller, signer)?;
+            Ok(().into_val(env))
+        } else if f_str == Symbol::new(env, "add_signer_weighted") {
+            let (caller, signer, weight) = if args.len() == 2 {
+                (
+                    env.current_contract_address(),
+                    Address::try_from_val(env, &args.get(0).unwrap())
+                        .map_err(|_| Error::ContextNotAllowed)?,
+                    u32::try_from_val(env, &args.get(1).unwrap())
+                        .map_err(|_| Error::ContextNotAllowed)?,
+                )
+            } else if args.len() == 3 {
+                (
+                    Address::try_from_val(env, &args.get(0).unwrap())
+                        .map_err(|_| Error::ContextNotAllowed)?,
+                    Address::try_from_val(env, &args.get(1).unwrap())
+                        .map_err(|_| Error::ContextNotAllowed)?,
+                    u32::try_from_val(env, &args.get(2).unwrap())
+                        .map_err(|_| Error::ContextNotAllowed)?,
+                )
+            } else {
+                return Err(Error::ContextNotAllowed);
+            };
+            Self::add_signer_weighted(env.clone(), caller, signer, weight)?;
+            Ok(().into_val(env))
+        } else if f_str == Symbol::new(env, "remove_signer") {
+            let (caller, signer) = if args.len() == 1 {
+                (
+                    env.current_contract_address(),
+                    Address::try_from_val(env, &args.get(0).unwrap())
+                        .map_err(|_| Error::ContextNotAllowed)?,
+                )
+            } else if args.len() == 2 {
+                (
+                    Address::try_from_val(env, &args.get(0).unwrap())
+                        .map_err(|_| Error::ContextNotAllowed)?,
+                    Address::try_from_val(env, &args.get(1).unwrap())
+                        .map_err(|_| Error::ContextNotAllowed)?,
+                )
+            } else {
+                return Err(Error::ContextNotAllowed);
+            };
+            Self::remove_signer(env.clone(), caller, signer)?;
+            Ok(().into_val(env))
+        } else if f_str == Symbol::new(env, "set_threshold") {
+            let (caller, threshold) = if args.len() == 1 {
+                (
+                    env.current_contract_address(),
+                    u32::try_from_val(env, &args.get(0).unwrap())
+                        .map_err(|_| Error::ContextNotAllowed)?,
+                )
+            } else if args.len() == 2 {
+                (
+                    Address::try_from_val(env, &args.get(0).unwrap())
+                        .map_err(|_| Error::ContextNotAllowed)?,
+                    u32::try_from_val(env, &args.get(1).unwrap())
+                        .map_err(|_| Error::ContextNotAllowed)?,
+                )
+            } else {
+                return Err(Error::ContextNotAllowed);
+            };
+            Self::set_threshold(env.clone(), caller, threshold)?;
+            Ok(().into_val(env))
+        } else if f_str == Symbol::new(env, "remove_signer_and_set_threshold") {
+            let (caller, signer, threshold) = if args.len() == 2 {
+                (
+                    env.current_contract_address(),
+                    Address::try_from_val(env, &args.get(0).unwrap())
+                        .map_err(|_| Error::ContextNotAllowed)?,
+                    u32::try_from_val(env, &args.get(1).unwrap())
+                        .map_err(|_| Error::ContextNotAllowed)?,
+                )
+            } else if args.len() == 3 {
+                (
+                    Address::try_from_val(env, &args.get(0).unwrap())
+                        .map_err(|_| Error::ContextNotAllowed)?,
+                    Address::try_from_val(env, &args.get(1).unwrap())
+                        .map_err(|_| Error::ContextNotAllowed)?,
+                    u32::try_from_val(env, &args.get(2).unwrap())
+                        .map_err(|_| Error::ContextNotAllowed)?,
+                )
+            } else {
+                return Err(Error::ContextNotAllowed);
+            };
+            Self::remove_signer_and_set_threshold(env.clone(), caller, signer, threshold)?;
+            Ok(().into_val(env))
+        } else {
+            Err(Error::ContextNotAllowed)
+        }
+    }
+
     fn signers(env: &Env) -> Result<Map<Address, u32>, Error> {
         Self::config(env, &DataKey::Signers)
     }

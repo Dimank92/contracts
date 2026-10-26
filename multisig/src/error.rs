@@ -104,6 +104,9 @@ pub enum Error {
     /// Not every signer has approved this wasm.
     /// Cause: `upgrade` when a signer hasn't approved the hash (or a signer was added since unanimity).
     UpgradeNotUnanimous = 33,
+    /// Signer-management entrypoint invoked outside execute.
+    /// Cause: calling `add_signer`, `remove_signer`, or `set_threshold` directly instead of via an approved multisig proposal.
+    DirectAdminCall = 34,
     // Schema migrations (zenith_common::migrations) — same codes in
     // every Zenith contract. See docs/migrations.md.
     /// `from` isn't the stored schema version.

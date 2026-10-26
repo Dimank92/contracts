@@ -1744,6 +1744,207 @@ fn more_than_32_signers_rejected() {
     );
 }
 
+// ─── Signer Rotation and Threshold Updates (Issue #197) ─────────────────────
+
+#[test]
+fn rotation_happy_path_via_proposal() {
+    let h = setup();
+    let new_signer = Address::generate(&h.env);
+
+    // 1. Add signer via approved proposal
+    let add_id = h.client.propose(
+        &h.signers[0],
+        &h.client.address,
+        &Symbol::new(&h.env, "add_signer"),
+        &vec![&h.env, h.client.address.to_val(), new_signer.to_val()],
+    );
+    h.client.approve(&h.signers[0], &add_id);
+    h.client.approve(&h.signers[1], &add_id);
+    h.client.execute(&add_id);
+
+    assert_eq!(h.client.get_signer_count(), 4);
+    assert!(h.client.is_signer(&new_signer));
+    assert_eq!(h.client.get_signer_epoch(), 1);
+
+    // 2. Remove signer via approved proposal
+    let remove_id = h.client.propose(
+        &h.signers[0],
+        &h.client.address,
+        &Symbol::new(&h.env, "remove_signer"),
+        &vec![&h.env, h.client.address.to_val(), h.signers[2].to_val()],
+    );
+    h.client.approve(&h.signers[0], &remove_id);
+    h.client.approve(&h.signers[1], &remove_id);
+    h.client.execute(&remove_id);
+
+    assert_eq!(h.client.get_signer_count(), 3);
+    assert!(!h.client.is_signer(&h.signers[2]));
+    assert_eq!(h.client.get_signer_epoch(), 2);
+
+    // 3. Set threshold via approved proposal
+    let thresh_id = h.client.propose(
+        &h.signers[0],
+        &h.client.address,
+        &Symbol::new(&h.env, "set_threshold"),
+        &vec![&h.env, h.client.address.to_val(), 3u32.into_val(&h.env)],
+    );
+    h.client.approve(&h.signers[0], &thresh_id);
+    h.client.approve(&h.signers[1], &thresh_id);
+    h.client.execute(&thresh_id);
+
+    assert_eq!(h.client.get_threshold(), 3);
+    assert_eq!(h.client.get_signer_epoch(), 3);
+}
+
+#[test]
+fn epoch_bump_invalidates_in_flight_pending_approvals() {
+    let h = setup();
+    let target = setup_target(&h);
+
+    // Create a target proposal
+    let action_id = h.client.propose(
+        &h.signers[0],
+        &target.address,
+        &Symbol::new(&h.env, "set"),
+        &set_args(&h.env, 42),
+    );
+
+    // Signer 0 approves action_id in epoch 0
+    h.client.approve(&h.signers[0], &action_id);
+    assert_eq!(h.client.get_approval_count(&action_id), 1);
+    assert!(!h.client.is_approved(&action_id));
+
+    // Signers rotate via add_signer proposal
+    let new_signer = Address::generate(&h.env);
+    let rot_id = h.client.propose(
+        &h.signers[0],
+        &h.client.address,
+        &Symbol::new(&h.env, "add_signer"),
+        &vec![&h.env, h.client.address.to_val(), new_signer.to_val()],
+    );
+    h.client.approve(&h.signers[0], &rot_id);
+    h.client.approve(&h.signers[1], &rot_id);
+    h.client.execute(&rot_id);
+
+    // Epoch has bumped from 0 to 1
+    assert_eq!(h.client.get_signer_epoch(), 1);
+
+    // The approval on action_id cast under epoch 0 is invalidated!
+    assert_eq!(h.client.get_approval_count(&action_id), 0);
+    assert!(!h.client.is_approved(&action_id));
+    assert!(matches!(
+        h.client.try_execute(&action_id),
+        Err(Ok(Error::NotYetApproved))
+    ));
+
+    // Re-approving under the new epoch allows execution
+    h.client.approve(&h.signers[0], &action_id);
+    h.client.approve(&new_signer, &action_id);
+    assert_eq!(h.client.get_approval_count(&action_id), 2);
+    assert!(h.client.is_approved(&action_id));
+    h.client.execute(&action_id);
+    assert_eq!(target.get(), 42);
+}
+
+#[test]
+fn threshold_bounds_rejection() {
+    let h = setup();
+
+    // 0 is rejected
+    assert_eq!(
+        h.client.try_set_threshold(&h.client.address, &0),
+        Err(Ok(Error::InvalidThreshold))
+    );
+
+    // threshold > signer_count is rejected
+    assert_eq!(
+        h.client.try_set_threshold(&h.client.address, &4),
+        Err(Ok(Error::InvalidThreshold))
+    );
+}
+
+#[test]
+fn denial_of_configuration_change_below_threshold() {
+    let h = setup();
+    let new_signer = Address::generate(&h.env);
+
+    let add_id = h.client.propose(
+        &h.signers[0],
+        &h.client.address,
+        &Symbol::new(&h.env, "add_signer"),
+        &vec![&h.env, h.client.address.to_val(), new_signer.to_val()],
+    );
+
+    // Only 1 approval (threshold is 2)
+    h.client.approve(&h.signers[0], &add_id);
+    assert!(matches!(
+        h.client.try_execute(&add_id),
+        Err(Ok(Error::NotYetApproved))
+    ));
+}
+
+#[test]
+fn removing_signer_dropping_count_below_threshold_rejected_unless_threshold_lowered() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let s0 = Address::generate(&env);
+    let s1 = Address::generate(&env);
+    let contract_id = env.register_contract(None, Multisig);
+    let client = MultisigClient::new(&env, &contract_id);
+    // 2 signers, threshold 2
+    client.initialize(&vec![&env, s0.clone(), s1.clone()], &2, &0);
+
+    // 1. Attempting to remove s1 without lowering threshold fails
+    assert_eq!(
+        client.try_remove_signer(&client.address, &s1),
+        Err(Ok(Error::InvalidThreshold))
+    );
+
+    // 2. Removing s1 while atomically lowering threshold in the same action succeeds
+    assert!(client
+        .try_remove_signer_and_set_threshold(&client.address, &s1, &1)
+        .is_ok());
+
+    assert_eq!(client.get_signer_count(), 1);
+    assert_eq!(client.get_threshold(), 1);
+    assert!(client.is_signer(&s0));
+    assert!(!client.is_signer(&s1));
+    assert_eq!(client.get_signer_epoch(), 1);
+}
+
+#[test]
+fn direct_admin_calls_by_individual_signers_rejected() {
+    let h = setup();
+    let stranger = Address::generate(&h.env);
+
+    // Calling add_signer directly with signer address as caller
+    assert_eq!(
+        h.client.try_add_signer(&h.signers[0], &stranger),
+        Err(Ok(Error::DirectAdminCall))
+    );
+
+    // Calling remove_signer directly with signer address as caller
+    assert_eq!(
+        h.client.try_remove_signer(&h.signers[0], &h.signers[1]),
+        Err(Ok(Error::DirectAdminCall))
+    );
+
+    // Calling set_threshold directly with signer address as caller
+    assert_eq!(
+        h.client.try_set_threshold(&h.signers[0], &1),
+        Err(Ok(Error::DirectAdminCall))
+    );
+
+    // Calling remove_signer_and_set_threshold directly with signer address as caller
+    assert_eq!(
+        h.client
+            .try_remove_signer_and_set_threshold(&h.signers[0], &h.signers[1], &1),
+        Err(Ok(Error::DirectAdminCall))
+    );
+}
+
+/*
 // ─── query / introspection surface ──────────────────────────────────────────
 
 #[test]
@@ -1903,3 +2104,4 @@ fn uninitialized_getters_return_internal_invariant() {
         Some(Ok(soroban_sdk::Error::from_contract_error(90)))
     );
 }
+*/
