@@ -57,7 +57,8 @@ enum Auth {
 }
 
 fn admin(env: &Env) -> Address {
-    zenith_common::get_admin(env, &DataKey::Admin)
+    zenith_common::get_admin(env, &DataKey::Admin, Error::Unauthorized)
+        .unwrap_or_else(|e| fail(env, e))
 }
 
 fn fail(env: &Env, err: Error) -> ! {
@@ -94,7 +95,8 @@ fn require_auth(env: &Env, auth: &Auth) {
 }
 
 fn require_not_paused(env: &Env) {
-    zenith_common::require_not_paused(env, &DataKey::Paused, Error::ContractPaused);
+    zenith_common::require_not_paused(env, &DataKey::Paused, Error::ContractPaused)
+        .unwrap_or_else(|e| fail(env, e));
 }
 
 fn max_staleness(env: &Env) -> u64 {
@@ -136,7 +138,8 @@ fn set_min_reports_inner(env: &Env, auth: Auth, count: u32) {
 fn transfer_admin_inner(env: &Env, auth: Auth, new_admin: Address) {
     migrations::require_current(env);
     require_auth(env, &auth);
-    let old = zenith_common::set_admin(env, &DataKey::Admin, &new_admin);
+    let old = zenith_common::set_admin(env, &DataKey::Admin, &new_admin, Error::Unauthorized)
+        .unwrap_or_else(|e| fail(env, e));
     events::admin_transferred(env, old, new_admin);
 }
 

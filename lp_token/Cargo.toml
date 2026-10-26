@@ -3,6 +3,8 @@ name = "zenith-lp-token"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+repository.workspace = true
+build = "../common/build_meta.rs"
 
 [lib]
 # rlib alongside cdylib so lp_pool can register a real share token in

@@ -11,7 +11,7 @@
 //! assert_eq!(token.balance(&env, &user), 100_000_000);
 //! ```
 
-use soroban_sdk::{token, Address, Env};
+use soroban_sdk::{testutils::Address as _, token, Address, Env};
 
 /// A deployed Stellar Asset Contract with a minting authority.
 pub struct TokenFixture {

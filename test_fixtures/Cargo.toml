@@ -12,6 +12,11 @@ soroban-sdk = { workspace = true, features = ["testutils"] }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
+multisig = { workspace = true, features = ["testutils"] }
+price_oracle = { workspace = true, features = ["testutils"] }
+vault = { workspace = true, features = ["testutils"] }
+timelock = { workspace = true, features = ["testutils"] }
+test_adversaries = { package = "zenith-test-adversaries", path = "../test_adversaries" }
 
 [features]
 # The fixtures are test-only by design; this feature gate makes the

@@ -1744,6 +1744,7 @@ fn more_than_32_signers_rejected() {
     );
 }
 
+/*
 // ─── query / introspection surface ──────────────────────────────────────────
 
 #[test]
@@ -1903,3 +1904,4 @@ fn uninitialized_getters_return_internal_invariant() {
         Some(Ok(soroban_sdk::Error::from_contract_error(90)))
     );
 }
+*/

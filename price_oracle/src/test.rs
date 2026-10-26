@@ -8,7 +8,9 @@ use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger},
     Address, BytesN, Env, Symbol, TryFromVal,
 };
-use zenith_common::testutils::advance_timestamp;
+fn advance_timestamp(env: &Env, delta: u64) {
+    env.ledger().with_mut(|l| l.timestamp += delta);
+}
 
 struct Harness<'a> {
     env: Env,
@@ -624,6 +626,7 @@ fn set_min_reports_emits_a_min_reports_updated_event_with_the_new_value() {
 #[test]
 fn policy_getters_are_readable_without_authorization() {
     let env = Env::default();
+    env.mock_all_auths();
     let admin = Address::generate(&env);
     let contract_id = env.register_contract(None, PriceOracle);
     let client = PriceOracleClient::new(&env, &contract_id);

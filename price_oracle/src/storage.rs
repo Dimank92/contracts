@@ -76,11 +76,11 @@ pub fn fresh_report_count(env: &Env, symbol: &soroban_sdk::Symbol) -> u32 {
     let mut count: u32 = 0;
 
     for feeder in feeder_list(env).iter() {
-        if let Some(report) = crate::storage::get_report(env, symbol, &feeder) {
-            let fresh = if report.timestamp > now {
+        if let Some((_price, timestamp)) = crate::oracle_adapter::latest_report(env, symbol, &feeder) {
+            let fresh = if timestamp > now {
                 true
             } else {
-                now.saturating_sub(report.timestamp) <= max_staleness
+                now.saturating_sub(timestamp) <= max_staleness
             };
             if fresh {
                 count += 1;
