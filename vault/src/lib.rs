@@ -26,13 +26,13 @@ use soroban_sdk::{
 #[cfg(test)]
 mod test;
 
-mod error;
+pub mod error;
 mod events;
 mod migrations;
 mod ttl;
-mod types;
+pub mod types;
 
-use error::Error;
+pub use error::Error;
 pub use types::Tag;
 use types::{DataKey, LegacyKey};
 

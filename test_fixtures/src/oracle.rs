@@ -18,7 +18,7 @@
 //! assert!(oracle.get_price(&env, "XLM").is_none());
 //! ```
 
-use soroban_sdk::{contracttype, Address, Env, Symbol, Vec};
+use soroban_sdk::{contracttype, testutils::Address as _, Address, Env, Symbol, Vec};
 
 /// One feeder's price observation, stored in a Soroban-compatible struct.
 #[contracttype(export = false)]

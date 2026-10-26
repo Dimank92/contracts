@@ -19,6 +19,7 @@ members = [
     "streams",
     "timelock",
     "vault",
+    "test_fixtures",
     "tools/event-spec",
     "tools/spec-diff",
     "xtask",

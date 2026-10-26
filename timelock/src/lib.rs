@@ -66,14 +66,14 @@ use soroban_sdk::{
 #[cfg(test)]
 mod test;
 
-mod error;
+pub mod error;
 mod events;
 mod migrations;
-mod types;
+pub mod types;
 
-use error::Error;
-use types::{is_no_predecessor, Call, DataKey, Operation, Role};
-pub use types::{Call as TimelockCall, Role as TimelockRole};
+pub use error::Error;
+use types::{is_no_predecessor, DataKey, Operation};
+pub use types::{Call, Call as TimelockCall, Role, Role as TimelockRole};
 
 #[contract]
 pub struct Timelock;
@@ -176,7 +176,9 @@ fn self_call(env: &Env, func: &Symbol, args: &Vec<Val>) {
         env.storage().instance().set(&DataKey::OpenExecutor, &open);
         events::open_executor_changed(env, open);
     } else if *func == Symbol::new(env, "migrate") {
-        migrations::self_migrate(env, arg(env, args, 0), arg(env, args, 1));
+        if let Err(e) = migrations::self_migrate(env, arg(env, args, 0), arg(env, args, 1)) {
+            panic_with_error!(env, e);
+        }
     } else {
         panic_with_error!(env, Error::UnknownSelfCall);
     }

@@ -17,7 +17,7 @@
 //! assert!(ms.is_approved(action_id));
 //! ```
 
-use soroban_sdk::{Address, Env, Map, Vec};
+use soroban_sdk::{testutils::Address as _, Address, Env, Map, Vec};
 
 /// In-process multisig harness: tracks per-action approval counts.
 ///

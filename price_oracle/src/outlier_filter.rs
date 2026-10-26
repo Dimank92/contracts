@@ -90,6 +90,7 @@ mod proptests {
     use super::*;
     use proptest::collection::vec;
     use proptest::prelude::*;
+    use std::format;
     use std::panic::{catch_unwind, AssertUnwindSafe};
 
     // Each case builds a fresh soroban Env, so this is the slowest suite;
