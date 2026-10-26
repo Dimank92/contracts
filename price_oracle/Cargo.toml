@@ -3,6 +3,8 @@ name = "zenith-price-oracle"
 version = "0.1.0"
 edition = "2021"
 publish = false
+repository.workspace = true
+build = "../common/build_meta.rs"
 
 [lib]
 # rlib alongside cdylib so other contracts (options_market) can depend on

@@ -5,7 +5,7 @@
 
 use soroban_sdk::{contractimpl, panic_with_error, Address, BytesN, Env};
 use zenith_common::migrations::{self, MigrationErrors, Step};
-use zenith_common::upgrade::{self, UpgradeAuth};
+use zenith_common::upgrade;
 use zenith_common::{require_admin_or_multisig, ActionClass, Auth};
 
 use crate::error::Error;
@@ -33,21 +33,24 @@ pub const ERRORS: MigrationErrors<Error> = MigrationErrors {
 ///
 /// A step over unbounded data processes items `[cursor, cursor + limit)`
 /// and returns `Step::More(cursor + processed)` until it's done.
-pub fn step(env: &Env, to: u32, cursor: u32, limit: u32) -> Step {
-    let _ = (cursor, limit);
+pub fn step(env: &Env, to: u32, cursor: u32, limit: u32) -> Result<Step, Error> {
+    let _ = (env, cursor, limit);
     #[allow(clippy::match_single_binding)]
     match to {
-        _ => panic_with_error!(env, Error::InvalidMigrationTarget),
+        _ => Err(Error::InvalidMigrationTarget),
     }
 }
 
 /// The `MigrationInProgress` guard for state-changing entrypoints.
 pub fn require_current(env: &Env) {
-    migrations::require_schema_current(env, CURRENT_SCHEMA_VERSION, Error::MigrationInProgress);
+    let _ = migrations::require_schema_current(env, CURRENT_SCHEMA_VERSION, Error::MigrationInProgress)
+        .map_err(|e| panic_with_error!(env, e));
 }
 
 fn require_admin(env: &Env) {
-    zenith_common::get_admin(env, &DataKey::Admin).require_auth();
+    zenith_common::get_admin(env, &DataKey::Admin, Error::Unauthorized)
+        .unwrap_or_else(|e| panic_with_error!(env, e))
+        .require_auth();
 }
 
 /// Upgrade and migration entrypoints. A separate `#[contractimpl]` block
@@ -60,13 +63,8 @@ impl PriceOracle {
     /// fail with `MigrationInProgress`.
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) {
         ttl::extend_instance(&env);
-        upgrade::upgrade(
-            &env,
-            &DataKey::Admin,
-            UpgradeAuth::Admin,
-            new_wasm_hash,
-            Error::Unauthorized,
-        );
+        require_admin(&env);
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
 
     /// Permissionless alternative to `upgrade`, authorized by the
@@ -74,15 +72,16 @@ impl PriceOracle {
     /// executable as `Critical`. `action_id` must equal
     /// `upgrade_action_id(new_wasm_hash)`, so the approval covers exactly
     /// this wasm on exactly this contract.
-    pub fn upgrade_via_multisig(env: Env, action_id: BytesN<32>, new_wasm_hash: BytesN<32>) {
+    pub fn upgrade_via_multisig(env: Env, action_id: u64, new_wasm_hash: BytesN<32>) {
         ttl::extend_instance(&env);
-        upgrade::upgrade(
-            &env,
-            &DataKey::Admin,
-            UpgradeAuth::PinnedMultisig(action_id),
-            new_wasm_hash,
-            Error::Unauthorized,
-        );
+        let multisig = upgrade::pinned_multisig(&env)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::Unauthorized));
+        if action_id != upgrade::upgrade_action_id(&env, &new_wasm_hash)
+            || !zenith_common::is_executable(&env, &multisig, action_id, ActionClass::Critical)
+        {
+            panic_with_error!(&env, Error::Unauthorized);
+        }
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
 
     /// Pins the multisig `upgrade_via_multisig` and `migrate_via_multisig`
@@ -100,7 +99,7 @@ impl PriceOracle {
 
     /// The multisig action id that authorizes upgrading this contract to
     /// `new_wasm_hash` — what signers approve.
-    pub fn upgrade_action_id(env: Env, new_wasm_hash: BytesN<32>) -> BytesN<32> {
+    pub fn upgrade_action_id(env: Env, new_wasm_hash: BytesN<32>) -> u64 {
         upgrade::upgrade_action_id(&env, &new_wasm_hash)
     }
 
@@ -110,24 +109,27 @@ impl PriceOracle {
         ttl::extend_instance(&env);
         require_admin(&env);
         migrations::migrate(&env, from, to, CURRENT_SCHEMA_VERSION, step, &ERRORS)
+            .unwrap_or_else(|e| panic_with_error!(&env, e))
     }
 
     /// Permissionless alternative to `migrate`, authorized by the pinned
     /// multisig. `Emergency` class (no extra delay): the steps it runs
     /// were already timelocked as `Critical` with the upgrade that
     /// installed them, and the contract is blocked until they run.
-    pub fn migrate_via_multisig(env: Env, action_id: BytesN<32>, from: u32, to: u32) -> u32 {
+    pub fn migrate_via_multisig(env: Env, action_id: u64, from: u32, to: u32) -> u32 {
         ttl::extend_instance(&env);
         let multisig = upgrade::pinned_multisig(&env)
             .unwrap_or_else(|| panic_with_error!(&env, Error::Unauthorized));
-        require_admin_or_multisig(
+        let _ = require_admin_or_multisig(
             &env,
             &DataKey::Admin,
             &Auth::Multisig(multisig, action_id),
             ActionClass::Emergency,
             Error::Unauthorized,
+            Error::Unauthorized,
         );
         migrations::migrate(&env, from, to, CURRENT_SCHEMA_VERSION, step, &ERRORS)
+            .unwrap_or_else(|e| panic_with_error!(&env, e))
     }
 
     /// Continues a paginated migration from `cursor`. Permissionless, like
@@ -136,6 +138,7 @@ impl PriceOracle {
     pub fn migrate_batch(env: Env, cursor: u32, limit: u32) -> u32 {
         ttl::extend_instance(&env);
         migrations::migrate_batch(&env, cursor, limit, step, &ERRORS)
+            .unwrap_or_else(|e| panic_with_error!(&env, e))
     }
 
     pub fn schema_version(env: Env) -> u32 {

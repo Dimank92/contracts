@@ -19,15 +19,15 @@ publish.workspace = true
 # Re-enable each test as its reconstruction issue lands.
 
 [dependencies]
+soroban-sdk = { workspace = true }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
 multisig = { workspace = true, features = ["testutils"] }
 price_oracle = { workspace = true, features = ["testutils"] }
-# Quarantined pending reconstruction (issue #222): these crates do not compile
-# yet, so their dev-dependencies are commented out to keep `cargo test
-# --workspace --no-run` green. Restore each line as its crate is rebuilt.
-# vault = { workspace = true, features = ["testutils"] }        # issue #NNN (vault reconstruction)
-# options_market = { workspace = true, features = ["testutils"] } # issue #NNN (options_market reconstruction)
-# timelock = { workspace = true, features = ["testutils"] }     # issue #NNN (timelock reconstruction)
+vault = { workspace = true, features = ["testutils"] }
+timelock = { workspace = true, features = ["testutils"] }
 governor = { workspace = true, features = ["testutils"] }
+zenith-test-fixtures = { path = "../test_fixtures", features = ["testutils"] }
+# Quarantined pending reconstruction (issue #222):
+# options_market = { workspace = true, features = ["testutils"] } # issue #NNN (options_market reconstruction)

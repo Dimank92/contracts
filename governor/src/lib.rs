@@ -297,6 +297,9 @@ impl Governor {
                 abstain_votes: 0,
                 canceled: false,
                 eta: 0,
+                description_hash: description_hash.clone(),
+                expires_at: 0,
+                executed: false,
             },
         );
         events::proposal_created(

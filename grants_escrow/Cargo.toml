@@ -3,6 +3,8 @@ name = "zenith-grants-escrow"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+repository.workspace = true
+build = "../common/build_meta.rs"
 
 [lib]
 crate-type = ["cdylib"]

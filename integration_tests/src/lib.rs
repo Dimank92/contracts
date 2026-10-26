@@ -13,7 +13,9 @@
 //! pure ledger bookkeeping (no contract calls) so it compiles independently of
 //! the quarantined crates and can be reused once they are reconstructed.
 
-use soroban_sdk::{Address, Env, Vec};
+extern crate std;
+use std::vec::Vec;
+use soroban_sdk::{testutils::Ledger, Address, Env};
 
 /// A single approval record as tracked by the `multisig` crate.
 #[derive(Clone, Debug, PartialEq, Eq)]

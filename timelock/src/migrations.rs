@@ -53,22 +53,22 @@ pub const ERRORS: MigrationErrors<Error> = MigrationErrors {
 ///
 /// A step over unbounded data processes items `[cursor, cursor + limit)`
 /// and returns `Step::More(cursor + processed)` until it's done.
-pub fn step(env: &Env, to: u32, cursor: u32, limit: u32) -> Step {
-    let _ = (cursor, limit);
+pub fn step(env: &Env, to: u32, cursor: u32, limit: u32) -> Result<Step, Error> {
+    let _ = (env, cursor, limit);
     #[allow(clippy::match_single_binding)]
     match to {
-        _ => panic_with_error!(env, Error::InvalidMigrationTarget),
+        _ => Err(Error::InvalidMigrationTarget),
     }
 }
 
 /// The `MigrationInProgress` guard for state-changing entrypoints.
 pub fn require_current(env: &Env) {
-    migrations::require_schema_current(env, CURRENT_SCHEMA_VERSION, Error::MigrationInProgress);
+    let _ = migrations::require_schema_current(env, CURRENT_SCHEMA_VERSION, Error::MigrationInProgress);
 }
 
 /// Target of a timelock self-call `migrate(from, to)`; only reachable
 /// through a ready operation in `execute`.
-pub fn self_migrate(env: &Env, from: u32, to: u32) -> u32 {
+pub fn self_migrate(env: &Env, from: u32, to: u32) -> Result<u32, Error> {
     migrations::migrate(env, from, to, CURRENT_SCHEMA_VERSION, step, &ERRORS)
 }
 
@@ -77,7 +77,7 @@ impl Timelock {
     /// Continues a paginated migration from `cursor`. Permissionless, like
     /// `bump`: the target was fixed by the delayed `migrate` self-call and
     /// the steps are code in this wasm, so a keeper can only advance it.
-    pub fn migrate_batch(env: Env, cursor: u32, limit: u32) -> u32 {
+    pub fn migrate_batch(env: Env, cursor: u32, limit: u32) -> Result<u32, Error> {
         migrations::migrate_batch(&env, cursor, limit, step, &ERRORS)
     }
 
