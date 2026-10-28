@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use soroban_sdk::{token, Address, Env};
 
 #[derive(Clone, Debug, PartialEq)]

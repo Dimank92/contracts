@@ -16,7 +16,6 @@
 //!    `pause_via_multisig`, `unpause_via_multisig`.
 //!    Adversaries: `NeverApproveMultisig`, `AlwaysApproveMultisig`.
 
-#![cfg(test)]
 
 extern crate std;
 
