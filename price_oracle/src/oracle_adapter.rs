@@ -187,7 +187,7 @@ pub fn current_price(
     let mut fresh = 0usize;
     let mut seen = false;
     let mut oldest = u64::MAX;
-    for feeder in storage::feeder_list(env).iter() {
+    for feeder in storage::effective_feeder_list(env, symbol).iter() {
         let Some((price, reported_at)) = latest_report(env, symbol, &feeder) else {
             continue;
         };

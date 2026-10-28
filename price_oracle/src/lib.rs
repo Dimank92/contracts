@@ -57,7 +57,7 @@ enum Auth {
 }
 
 fn admin(env: &Env) -> Address {
-    zenith_common::get_admin(env, &DataKey::Admin)
+    zenith_common::get_admin(env, &DataKey::Admin, Error::InternalInvariant).unwrap_or_else(|e| fail(env, e))
 }
 
 fn fail(env: &Env, err: Error) -> ! {
@@ -94,7 +94,9 @@ fn require_auth(env: &Env, auth: &Auth) {
 }
 
 fn require_not_paused(env: &Env) {
-    zenith_common::require_not_paused(env, &DataKey::Paused, Error::ContractPaused);
+    if let Err(e) = zenith_common::require_not_paused(env, &DataKey::Paused, Error::ContractPaused) {
+        fail(env, e);
+    }
 }
 
 fn max_staleness(env: &Env) -> u64 {
@@ -136,7 +138,7 @@ fn set_min_reports_inner(env: &Env, auth: Auth, count: u32) {
 fn transfer_admin_inner(env: &Env, auth: Auth, new_admin: Address) {
     migrations::require_current(env);
     require_auth(env, &auth);
-    let old = zenith_common::set_admin(env, &DataKey::Admin, &new_admin);
+    let old = zenith_common::set_admin(env, &DataKey::Admin, &new_admin, Error::InternalInvariant).unwrap_or_else(|e| fail(env, e));
     events::admin_transferred(env, old, new_admin);
 }
 
@@ -175,11 +177,88 @@ fn remove_feeder_inner(env: &Env, auth: Auth, feeder: Address) {
     events::feeder_removed(env, feeder);
 }
 
+fn rotate_feeder_inner(env: &Env, auth: Auth, old_feeder: Address, new_feeder: Address) {
+    migrations::require_current(env);
+    require_not_paused(env);
+    require_auth(env, &auth);
+    if old_feeder == new_feeder {
+        fail(env, Error::FeederAlreadyAdded);
+    }
+    if !storage::is_feeder(env, &old_feeder) {
+        fail(env, Error::FeederNotFound);
+    }
+    if storage::is_feeder(env, &new_feeder) {
+        fail(env, Error::FeederAlreadyAdded);
+    }
+    storage::replace_feeder(env, &old_feeder, &new_feeder);
+    events::feeder_rotated(env, old_feeder, new_feeder);
+}
+
+fn add_feeder_for_symbol_inner(env: &Env, auth: Auth, symbol: Symbol, feeder: Address) {
+    migrations::require_current(env);
+    require_not_paused(env);
+    require_auth(env, &auth);
+    if oracle_adapter::symbol_precision(env, &symbol).is_none() {
+        fail(env, Error::UnknownSymbol);
+    }
+    if storage::is_feeder_for_symbol(env, &symbol, &feeder) {
+        fail(env, Error::FeederAlreadyAdded);
+    }
+    if storage::symbol_feeder_list(env, &symbol).len() >= MAX_FEEDERS {
+        fail(env, Error::TooManyFeeders);
+    }
+    storage::add_symbol_feeder(env, &symbol, &feeder);
+    events::symbol_feeder_added(env, symbol, feeder);
+}
+
+fn remove_feeder_for_symbol_inner(env: &Env, auth: Auth, symbol: Symbol, feeder: Address) {
+    migrations::require_current(env);
+    require_not_paused(env);
+    require_auth(env, &auth);
+    if oracle_adapter::symbol_precision(env, &symbol).is_none() {
+        fail(env, Error::UnknownSymbol);
+    }
+    if !storage::is_feeder_for_symbol(env, &symbol, &feeder) {
+        fail(env, Error::FeederNotFound);
+    }
+    if storage::symbol_feeder_list(env, &symbol).len() <= min_reports(env) {
+        fail(env, Error::BelowQuorum);
+    }
+    storage::remove_symbol_feeder(env, &symbol, &feeder);
+    events::symbol_feeder_removed(env, symbol, feeder);
+}
+
+fn rotate_feeder_for_symbol_inner(
+    env: &Env,
+    auth: Auth,
+    symbol: Symbol,
+    old_feeder: Address,
+    new_feeder: Address,
+) {
+    migrations::require_current(env);
+    require_not_paused(env);
+    require_auth(env, &auth);
+    if oracle_adapter::symbol_precision(env, &symbol).is_none() {
+        fail(env, Error::UnknownSymbol);
+    }
+    if old_feeder == new_feeder {
+        fail(env, Error::FeederAlreadyAdded);
+    }
+    if !storage::is_feeder_for_symbol(env, &symbol, &old_feeder) {
+        fail(env, Error::FeederNotFound);
+    }
+    if storage::is_feeder_for_symbol(env, &symbol, &new_feeder) {
+        fail(env, Error::FeederAlreadyAdded);
+    }
+    storage::replace_symbol_feeder(env, &symbol, &old_feeder, &new_feeder);
+    events::symbol_feeder_rotated(env, symbol, old_feeder, new_feeder);
+}
+
 fn report_inner(env: &Env, report: FeederReport) {
     migrations::require_current(env);
     require_not_paused(env);
     report.feeder.require_auth();
-    if !storage::is_feeder(env, &report.feeder) {
+    if !storage::is_effective_feeder(env, &report.symbol, &report.feeder) {
         fail(env, Error::NotAFeeder);
     }
     if let Err(e) = oracle_adapter::ingest(env, report, max_staleness(env)) {
@@ -427,6 +506,70 @@ impl PriceOracle {
         storage::feeder_list(&env)
     }
 
+    /// Admin rotates/replaces an existing feeder with a new address.
+    pub fn rotate_feeder(env: Env, old_feeder: Address, new_feeder: Address) {
+        ttl::extend_instance(&env);
+        rotate_feeder_inner(&env, Auth::Admin, old_feeder, new_feeder);
+    }
+
+    /// Multisig twin of `rotate_feeder`.
+    pub fn rotate_feeder_via_multisig(
+        env: Env,
+        multisig_contract: Address,
+        action_id: BytesN<32>,
+        old_feeder: Address,
+        new_feeder: Address,
+    ) {
+        ttl::extend_instance(&env);
+        rotate_feeder_inner(
+            &env,
+            Auth::Multisig(multisig_contract, action_id),
+            old_feeder,
+            new_feeder,
+        );
+    }
+
+    /// Admin registers a feeder authorized specifically for `symbol`.
+    pub fn add_feeder_for_symbol(env: Env, symbol: Symbol, feeder: Address) {
+        ttl::extend_instance(&env);
+        add_feeder_for_symbol_inner(&env, Auth::Admin, symbol, feeder);
+    }
+
+
+    /// Admin revokes a feeder authorized for `symbol`.
+    pub fn remove_feeder_for_symbol(env: Env, symbol: Symbol, feeder: Address) {
+        ttl::extend_instance(&env);
+        remove_feeder_for_symbol_inner(&env, Auth::Admin, symbol, feeder);
+    }
+
+
+    /// Admin rotates/replaces a feeder authorized specifically for `symbol`.
+    pub fn rotate_feeder_for_symbol(
+        env: Env,
+        symbol: Symbol,
+        old_feeder: Address,
+        new_feeder: Address,
+    ) {
+        ttl::extend_instance(&env);
+        rotate_feeder_for_symbol_inner(&env, Auth::Admin, symbol, old_feeder, new_feeder);
+    }
+
+
+    pub fn is_feeder_for_symbol(env: Env, symbol: Symbol, address: Address) -> bool {
+        ttl::extend_instance(&env);
+        storage::is_feeder_for_symbol(&env, &symbol, &address)
+    }
+
+    pub fn get_feeder_count_for_symbol(env: Env, symbol: Symbol) -> u32 {
+        ttl::extend_instance(&env);
+        storage::symbol_feeder_list(&env, &symbol).len()
+    }
+
+    pub fn get_feeders_for_symbol(env: Env, symbol: Symbol) -> Vec<Address> {
+        ttl::extend_instance(&env);
+        storage::symbol_feeder_list(&env, &symbol)
+    }
+
     // ── reports ─────────────────────────────────────────────────────────────
 
     /// A feeder reports `symbol`'s current price at the oracle's 7-decimal
@@ -492,5 +635,10 @@ impl PriceOracle {
     /// Implied decimals of every price this contract returns.
     pub fn decimals(_env: Env) -> u32 {
         PRICE_DECIMALS
+    }
+
+    pub fn schema_version(env: Env) -> u32 {
+        ttl::extend_instance(&env);
+        zenith_common::migrations::schema_version(&env)
     }
 }

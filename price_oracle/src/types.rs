@@ -26,4 +26,8 @@ pub enum DataKey {
     /// Meaningful decimals (0..=PRICE_DECIMALS) a symbol is quoted with.
     /// A symbol with no entry is unknown and can't be reported.
     SymbolPrecision(Symbol),
+    /// O(1) membership check for symbol-specific feeder.
+    IsSymbolFeeder(Symbol, Address),
+    /// List of feeders registered specifically for `Symbol`.
+    SymbolFeeders(Symbol),
 }

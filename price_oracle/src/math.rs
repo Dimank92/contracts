@@ -512,8 +512,8 @@ mod proptests {
             let hi = rescale(v, down, 0, Rounding::Ceil).unwrap();
             let f = pow10(down).unwrap();
             prop_assert!(hi - lo <= 1);
-            prop_assert!(lo.checked_mul(f).map_or(true, |x| x <= v));
-            prop_assert!(hi.checked_mul(f).map_or(true, |x| x >= v));
+            prop_assert!(lo.checked_mul(f).is_none_or(|x| x <= v));
+            prop_assert!(hi.checked_mul(f).is_none_or(|x| x >= v));
         }
 
         #[test]

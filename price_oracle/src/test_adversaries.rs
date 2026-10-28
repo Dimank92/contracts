@@ -15,7 +15,6 @@
 //! `set_multisig`, so an adversary at any other address is rejected
 //! before it is ever called.
 
-#![cfg(test)]
 
 extern crate std;
 

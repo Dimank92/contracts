@@ -160,7 +160,7 @@ mod proptests {
         #[test]
         fn keeps_a_majority_of_reports(values in reports(), k in k()) {
             let (_, _, _, count) = robust(&values, k).unwrap();
-            prop_assert!(count as usize >= values.len() / 2 + 1);
+            prop_assert!(count as usize > values.len() / 2);
         }
 
         /// A looser threshold never drops more reports.

@@ -1,4 +1,3 @@
-#![cfg(test)]
 
 extern crate std;
 
@@ -8,7 +7,9 @@ use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger},
     Address, BytesN, Env, Symbol, TryFromVal,
 };
-use zenith_common::testutils::advance_timestamp;
+fn advance_timestamp(env: &soroban_sdk::Env, delta: u64) {
+    env.ledger().set_timestamp(env.ledger().timestamp() + delta);
+}
 
 struct Harness<'a> {
     env: Env,
@@ -627,6 +628,7 @@ fn policy_getters_are_readable_without_authorization() {
     let admin = Address::generate(&env);
     let contract_id = env.register_contract(None, PriceOracle);
     let client = PriceOracleClient::new(&env, &contract_id);
+    env.mock_all_auths();
     client.initialize(&admin);
 
     // No mock_all_auths() armed: reads must not require auth.
@@ -1423,4 +1425,184 @@ fn initialize_records_the_current_schema_version() {
         h.client.schema_version(),
         crate::migrations::CURRENT_SCHEMA_VERSION
     );
+}
+
+// ─── Issue #200: Feeder Registration, Removal, and Rotation Admin Surface ────
+
+#[test]
+fn rotate_feeder_replaces_address_and_emits_event() {
+    let h = setup();
+    let old_feeder = Address::generate(&h.env);
+    let new_feeder = Address::generate(&h.env);
+    h.client.add_feeder(&old_feeder);
+    assert_eq!(h.client.get_feeder_count(), 1);
+
+    h.client.rotate_feeder(&old_feeder, &new_feeder);
+
+    assert!(!h.client.is_feeder(&old_feeder));
+    assert!(h.client.is_feeder(&new_feeder));
+    assert_eq!(h.client.get_feeder_count(), 1);
+
+    let events = h.env.events().all();
+    let (_, _topics, data) = events.last().unwrap();
+    let (emitted_old, emitted_new) = <(Address, Address)>::try_from_val(&h.env, &data).unwrap();
+    assert_eq!(emitted_old, old_feeder);
+    assert_eq!(emitted_new, new_feeder);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")] // FeederAlreadyAdded
+fn rotate_feeder_rejects_self_rotation() {
+    let h = setup();
+    let feeder = Address::generate(&h.env);
+    h.client.add_feeder(&feeder);
+    h.client.rotate_feeder(&feeder, &feeder);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")] // FeederNotFound
+fn rotate_feeder_rejects_unknown_old_feeder() {
+    let h = setup();
+    let stranger = Address::generate(&h.env);
+    let new_feeder = Address::generate(&h.env);
+    h.client.rotate_feeder(&stranger, &new_feeder);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")] // FeederAlreadyAdded
+fn rotate_feeder_rejects_duplicate_new_feeder() {
+    let h = setup();
+    let feeder_a = Address::generate(&h.env);
+    let feeder_b = Address::generate(&h.env);
+    h.client.add_feeder(&feeder_a);
+    h.client.add_feeder(&feeder_b);
+    h.client.rotate_feeder(&feeder_a, &feeder_b);
+}
+
+#[test]
+fn rotate_feeder_excludes_old_feeders_report_from_aggregate() {
+    let h = setup();
+    let xlm = Symbol::new(&h.env, "XLM");
+    let old_feeder = Address::generate(&h.env);
+    let other_feeder = Address::generate(&h.env);
+    let new_feeder = Address::generate(&h.env);
+
+    h.client.add_feeder(&old_feeder);
+    h.client.add_feeder(&other_feeder);
+    h.client.set_min_reports(&2);
+
+    h.client.report_price(&old_feeder, &xlm, &1_000_000);
+    h.client.report_price(&other_feeder, &xlm, &1_200_000);
+    assert_eq!(h.client.get_price(&xlm), Some(1_100_000));
+
+    h.client.rotate_feeder(&old_feeder, &new_feeder);
+
+    assert!(h.client.get_price(&xlm).is_none());
+
+    h.client.report_price(&new_feeder, &xlm, &1_400_000);
+    assert_eq!(h.client.get_price(&xlm), Some(1_300_000));
+}
+
+#[test]
+fn rotate_feeder_via_multisig_replaces_once_approved() {
+    let h = setup();
+    let (multisig_id, signers) = setup_multisig(&h);
+    let multisig_client = MultisigClient::new(&h.env, &multisig_id);
+
+    let old_feeder = Address::generate(&h.env);
+    let new_feeder = Address::generate(&h.env);
+    h.client.add_feeder(&old_feeder);
+
+    let action_id = aid(&h.env, 77);
+    multisig_client.approve(&signers[0], &action_id);
+    multisig_client.approve(&signers[1], &action_id);
+
+    h.client.rotate_feeder_via_multisig(&multisig_id, &action_id, &old_feeder, &new_feeder);
+
+    assert!(!h.client.is_feeder(&old_feeder));
+    assert!(h.client.is_feeder(&new_feeder));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #9)")] // Unauthorized
+fn rotate_feeder_via_multisig_rejects_when_not_yet_approved() {
+    let h = setup();
+    let (multisig_id, _) = setup_multisig(&h);
+
+    let old_feeder = Address::generate(&h.env);
+    let new_feeder = Address::generate(&h.env);
+    h.client.add_feeder(&old_feeder);
+
+    h.client.rotate_feeder_via_multisig(&multisig_id, &aid(&h.env, 88), &old_feeder, &new_feeder);
+}
+
+#[test]
+fn add_feeder_for_symbol_succeeds_and_rejects_duplicates() {
+    let h = setup();
+    let xlm = Symbol::new(&h.env, "XLM");
+    let feeder = Address::generate(&h.env);
+
+    h.client.add_feeder_for_symbol(&xlm, &feeder);
+    assert!(h.client.is_feeder_for_symbol(&xlm, &feeder));
+    assert_eq!(h.client.get_feeder_count_for_symbol(&xlm), 1);
+
+    assert_eq!(
+        h.client.try_add_feeder_for_symbol(&xlm, &feeder),
+        Err(Ok(err(crate::Error::FeederAlreadyAdded)))
+    );
+}
+
+#[test]
+fn add_feeder_for_symbol_rejects_unknown_symbol() {
+    let h = setup();
+    let unknown = Symbol::new(&h.env, "UNKNOWN");
+    let feeder = Address::generate(&h.env);
+
+    assert_eq!(
+        h.client.try_add_feeder_for_symbol(&unknown, &feeder),
+        Err(Ok(err(crate::Error::UnknownSymbol)))
+    );
+}
+
+#[test]
+fn remove_feeder_for_symbol_enforces_quorum_underrun_guard() {
+    let h = setup();
+    let xlm = Symbol::new(&h.env, "XLM");
+    let feeder_a = Address::generate(&h.env);
+    let feeder_b = Address::generate(&h.env);
+
+    h.client.set_min_reports(&2);
+    h.client.add_feeder_for_symbol(&xlm, &feeder_a);
+    h.client.add_feeder_for_symbol(&xlm, &feeder_b);
+    assert_eq!(h.client.get_feeder_count_for_symbol(&xlm), 2);
+
+    assert_eq!(
+        h.client.try_remove_feeder_for_symbol(&xlm, &feeder_a),
+        Err(Ok(err(crate::Error::BelowQuorum)))
+    );
+
+    let feeder_c = Address::generate(&h.env);
+    h.client.add_feeder_for_symbol(&xlm, &feeder_c);
+    assert_eq!(h.client.get_feeder_count_for_symbol(&xlm), 3);
+
+    h.client.remove_feeder_for_symbol(&xlm, &feeder_a);
+    assert_eq!(h.client.get_feeder_count_for_symbol(&xlm), 2);
+    assert!(!h.client.is_feeder_for_symbol(&xlm, &feeder_a));
+}
+
+#[test]
+fn rotate_feeder_for_symbol_replaces_address_and_preserves_quorum() {
+    let h = setup();
+    let xlm = Symbol::new(&h.env, "XLM");
+    let old_feeder = Address::generate(&h.env);
+    let new_feeder = Address::generate(&h.env);
+
+    h.client.add_feeder_for_symbol(&xlm, &old_feeder);
+    assert!(h.client.is_feeder_for_symbol(&xlm, &old_feeder));
+
+    h.client.rotate_feeder_for_symbol(&xlm, &old_feeder, &new_feeder);
+
+    assert!(!h.client.is_feeder_for_symbol(&xlm, &old_feeder));
+    assert!(h.client.is_feeder_for_symbol(&xlm, &new_feeder));
+    assert_eq!(h.client.get_feeder_count_for_symbol(&xlm), 1);
 }

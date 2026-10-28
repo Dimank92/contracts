@@ -67,8 +67,9 @@ pub enum DataKey {
 pub fn approval_key(env: &Env, class: &Symbol, action_id: &BytesN<32>) -> BytesN<32> {
     let mut buf = Bytes::new(env);
     buf.extend_from_slice(APPROVAL_DOMAIN);
-    buf.append(&Bytes::from_array(env, &env.current_contract_address().to_string().into_bytes()));
-    buf.append(&Bytes::from_array(env, &class.to_string().into_bytes()));
+    use soroban_sdk::xdr::ToXdr;
+    buf.append(&env.current_contract_address().to_xdr(env));
+    buf.append(&class.to_xdr(env));
     buf.append(&Bytes::from_array(env, &env.ledger().network_id().to_array()));
     buf.append(&Bytes::from_array(env, &action_id.to_array()));
     env.crypto().sha256(&buf).into()
