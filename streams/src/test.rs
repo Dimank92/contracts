@@ -1,6 +1,5 @@
-#![cfg(test)]
 
-use crate::{Schedule, Streams, StreamsClient};
+use crate::{Streams, StreamsClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger as _},
     token, Address, Env, Vec,
@@ -60,6 +59,7 @@ impl Harness<'_> {
         self.env.ledger().set_timestamp(t);
     }
 
+    #[allow(dead_code)]
     fn advance(&self, delta: u64) {
         let now = self.env.ledger().timestamp();
         self.env.ledger().set_timestamp(now + delta);
@@ -437,7 +437,7 @@ fn prop_withdrawable_never_decreases() {
         }
 
         // stepped with a strictly increasing random curve ending at total
-        let steps = 1 + next(8);
+        let steps = 1 + next((end - start).min(8));
         let mut cps = Vec::new(&h.env);
         cps.push_back((start, 0i128));
         let mut prev_t = start;
@@ -445,10 +445,12 @@ fn prop_withdrawable_never_decreases() {
         for i in 0..steps {
             let remaining_t = end - prev_t;
             let remaining_amt = total - prev_amt;
+            let remaining_steps = steps - 1 - i;
+            let max_dt = remaining_t.saturating_sub(remaining_steps).max(1);
             let dt = if i + 1 == steps {
                 remaining_t
             } else {
-                1 + next(remaining_t.max(1))
+                1 + next(max_dt)
             };
             let da = if i + 1 == steps {
                 remaining_amt

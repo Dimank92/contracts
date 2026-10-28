@@ -1876,9 +1876,11 @@ dependencies = [
 name = "zenith-streams"
 version = "0.1.0"
 dependencies = [
+ "event-spec",
  "proptest",
  "soroban-sdk",
  "zenith-common",
+ "zenith-test-adversaries",
 ]
 
 [[package]]
@@ -1893,11 +1895,6 @@ name = "zenith-test-fixtures"
 version = "0.1.0"
 dependencies = [
  "soroban-sdk",
- "zenith-multisig",
- "zenith-price-oracle",
- "zenith-test-adversaries",
- "zenith-timelock",
- "zenith-vault",
 ]
 
 [[package]]

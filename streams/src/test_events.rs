@@ -1,4 +1,3 @@
-#![cfg(test)]
 
 //! Event schema v2 (#126): every streams event conforms to events.json
 //! and carries the documented data.

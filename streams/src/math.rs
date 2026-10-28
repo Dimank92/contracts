@@ -24,14 +24,14 @@ pub fn withdrawable_at(
 ) -> i128 {
     match schedule {
         Schedule::Linear => linear_at(start, end, total, now),
-        Schedule::LinearWithCliff { cliff } => {
+        Schedule::LinearWithCliff(cliff) => {
             if now < *cliff {
                 0
             } else {
                 linear_at(start, end, total, now)
             }
         }
-        Schedule::Stepped { checkpoints } => {
+        Schedule::Stepped(checkpoints) => {
             let mut amount = 0;
             for (ts, cumulative) in checkpoints.iter() {
                 if now < ts {
@@ -64,6 +64,7 @@ mod proptests {
 
     use super::*;
     use proptest::prelude::*;
+    use std::format;
     use std::panic::{catch_unwind, AssertUnwindSafe};
 
     const CASES: u32 = 10_000;

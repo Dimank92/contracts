@@ -15,11 +15,11 @@ pub enum Schedule {
     /// Linear vesting from `start` to `end`, but nothing is withdrawable
     /// before `cliff`. At and after `cliff`, the amount is computed
     /// continuously from `start` (not from `cliff`).
-    LinearWithCliff { cliff: u64 },
+    LinearWithCliff(u64),
     /// Discrete milestone releases. `checkpoints` is an ordered list of
     /// `(timestamp, cumulative_amount)` pairs, strictly increasing in both
     /// fields, with the final cumulative amount equal to the stream total.
-    Stepped { checkpoints: Vec<(u64, i128)> },
+    Stepped(Vec<(u64, i128)>),
 }
 
 #[contracttype]
@@ -46,9 +46,6 @@ pub struct Stream {
     /// Set once cancelled. The stream is frozen at the amount streamed at
     /// cancellation: `total` is reduced to it and the rest refunded.
     pub canceled: bool,
-    /// Whether the sender may cancel this stream. Immutable after creation:
-    /// an irrevocable stream can only be clawed back by governance.
-    pub revocable: bool,
 }
 
 #[contracttype]
@@ -58,4 +55,10 @@ pub enum DataKey {
     Governance,
     StreamCounter,
     Stream(u64),
+    /// `(anchor, base)` once a funding operation has rebased the schedule:
+    /// `base` was already vested at `anchor`, and the rest streams linearly
+    /// from `anchor` to `end`. Absent means `(start, 0)`.
+    Checkpoint(u64),
+    /// Address the funder allowed to top up / extend this stream.
+    Delegate(u64),
 }

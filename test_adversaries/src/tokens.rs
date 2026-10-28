@@ -18,7 +18,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
-    Env, String,
+    Env, String, Val,
 };
 
 // ─── shared storage helpers ───────────────────────────────────────────────────
@@ -52,11 +52,8 @@ pub enum TokenError {
 
 // ─── LyingBalanceToken ───────────────────────────────────────────────────────
 
-pub use lying_balance_token::{LyingBalanceToken, LyingBalanceTokenClient};
-
-mod lying_balance_token {
+pub mod lying_balance_token {
     use super::*;
-
     /// A token whose `balance()` always reports `i128::MAX` regardless of the
     /// actual on-chain state. Exercises any code that trusts the reported
     /// balance without verifying real transfers (e.g. a vault that accepts a
@@ -139,14 +136,12 @@ mod lying_balance_token {
         }
     }
 }
+pub use lying_balance_token::{LyingBalanceToken, LyingBalanceTokenClient};
 
 // ─── FeeOnTransferToken ───────────────────────────────────────────────────────
 
-pub use fee_on_transfer_token::{FeeOnTransferToken, FeeOnTransferTokenClient};
-
-mod fee_on_transfer_token {
+pub mod fee_on_transfer_token {
     use super::*;
-
     /// A token that silently deducts a 10% fee on every `transfer`, crediting
     /// only 90% of the requested `amount` to the recipient. The sender is
     /// still debited the full `amount`.
@@ -240,14 +235,12 @@ mod fee_on_transfer_token {
         }
     }
 }
+pub use fee_on_transfer_token::{FeeOnTransferToken, FeeOnTransferTokenClient};
 
 // ─── RevertOnTransferToken ───────────────────────────────────────────────────
 
-pub use revert_on_transfer_token::{RevertOnTransferToken, RevertOnTransferTokenClient};
-
-mod revert_on_transfer_token {
+pub mod revert_on_transfer_token {
     use super::*;
-
     /// A token whose `transfer()` always panics with `TransferReverted`.
     ///
     /// **Vulnerability exercised (issue #115):** Any cross-contract call that
@@ -324,14 +317,12 @@ mod revert_on_transfer_token {
         }
     }
 }
+pub use revert_on_transfer_token::{RevertOnTransferToken, RevertOnTransferTokenClient};
 
 // ─── ReentrantToken ──────────────────────────────────────────────────────────
 
-pub use reentrant_token::{ReentrantToken, ReentrantTokenClient};
-
-mod reentrant_token {
+pub mod reentrant_token {
     use super::*;
-
     /// A token that, on `transfer`, attempts a re-entrant call back into a
     /// pre-configured `target` contract before completing the transfer.
     ///
@@ -349,6 +340,8 @@ mod reentrant_token {
     enum ReentrantKey {
         Target,
         ReentryFunction,
+        ReentryArgs,
+        ReentrySucceeded,
         Balances(Address),
         Allowances(Address, Address),
     }
@@ -381,6 +374,21 @@ mod reentrant_token {
             env.storage()
                 .instance()
                 .set(&ReentrantKey::ReentryFunction, &function);
+        }
+
+        /// Arguments for the re-entrant call (default: none).
+        pub fn set_reentry_args(env: Env, args: soroban_sdk::Vec<Val>) {
+            env.storage()
+                .instance()
+                .set(&ReentrantKey::ReentryArgs, &args);
+        }
+
+        /// `Some(true)` if the last re-entrant call went through,
+        /// `Some(false)` if the host rejected it, `None` if none was attempted.
+        pub fn reentry_succeeded(env: Env) -> Option<bool> {
+            env.storage()
+                .instance()
+                .get(&ReentrantKey::ReentrySucceeded)
         }
 
         /// Executes the transfer and fires a re-entrant call if a target is set.
@@ -424,11 +432,16 @@ mod reentrant_token {
                     // best-effort try_invoke_contract pattern — in testutils
                     // the panic propagates, so tests should wrap this in
                     // should_panic or use try_* client methods.
-                    let _ = env.try_invoke_contract::<(), soroban_sdk::Error>(
-                        &target,
-                        &func,
-                        soroban_sdk::vec![&env],
-                    );
+                    let args: soroban_sdk::Vec<Val> = env
+                        .storage()
+                        .instance()
+                        .get(&ReentrantKey::ReentryArgs)
+                        .unwrap_or_else(|| soroban_sdk::vec![&env]);
+                    let res =
+                        env.try_invoke_contract::<Val, soroban_sdk::Error>(&target, &func, args);
+                    env.storage()
+                        .instance()
+                        .set(&ReentrantKey::ReentrySucceeded, &res.is_ok());
                 }
             }
         }
@@ -485,14 +498,12 @@ mod reentrant_token {
         }
     }
 }
+pub use reentrant_token::{ReentrantToken, ReentrantTokenClient};
 
 // ─── ZeroBalanceToken ─────────────────────────────────────────────────────────
 
-pub use zero_balance_token::{ZeroBalanceToken, ZeroBalanceTokenClient};
-
-mod zero_balance_token {
+pub mod zero_balance_token {
     use super::*;
-
     /// A token whose `balance()` always returns 0, even after receiving tokens.
     /// The internal bookkeeping is honest, but `balance()` lies by always
     /// returning zero — the inverse of `LyingBalanceToken`.
@@ -574,14 +585,12 @@ mod zero_balance_token {
         }
     }
 }
+pub use zero_balance_token::{ZeroBalanceToken, ZeroBalanceTokenClient};
 
 // ─── OverflowToken ────────────────────────────────────────────────────────────
 
-pub use overflow_token::{OverflowToken, OverflowTokenClient};
-
-mod overflow_token {
+pub mod overflow_token {
     use super::*;
-
     /// A token whose `balance()` returns `i128::MAX` and whose `transfer()`
     /// silently succeeds without updating any state. Intended to probe
     /// arithmetic paths that handle extreme balance values.
@@ -662,3 +671,95 @@ mod overflow_token {
         }
     }
 }
+pub use overflow_token::{OverflowToken, OverflowTokenClient};
+
+// ─── NoMoveToken ─────────────────────────────────────────────────────────────
+
+pub mod no_move_token {
+    use super::*;
+    /// A token whose `transfer` returns cleanly without moving anything — the
+    /// SEP-41 analogue of an ERC-20 that returns `true` (or nothing) without
+    /// acting. Balances are honest; only `transfer` is a no-op.
+    ///
+    /// **Vulnerability exercised (issue #264):** a contract that credits
+    /// `amount` after a non-reverting `transfer`, instead of measuring the
+    /// balance delta, over-credits the depositor for tokens that never arrived.
+    #[contract]
+    pub struct NoMoveToken;
+
+    #[contractimpl]
+    impl NoMoveToken {
+        pub fn mint(env: Env, to: Address, amount: i128) {
+            let bal = get_balance(&env, &to);
+            set_balance(&env, &to, bal + amount);
+        }
+
+        pub fn transfer(_env: Env, from: Address, _to: Address, _amount: i128) {
+            from.require_auth();
+        }
+
+        pub fn balance(env: Env, id: Address) -> i128 {
+            get_balance(&env, &id)
+        }
+    }
+}
+pub use no_move_token::{NoMoveToken, NoMoveTokenClient};
+
+// ─── BlacklistToken ──────────────────────────────────────────────────────────
+
+pub mod blacklist_token {
+    use super::*;
+    /// A token (think regulated stablecoin) that reverts any transfer touching
+    /// a blacklisted address, in either direction. Otherwise honest.
+    ///
+    /// **Vulnerability exercised (issue #264):** the blacklist can flip between
+    /// a contract's deposit and its payout. The payout must fail atomically,
+    /// leaving the contract's recorded balances exactly as they were.
+    #[contract]
+    pub struct BlacklistToken;
+
+    #[contracttype]
+    enum BlacklistKey {
+        Blocked(Address),
+    }
+
+    #[contractimpl]
+    impl BlacklistToken {
+        pub fn mint(env: Env, to: Address, amount: i128) {
+            let bal = get_balance(&env, &to);
+            set_balance(&env, &to, bal + amount);
+        }
+
+        pub fn set_blacklisted(env: Env, who: Address, blocked: bool) {
+            env.storage()
+                .instance()
+                .set(&BlacklistKey::Blocked(who), &blocked);
+        }
+
+        pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
+            from.require_auth();
+            for who in [&from, &to] {
+                if env
+                    .storage()
+                    .instance()
+                    .get(&BlacklistKey::Blocked(who.clone()))
+                    .unwrap_or(false)
+                {
+                    panic_with_error!(&env, TokenError::TransferReverted);
+                }
+            }
+            let from_bal = get_balance(&env, &from);
+            if from_bal < amount {
+                panic_with_error!(&env, TokenError::InsufficientBalance);
+            }
+            set_balance(&env, &from, from_bal - amount);
+            let to_bal = get_balance(&env, &to);
+            set_balance(&env, &to, to_bal + amount);
+        }
+
+        pub fn balance(env: Env, id: Address) -> i128 {
+            get_balance(&env, &id)
+        }
+    }
+}
+pub use blacklist_token::{BlacklistToken, BlacklistTokenClient};

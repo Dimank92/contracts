@@ -27,6 +27,8 @@ zenith-common = { path = "../common" }
 soroban-sdk = { version = "21.0.0", features = ["testutils"] }
 # Property-based tests for the math modules (see README "Property tests").
 proptest = "1"
+event-spec = { path = "../tools/event-spec" }
+test_adversaries = { package = "zenith-test-adversaries", path = "../test_adversaries" }
 
 [features]
 testutils = ["soroban-sdk/testutils"]
