@@ -2150,6 +2150,7 @@ dependencies = [
 name = "zenith-staking"
 version = "0.1.0"
 dependencies = [
+ "event-spec",
  "soroban-sdk",
  "zenith-common",
 ]

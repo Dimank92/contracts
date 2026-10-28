@@ -154,6 +154,7 @@ impl Staking {
             .instance()
             .set(&DataKey::StakeToken, &stake_token);
         env.storage().instance().set(&DataKey::Splitter, &splitter);
+        env.storage().instance().set(&DataKey::Admin, &splitter);
         env.storage().instance().set(&DataKey::Cooldown, &cooldown);
         zenith_common::migrations::init_schema(&env, CURRENT_SCHEMA_VERSION);
         events::initialized(
@@ -171,6 +172,9 @@ impl Staking {
     pub fn stake(env: Env, user: Address, amount: i128) -> Result<(), Error> {
         user.require_auth();
         migrations::require_current(&env)?;
+        if Self::emergency_unstake_enabled(env.clone())? {
+            return Err(Error::EmergencyModeActive);
+        }
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
@@ -444,5 +448,78 @@ impl Staking {
 
     pub fn get_cooldown(env: Env) -> Result<u64, Error> {
         instance(&env, &DataKey::Cooldown)
+    }
+
+    pub fn cooldown(env: Env) -> Result<u64, Error> {
+        instance(&env, &DataKey::Cooldown)
+    }
+
+    pub fn set_reward_rate(env: Env, rate: u32) -> Result<(), Error> {
+        let admin: Address = instance(&env, &DataKey::Admin)?;
+        admin.require_auth();
+        migrations::require_current(&env)?;
+        if rate > 10_000 {
+            return Err(Error::ValueOutOfRange);
+        }
+        env.storage().instance().set(&DataKey::RewardRate, &rate);
+        env.events().publish((soroban_sdk::Symbol::new(&env, "reward_rate_set"),), rate);
+        Ok(())
+    }
+
+    pub fn reward_rate(env: Env) -> Result<u32, Error> {
+        Ok(env.storage().instance().get(&DataKey::RewardRate).unwrap_or(0))
+    }
+
+    pub fn set_cooldown(env: Env, cooldown: u64) -> Result<(), Error> {
+        let admin: Address = instance(&env, &DataKey::Admin)?;
+        admin.require_auth();
+        migrations::require_current(&env)?;
+        env.storage().instance().set(&DataKey::Cooldown, &cooldown);
+        env.events().publish((soroban_sdk::Symbol::new(&env, "cooldown_set"),), cooldown);
+        Ok(())
+    }
+
+    pub fn set_emergency_unstake(env: Env, enabled: bool) -> Result<(), Error> {
+        let admin: Address = instance(&env, &DataKey::Admin)?;
+        admin.require_auth();
+        migrations::require_current(&env)?;
+        env.storage().instance().set(&DataKey::EmergencyMode, &enabled);
+        env.events().publish((soroban_sdk::Symbol::new(&env, "emergency_unstake_set"),), enabled);
+        Ok(())
+    }
+
+    pub fn emergency_unstake_enabled(env: Env) -> Result<bool, Error> {
+        Ok(env.storage().instance().get(&DataKey::EmergencyMode).unwrap_or(false))
+    }
+
+    pub fn emergency_unstake(env: Env, user: Address) -> Result<i128, Error> {
+        user.require_auth();
+        migrations::require_current(&env)?;
+        if !Self::emergency_unstake_enabled(env.clone())? {
+            return Err(Error::EmergencyModeDisabled);
+        }
+        let key = DataKey::Stake(user.clone());
+        let stake = get_i128(&env, &key);
+        if stake <= 0 {
+            return Err(Error::InsufficientStake);
+        }
+        set_i128(&env, &key, 0);
+        let total = total_staked(&env) - stake;
+        env.storage().instance().set(&DataKey::TotalStaked, &total);
+
+        let stake_token: Address = instance(&env, &DataKey::StakeToken)?;
+        token::Client::new(&env, &stake_token).transfer(
+            &env.current_contract_address(),
+            &user,
+            &stake,
+        );
+        events::withdrawn(
+            &env,
+            user,
+            WithdrawnEvent {
+                amount: stake,
+            },
+        );
+        Ok(stake)
     }
 }

@@ -3,7 +3,7 @@
 use crate::{Error, Staking, StakingClient};
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger as _},
-    token, Address, Env, IntoVal, Symbol,
+    token, Address, Env, Symbol, TryFromVal,
 };
 
 const COOLDOWN: u64 = 7 * 86_400;
@@ -65,7 +65,11 @@ impl Harness<'_> {
         self.env.events().all().iter().any(|(id, topics, _)| {
             id == self.client.address
                 && topics.len() == 1
-                && topics.get(0).unwrap() == sym.into_val(&self.env)
+                && topics
+                    .get(0)
+                    .and_then(|t| Symbol::try_from_val(&self.env, &t).ok())
+                    .map(|s| s == sym)
+                    .unwrap_or(false)
         })
     }
 }

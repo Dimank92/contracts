@@ -50,4 +50,10 @@ pub enum Error {
     /// storage entry that `initialize` always writes). Never expected on a
     /// correctly deployed contract; replaces a panic with a typed error.
     InternalInvariant = 90,
+    /// Value is outside the allowed range.
+    ValueOutOfRange = 91,
+    /// Emergency unstake mode is currently disabled.
+    EmergencyModeDisabled = 92,
+    /// New stakes are blocked during emergency unstake mode.
+    EmergencyModeActive = 93,
 }
